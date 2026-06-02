@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"/>
+  <meta name="apple-mobile-web-app-capable" content="yes"/>
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+  <meta name="apple-mobile-web-app-title" content="StayLog"/>
+  <meta name="theme-color" content="#f7f5f0"/>
+  <meta name="description" content="Homestay management app — track bookings, guests, expenses & revenue"/>
+  <link rel="manifest" href="manifest.json"/>
+  <link rel="apple-touch-icon" href="icons/icon-192.png"/>
+  <title>StayLog — Homestay Manager</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;1,9..40,300&family=Playfair+Display:wght@500;600&display=swap" rel="stylesheet"/>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.19.0/dist/tabler-icons.min.css"/>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --cream: #f7f5f0;
+      --white: #ffffff;
+      --border: #e8e3da;
+      --border-soft: #f0ece4;
+      --text: #1a1a1a;
+      --text-mid: #4a4540;
+      --muted: #7a7570;
+      --light: #afa99e;
+      --accent: #2d6a4f;
+      --accent-light: #e8f4ef;
+      --accent-mid: #52b788;
+      --warn: #e07b39;
+      --warn-light: #fdf1e8;
+      --danger: #c62828;
+      --danger-light: #fdeaea;
+      --info: #1565c0;
+      --info-light: #e8f0fb;
+      --gold: #b8860b;
+      --gold-light: #fdf8ec;
+      --radius: 14px;
+      --radius-sm: 9px;
+      --radius-xs: 6px;
+      --shadow: 0 1px 3px rgba(0,0,0,0.07), 0 4px 12px rgba(0,0,0,0.04);
+      --shadow-sm: 0 1px 2px rgba(0,0,0,0.06);
+    }
+    html { font-size: 16px; -webkit-text-size-adjust: 100%; }
+    body {
+      font-family: 'DM Sans', sans-serif;
+      background: var(--cream);
+      color: var(--text);
+      min-height: 100vh;
+      min-height: -webkit-fill-available;
+      overscroll-behavior: none;
+      -webkit-font-smoothing: antialiased;
+    }
+    input, select, textarea {
+      font-family: inherit;
+      font-size: 15px;
+      padding: 11px 14px;
+      border: 1.5px solid var(--border);
+      border-radius: var(--radius-sm);
+      background: var(--white);
+      width: 100%;
+      color: var(--text);
+      outline: none;
+      transition: border-color .15s, box-shadow .15s;
+      -webkit-appearance: none;
+      appearance: none;
+    }
+    input:focus, select:focus, textarea:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(45,106,79,0.12);
+    }
+    select { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%237a7570' d='M6 8L1 3h10z'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 14px center; padding-right: 36px; }
+    button { font-family: inherit; cursor: pointer; border: none; border-radius: var(--radius-sm); font-size: 15px; font-weight: 500; transition: all .15s; -webkit-tap-highlight-color: transparent; }
+    button:active { transform: scale(0.97); }
+    .btn-primary { background: var(--accent); color: #fff; padding: 12px 20px; letter-spacing: 0.01em; }
+    .btn-primary:hover { background: #1b5e38; }
+    .btn-primary:disabled { background: var(--light); cursor: not-allowed; }
+    .btn-ghost { background: transparent; color: var(--muted); padding: 9px 14px; border: 1.5px solid var(--border); }
+    .btn-ghost:hover { background: var(--border); }
+    .btn-danger { background: var(--danger-light); color: var(--danger); padding: 9px 14px; border: 1.5px solid #f5c6c6; }
+    .btn-sm { padding: 7px 13px; font-size: 13px; }
+    .card {
+      background: var(--white);
+      border-radius: var(--radius);
+      border: 1px solid var(--border);
+      box-shadow: var(--shadow-sm);
+    }
+    .label { font-size: 12px; color: var(--muted); font-weight: 500; letter-spacing: 0.04em; text-transform: uppercase; margin-bottom: 5px; }
+    #app { max-width: 480px; margin: 0 auto; min-height: 100vh; display: flex; flex-direction: column; position: relative; }
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+  <script src="app.js"></script>
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('sw.js').catch(() => {});
+      });
+    }
+  </script>
+</body>
+</html>
