@@ -3,15 +3,81 @@
 
 'use strict';
 
-// ─── Storage ──────────────────────────────────────────────────────────────────
-const STORAGE_KEY = 'staylog_v2';
+// ─── Storage (IndexedDB primary + localStorage fallback) ──────────────────────
+// IndexedDB is persistent on iOS Safari PWA and is NOT cleared between sessions.
+// localStorage is kept as a live mirror/fallback in case IndexedDB is unavailable.
+
+const DB_NAME    = 'staylog_db';
+const DB_VERSION = 1;
+const STORE_NAME = 'appdata';
+const DATA_KEY   = 'staylog_main';
+const LS_KEY     = 'staylog_v2';
+
 const defaultData = { properties: [], bookings: [], expenses: [] };
 
-function loadData() {
-  try { return JSON.parse(localStorage.getItem(STORAGE_KEY)) || defaultData; }
-  catch { return defaultData; }
+// ── IndexedDB helpers ──────────────────────────────────────────────────────────
+let _db = null;
+
+function openDB() {
+  return new Promise((resolve, reject) => {
+    if (_db) { resolve(_db); return; }
+    const req = indexedDB.open(DB_NAME, DB_VERSION);
+    req.onupgradeneeded = e => {
+      const db = e.target.result;
+      if (!db.objectStoreNames.contains(STORE_NAME)) {
+        db.createObjectStore(STORE_NAME);
+      }
+    };
+    req.onsuccess = e => { _db = e.target.result; resolve(_db); };
+    req.onerror   = () => reject(req.error);
+  });
 }
-function saveData(d) { localStorage.setItem(STORAGE_KEY, JSON.stringify(d)); }
+
+function idbGet(key) {
+  return openDB().then(db => new Promise((resolve, reject) => {
+    const tx  = db.transaction(STORE_NAME, 'readonly');
+    const req = tx.objectStore(STORE_NAME).get(key);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror   = () => reject(req.error);
+  }));
+}
+
+function idbSet(key, value) {
+  return openDB().then(db => new Promise((resolve, reject) => {
+    const tx  = db.transaction(STORE_NAME, 'readwrite');
+    const req = tx.objectStore(STORE_NAME).put(value, key);
+    req.onsuccess = () => resolve();
+    req.onerror   = () => reject(req.error);
+  }));
+}
+
+// ── Public API ─────────────────────────────────────────────────────────────────
+// saveData — writes to BOTH IndexedDB and localStorage (belt + suspenders)
+function saveData(d) {
+  // Always mirror to localStorage immediately (synchronous safety net)
+  try { localStorage.setItem(LS_KEY, JSON.stringify(d)); } catch {}
+  // Write to IndexedDB asynchronously (persistent primary store)
+  idbSet(DATA_KEY, JSON.parse(JSON.stringify(d))).catch(() => {});
+}
+
+// loadDataFromIDB — async load used at boot; falls back to localStorage
+async function loadDataFromIDB() {
+  try {
+    const idbData = await idbGet(DATA_KEY);
+    if (idbData && idbData.properties) return idbData;
+  } catch {}
+  // Fallback: try localStorage
+  try {
+    const ls = JSON.parse(localStorage.getItem(LS_KEY));
+    if (ls && ls.properties) {
+      // Migrate: push localStorage data into IndexedDB so future reads are fast
+      saveData(ls);
+      return ls;
+    }
+  } catch {}
+  return { ...defaultData };
+}
+
 function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2); }
 
 // ─── Formatters ──────────────────────────────────────────────────────────────
@@ -21,14 +87,16 @@ const diffDays = (a, b) => Math.max(0, Math.ceil((new Date(b) - new Date(a)) / 8
 const today = () => new Date().toISOString().split('T')[0];
 
 // ─── State ───────────────────────────────────────────────────────────────────
+// data starts empty; loadDataFromIDB() fills it asynchronously at boot
 let state = {
-  data: loadData(),
+  data: { ...defaultData },
   tab: 'dashboard',
   modal: null,
   editItem: null,
   filterProp: 'all',
   bookingFilter: 'all',
   expandedBooking: null,
+  _loading: true,   // true while IndexedDB is being read
 };
 
 function setState(patch) {
@@ -133,7 +201,48 @@ function renderHeader() {
   const top = div({ style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center' } });
   const brand = div({},
     h('div', { style: { fontFamily: 'Playfair Display', fontSize: 24, fontWeight: 500, color: 'var(--text)', letterSpacing: '-0.01em' } }, 'StayLog'),
-    h('div', { style: { fontSize: 12, color: 'var(--muted)', marginTop: 1 } }, `${data.properties.length} ${data.properties.length === 1 ? 'property' : 'properties'} · ${data.bookings.length} bookings`)
+    div({ style: { display: 'flex', alignItems: 'center', gap: 10, marginTop: 2 } },
+      h('div', { style: { fontSize: 12, color: 'var(--muted)' } }, `${data.properties.length} ${data.properties.length === 1 ? 'property' : 'properties'} · ${data.bookings.length} bookings`),
+      // Backup button
+      btn({
+        title: 'Backup data',
+        style: { background: 'none', border: 'none', padding: '2px 4px', cursor: 'pointer', color: 'var(--muted)' },
+        onClick: () => {
+          const blob = new Blob([JSON.stringify(state.data, null, 2)], { type: 'application/json' });
+          const a = document.createElement('a');
+          a.href = URL.createObjectURL(blob);
+          a.download = `staylog-backup-${today()}.json`;
+          a.click();
+        }
+      }, ico('download', { style: { fontSize: 15 } })),
+      // Restore button
+      btn({
+        title: 'Restore from backup',
+        style: { background: 'none', border: 'none', padding: '2px 4px', cursor: 'pointer', color: 'var(--muted)' },
+        onClick: () => {
+          const inp = document.createElement('input');
+          inp.type = 'file'; inp.accept = '.json';
+          inp.onchange = e => {
+            const file = e.target.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = ev => {
+              try {
+                const d = JSON.parse(ev.target.result);
+                if (!d.properties || !d.bookings || !d.expenses) throw new Error('Invalid');
+                if (confirm(`Restore ${d.bookings.length} bookings and ${d.expenses.length} expenses from backup? Current data will be replaced.`)) {
+                  state.data = d;
+                  saveData(d);
+                  render();
+                }
+              } catch { alert('Invalid backup file.'); }
+            };
+            reader.readAsText(file);
+          };
+          inp.click();
+        }
+      }, ico('upload', { style: { fontSize: 15 } }))
+    )
   );
   const addBtn = btn({ className: 'btn-primary btn-sm', onClick: () => setState({ modal: 'addProp', editItem: null }) },
     ico('plus', { style: { marginRight: 5 } }), 'Property'
@@ -748,6 +857,15 @@ function render() {
   const app = document.getElementById('app');
   app.innerHTML = '';
 
+  // Loading screen while IndexedDB initialises
+  if (state._loading) {
+    app.appendChild(div({ style: { display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100vh', gap: 16 } },
+      h('div', { style: { fontFamily: 'Playfair Display', fontSize: 28, color: 'var(--accent)' } }, 'StayLog'),
+      h('div', { style: { fontSize: 13, color: 'var(--muted)' } }, 'Loading your data…')
+    ));
+    return;
+  }
+
   app.appendChild(renderHeader());
 
   const main = div({ style: { flex: 1 } });
@@ -769,4 +887,11 @@ function render() {
 }
 
 // ─── Boot ─────────────────────────────────────────────────────────────────────
-render();
+// Show a minimal loading screen immediately, then load data from IndexedDB
+render(); // renders loading spinner because state._loading === true
+
+loadDataFromIDB().then(data => {
+  state.data     = data;
+  state._loading = false;
+  render();
+});
