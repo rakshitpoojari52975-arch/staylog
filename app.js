@@ -1,5 +1,5 @@
 /* StayLog — Homestay Manager App
-   v5: Better PIN UI, expense paid status, encrypted backup/restore */
+   v6: Plain JSON backup/restore (no encryption) */
 'use strict';
 
 // ─── Auth ─────────────────────────────────────────────────────────────────────
@@ -39,57 +39,6 @@ async function loadAuth(){
 }
 function saveAuth(a){try{localStorage.setItem(AUTH_KEY,JSON.stringify(a));}catch{} idbSet(AUTH_KEY,a).catch(()=>{});}
 function uid(){return Date.now().toString(36)+Math.random().toString(36).slice(2);}
-
-// ─── Encryption helpers (AES-GCM via WebCrypto) ───────────────────────────────
-// Key is derived from the user's PIN using PBKDF2 so backup files are tied to
-// the same PIN — without the PIN the file cannot be decrypted.
-const ENC_MAGIC = 'STAYLOG_ENC_V1';
-
-async function deriveKey(pin, saltBuf){
-  const enc = new TextEncoder();
-  const baseKey = await crypto.subtle.importKey('raw', enc.encode(pin), 'PBKDF2', false, ['deriveKey']);
-  return crypto.subtle.deriveKey(
-    {name:'PBKDF2', salt:saltBuf, iterations:200000, hash:'SHA-256'},
-    baseKey,
-    {name:'AES-GCM', length:256},
-    false,
-    ['encrypt','decrypt']
-  );
-}
-
-async function encryptData(dataObj, pin){
-  const salt = crypto.getRandomValues(new Uint8Array(16));
-  const iv   = crypto.getRandomValues(new Uint8Array(12));
-  const key  = await deriveKey(pin, salt);
-  const plain= new TextEncoder().encode(JSON.stringify(dataObj));
-  const cipher= await crypto.subtle.encrypt({name:'AES-GCM',iv}, key, plain);
-  // Pack: magic(14) + salt(16) + iv(12) + ciphertext, encode as base64
-  const combined = new Uint8Array(16+12+cipher.byteLength);
-  combined.set(salt,0); combined.set(iv,16); combined.set(new Uint8Array(cipher),28);
-  const b64 = btoa(String.fromCharCode(...combined));
-  return JSON.stringify({_staylog: ENC_MAGIC, data: b64});
-}
-
-async function decryptData(fileText, pin){
-  let parsed;
-  try{ parsed=JSON.parse(fileText); }catch{ throw new Error('Invalid file format'); }
-  if(!parsed._staylog || parsed._staylog!==ENC_MAGIC){
-    // Legacy: attempt plain JSON parse for unencrypted old backups
-    if(parsed.properties && parsed.bookings){ return parsed; }
-    throw new Error('Not a StayLog backup file');
-  }
-  try{
-    const bytes = Uint8Array.from(atob(parsed.data), c=>c.charCodeAt(0));
-    const salt  = bytes.slice(0,16);
-    const iv    = bytes.slice(16,28);
-    const cipher= bytes.slice(28);
-    const key   = await deriveKey(pin, salt);
-    const plain = await crypto.subtle.decrypt({name:'AES-GCM',iv}, key, cipher);
-    return JSON.parse(new TextDecoder().decode(plain));
-  }catch{
-    throw new Error('Wrong PIN or corrupted file');
-  }
-}
 
 // ─── Formatters ───────────────────────────────────────────────────────────────
 const MONTH_NAMES=['January','February','March','April','May','June','July','August','September','October','November','December'];
@@ -373,7 +322,7 @@ function renderHeader(){
     h('div',{style:{fontFamily:'Playfair Display',fontSize:24,fontWeight:500,color:'var(--text)',letterSpacing:'-0.01em'}},'StayLog'),
     div({style:{display:'flex',alignItems:'center',gap:8,marginTop:2}},
       h('div',{style:{fontSize:12,color:'var(--muted)'}},`${data.properties.length} ${data.properties.length===1?'property':'properties'} · ${data.bookings.length} bookings`),
-      btn({title:'Backup (encrypted)',style:{background:'none',border:'none',padding:'2px 4px',cursor:'pointer',color:'var(--muted)'},onClick:downloadBackup},ico('download',{style:{fontSize:15}})),
+      btn({title:'Backup data',style:{background:'none',border:'none',padding:'2px 4px',cursor:'pointer',color:'var(--muted)'},onClick:downloadBackup},ico('download',{style:{fontSize:15}})),
       btn({title:'Restore backup',style:{background:'none',border:'none',padding:'2px 4px',cursor:'pointer',color:'var(--muted)'},onClick:restoreBackup},ico('upload',{style:{fontSize:15}})),
       btn({title:'Lock app',style:{background:'none',border:'none',padding:'2px 4px',cursor:'pointer',color:'var(--muted)'},onClick:()=>{state.loggedIn=false;render();}},ico('lock',{style:{fontSize:15}}))
     )
@@ -385,34 +334,34 @@ function renderHeader(){
   return header;
 }
 
-// Encrypted backup download
-async function downloadBackup(){
-  try{
-    const encrypted=await encryptData(state.data, state.auth.pin);
-    const blob=new Blob([encrypted],{type:'application/json'});
-    const a=document.createElement('a');
-    a.href=URL.createObjectURL(blob);
-    a.download=`staylog-backup-${today()}.enc.json`;
-    a.click();
-  }catch(e){alert('Backup failed: '+e.message);}
+// Plain JSON backup download
+function downloadBackup(){
+  const blob=new Blob([JSON.stringify(state.data,null,2)],{type:'application/json'});
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(blob);
+  a.download=`staylog-backup-${today()}.json`;
+  a.click();
 }
 
-// Encrypted restore
-async function restoreBackup(){
+// Plain JSON restore
+function restoreBackup(){
   const inp=document.createElement('input');
   inp.type='file';inp.accept='.json';
-  inp.onchange=async e=>{
+  inp.onchange=e=>{
     const file=e.target.files[0];if(!file)return;
-    const text=await file.text();
-    try{
-      const d=await decryptData(text,state.auth.pin);
-      if(!d.properties||!d.bookings||!d.expenses)throw new Error('Invalid data structure');
-      if(confirm(`Restore ${d.bookings.length} bookings and ${d.expenses.length} expenses? Current data will be replaced.`)){
-        state.data=d;saveData(d);render();
+    const reader=new FileReader();
+    reader.onload=ev=>{
+      try{
+        const d=JSON.parse(ev.target.result);
+        if(!d.properties||!d.bookings||!d.expenses)throw new Error('Invalid data structure');
+        if(confirm(`Restore ${d.bookings.length} bookings and ${d.expenses.length} expenses? Current data will be replaced.`)){
+          state.data=d;saveData(d);render();
+        }
+      }catch(err){
+        alert('Restore failed: '+err.message+'\n\nMake sure this is a valid StayLog backup file.');
       }
-    }catch(err){
-      alert('Restore failed: '+err.message+'\n\nMake sure you are using a backup created on this app with the same PIN.');
-    }
+    };
+    reader.readAsText(file);
   };
   inp.click();
 }
