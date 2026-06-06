@@ -1,5 +1,5 @@
 /* StayLog — Homestay Manager App
-   v6: Plain JSON backup/restore (no encryption) */
+   v7: ID proof attachment in bookings, warm PDF house rules, check-in/out times */
 'use strict';
 
 // ─── Auth ─────────────────────────────────────────────────────────────────────
@@ -462,6 +462,22 @@ function bookingCard(b){
     const detail=div({style:{borderTop:'1px solid var(--border-soft)',padding:'12px 14px 14px',background:'#fafaf8',borderRadius:'0 0 var(--radius) var(--radius)'}});
     const infoRow=(icon,text)=>text?div({style:{fontSize:13,color:'var(--text-mid)',marginBottom:6,display:'flex',alignItems:'center',gap:8}},ico(icon,{style:{fontSize:15,color:'var(--light)'}}),text):null;
     [infoRow('phone',b.phone),infoRow('users',b.guests?`${b.guests} guest${b.guests>1?'s':''}`:''),infoRow('link',b.source),infoRow('currency-rupee',paid>0?`Paid: ${fmtCur(paid)} · ${due>0?'Due: '+fmtCur(due):'Fully paid'}`:null)].forEach(r=>r&&detail.appendChild(r));
+    // ID proof display
+    if(b.idProofType||b.idProofImage){
+      const idRow=div({style:{marginBottom:8}});
+      if(b.idProofType||b.idProofNumber){
+        idRow.appendChild(div({style:{fontSize:13,color:'var(--text-mid)',marginBottom:b.idProofImage?6:0,display:'flex',alignItems:'center',gap:8}},
+          ico('id-badge',{style:{fontSize:15,color:'var(--light)'}}),
+          `${b.idProofType||'ID'} ${b.idProofNumber?'— '+b.idProofNumber:''}`
+        ));
+      }
+      if(b.idProofImage){
+        const imgThumb=h('img',{src:b.idProofImage,style:{width:'100%',maxHeight:160,objectFit:'contain',borderRadius:8,border:'1px solid var(--border)',background:'var(--cream)',cursor:'pointer'}});
+        imgThumb.addEventListener('click',()=>window.open(b.idProofImage,'_blank'));
+        idRow.appendChild(imgThumb);
+      }
+      detail.appendChild(idRow);
+    }
     if(b.notes)detail.appendChild(div({style:{fontSize:13,color:'var(--muted)',fontStyle:'italic',margin:'6px 0 10px',lineHeight:1.5,background:'var(--white)',padding:'8px 10px',borderRadius:8,border:'1px solid var(--border)'}},`"${b.notes}"`));
     const actions=div({style:{display:'flex',gap:7,flexWrap:'wrap',marginTop:8}});
     if(b.status==='confirmed')actions.appendChild(btn({className:'btn-primary btn-sm',onClick:()=>updateStatus(b.id,'checkedin')},ico('door-enter',{style:{marginRight:5}}),'Check In'));
@@ -480,56 +496,147 @@ function downloadConfirmation(b){
   const prop=state.data.properties.find(p=>p.id===b.propertyId);
   const nights=diffDays(b.checkIn,b.checkOut);
   const bookingRef='SL-'+b.id.slice(-6).toUpperCase();
+  const idTypeLabels={Aadhaar:'Aadhaar Card',Passport:'Passport',DrivingLicense:'Driving Licence',VoterID:'Voter ID',PAN:'PAN Card',Other:'ID Proof'};
   const html=`<!DOCTYPE html>
 <html lang="en"><head><meta charset="UTF-8"/><title>Booking Confirmation — ${b.guestName}</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@500;600&family=DM+Sans:wght@300;400;500;600&display=swap');
 *{box-sizing:border-box;margin:0;padding:0}
-body{font-family:'DM Sans',sans-serif;background:#fff;color:#1a1a1a;padding:40px;max-width:680px;margin:0 auto;font-size:15px;line-height:1.6}
+body{font-family:'DM Sans',sans-serif;background:#fff;color:#1a1a1a;padding:40px;max-width:700px;margin:0 auto;font-size:15px;line-height:1.65}
 .header{text-align:center;margin-bottom:36px;padding-bottom:24px;border-bottom:2px solid #e8f4ef}
-.logo{font-family:'Playfair Display',serif;font-size:32px;color:#2d6a4f;margin-bottom:6px}
-.tagline{font-size:13px;color:#7a7570;letter-spacing:0.04em;text-transform:uppercase}
-.hero{background:linear-gradient(135deg,#e8f4ef 0%,#f7f5f0 100%);border-radius:16px;padding:28px 32px;margin-bottom:28px;border:1px solid #d0e8da}
-.hero h1{font-family:'Playfair Display',serif;font-size:24px;color:#1a1a1a;margin-bottom:6px}
-.hero p{font-size:14px;color:#4a4540;line-height:1.7}
-.ref{display:inline-block;background:#2d6a4f;color:#fff;padding:4px 14px;border-radius:20px;font-size:12px;font-weight:600;letter-spacing:0.06em;margin-top:10px}
-.section{margin-bottom:24px}
+.logo{font-family:'Playfair Display',serif;font-size:34px;color:#2d6a4f;margin-bottom:4px;letter-spacing:-0.01em}
+.tagline{font-size:12px;color:#7a7570;letter-spacing:0.08em;text-transform:uppercase}
+.hero{background:linear-gradient(135deg,#e8f4ef 0%,#f7f5f0 100%);border-radius:18px;padding:30px 34px;margin-bottom:28px;border:1px solid #c8e0d0}
+.hero h1{font-family:'Playfair Display',serif;font-size:26px;color:#1a1a1a;margin-bottom:8px}
+.hero p{font-size:14.5px;color:#4a4540;line-height:1.75}
+.ref{display:inline-block;background:#2d6a4f;color:#fff;padding:5px 16px;border-radius:20px;font-size:12px;font-weight:600;letter-spacing:0.06em;margin-top:12px}
 .section-title{font-size:11px;font-weight:700;color:#2d6a4f;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:12px;padding-bottom:6px;border-bottom:1px solid #e8e3da}
-.detail-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
-.detail-item{background:#f7f5f0;border-radius:10px;padding:12px 14px}
-.detail-label{font-size:11px;color:#7a7570;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:3px}
+.detail-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:24px}
+.detail-item{background:#f7f5f0;border-radius:10px;padding:13px 15px}
+.detail-label{font-size:10.5px;color:#7a7570;font-weight:600;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:4px}
 .detail-value{font-size:15px;font-weight:600;color:#1a1a1a}
-.rules{background:#fffbf0;border:1px solid #f0d890;border-radius:12px;padding:22px 24px;margin-bottom:24px}
-.rules h3{font-family:'Playfair Display',serif;font-size:17px;color:#b8860b;margin-bottom:14px}
-.rule{display:flex;gap:12px;margin-bottom:12px;align-items:flex-start}
-.rule-icon{font-size:18px;flex-shrink:0;margin-top:1px}
-.rule-text{font-size:14px;color:#3a3530;line-height:1.55}
-.footer{text-align:center;margin-top:36px;padding-top:20px;border-top:1px solid #e8e3da;color:#7a7570;font-size:13px;line-height:1.8}
-.warm-note{background:#e8f4ef;border-radius:12px;padding:18px 22px;margin-bottom:24px;font-size:14px;color:#1b5e38;line-height:1.7;border-left:4px solid #2d6a4f}
+.detail-value.highlight{color:#2d6a4f;font-size:16px}
+.time-banner{background:#2d6a4f;color:#fff;border-radius:12px;padding:16px 22px;margin-bottom:24px;display:flex;justify-content:space-around;align-items:center;gap:12px}
+.time-block{text-align:center}
+.time-label{font-size:10px;letter-spacing:0.1em;text-transform:uppercase;opacity:0.8;margin-bottom:4px}
+.time-value{font-size:22px;font-weight:700;letter-spacing:-0.01em}
+.time-date{font-size:12px;opacity:0.85;margin-top:2px}
+.time-sep{width:1px;background:rgba(255,255,255,0.3);height:48px}
+.warm-note{background:#e8f4ef;border-radius:12px;padding:18px 22px;margin-bottom:24px;font-size:14px;color:#1b5e38;line-height:1.75;border-left:4px solid #2d6a4f}
+.rules-wrap{background:#fffbf0;border:1px solid #edd890;border-radius:16px;padding:26px 28px;margin-bottom:24px}
+.rules-intro{font-size:13.5px;color:#7a6020;line-height:1.7;margin-bottom:20px}
+.rule{display:flex;gap:14px;margin-bottom:18px;align-items:flex-start}
+.rule:last-child{margin-bottom:0}
+.rule-icon{font-size:22px;flex-shrink:0;margin-top:2px}
+.rule-body{}
+.rule-title{font-weight:700;font-size:14.5px;color:#2d6a4f;margin-bottom:4px}
+.rule-desc{font-size:13.5px;color:#3a3530;line-height:1.6}
+.footer{text-align:center;margin-top:36px;padding-top:20px;border-top:1px solid #e8e3da;color:#7a7570;font-size:13px;line-height:1.9}
+@media print{body{padding:20px}}
 </style></head><body>
-<div class="header"><div class="logo">StayLog</div><div class="tagline">Booking Confirmation</div></div>
-<div class="hero"><h1>Welcome, ${b.guestName}! 🏡</h1><p>We're absolutely delighted to have you stay with us. Your booking is confirmed and we're looking forward to welcoming you. We hope your stay is everything you're hoping for and more!</p><span class="ref">Ref: ${bookingRef}</span></div>
-<div class="section"><div class="section-title">Booking Details</div>
-<div class="detail-grid">
-<div class="detail-item"><div class="detail-label">Guest Name</div><div class="detail-value">${b.guestName}</div></div>
-<div class="detail-item"><div class="detail-label">Property</div><div class="detail-value">${prop?.name||'Our Home'}</div></div>
-<div class="detail-item"><div class="detail-label">Check-in</div><div class="detail-value">${fmtDateLong(b.checkIn)}</div></div>
-<div class="detail-item"><div class="detail-label">Check-out</div><div class="detail-value">${fmtDateLong(b.checkOut)}</div></div>
-<div class="detail-item"><div class="detail-label">Duration</div><div class="detail-value">${nights} night${nights!==1?'s':''}</div></div>
-<div class="detail-item"><div class="detail-label">Guests</div><div class="detail-value">${b.guests||1} person${(b.guests||1)>1?'s':''}</div></div>
-${prop?.location?`<div class="detail-item" style="grid-column:1/-1"><div class="detail-label">Address</div><div class="detail-value">${prop.location}</div></div>`:''}
-${b.phone?`<div class="detail-item"><div class="detail-label">Contact</div><div class="detail-value">${b.phone}</div></div>`:''}
-</div></div>
-<div class="warm-note">💚 <strong>A warm note from us:</strong> Our home is your home during your stay. Please make yourself comfortable and don't hesitate to reach out if you need anything at all. We genuinely want you to feel at ease and have a wonderful time!</div>
-<div class="rules"><h3>🏠 A Few House Guidelines</h3><p style="font-size:13px;color:#7a6830;margin-bottom:16px">We've put these together simply to make the stay enjoyable for everyone!</p>
-<div class="rule"><span class="rule-icon">🌙</span><span class="rule-text"><strong>A peaceful evening for all:</strong> To keep things quiet and restful for the neighbourhood, we kindly ask that you plan to return to the house by <strong>10 PM</strong> each evening.</span></div>
-<div class="rule"><span class="rule-icon">🕯️</span><span class="rule-text"><strong>Keep it cozy:</strong> This home is a sanctuary — no parties or large gatherings, please. Just good company and good vibes!</span></div>
-<div class="rule"><span class="rule-icon">🌿</span><span class="rule-text"><strong>Fresh air policy:</strong> The <strong>entire property is non-smoking</strong>. We appreciate your understanding!</span></div>
-<div class="rule"><span class="rule-icon">💡</span><span class="rule-text"><strong>A little energy saving:</strong> When you head out, please turn off the <strong>lights, A/C, and fans</strong>.</span></div>
-<div class="rule"><span class="rule-icon">🍽️</span><span class="rule-text"><strong>Kitchen courtesy:</strong> Please ensure <strong>utensils used are washed</strong> after use.</span></div>
-<div class="rule"><span class="rule-icon">👟</span><span class="rule-text"><strong>Shoes at the door:</strong> Please <strong>leave your footwear outside</strong> the house.</span></div>
+
+<div class="header">
+  <div class="logo">Raaya Vasyam</div>
+  <div class="tagline">Booking Confirmation</div>
 </div>
-<div class="footer"><p>We hope you have a truly memorable and relaxing stay. 🌸</p><p style="margin-top:6px">If you need anything, please don't hesitate to get in touch.</p><p style="margin-top:12px;font-weight:600;color:#2d6a4f">Generated by StayLog · ${new Date().toLocaleDateString('en-IN',{day:'numeric',month:'long',year:'numeric'})}</p></div>
+
+<div class="hero">
+  <h1>Welcome, ${b.guestName}! 🏡</h1>
+  <p>We are so thrilled to have you with us at <strong>${prop?.name||'our home'}</strong>! Your booking is all set, and we truly cannot wait to welcome you. We hope this stay gives you a chance to unwind, recharge, and create some wonderful memories. Think of this home as your own little retreat — we've put our heart into making it comfortable, warm, and welcoming just for you.</p>
+  <span class="ref">Booking Ref: ${bookingRef}</span>
+</div>
+
+<div class="section-title">Your Stay at a Glance</div>
+<div class="detail-grid">
+  <div class="detail-item"><div class="detail-label">Guest Name</div><div class="detail-value">${b.guestName}</div></div>
+  <div class="detail-item"><div class="detail-label">Property</div><div class="detail-value">${prop?.name||'Our Home'}</div></div>
+  <div class="detail-item"><div class="detail-label">Check-in</div><div class="detail-value">${fmtDateLong(b.checkIn)}</div></div>
+  <div class="detail-item"><div class="detail-label">Check-out</div><div class="detail-value">${fmtDateLong(b.checkOut)}</div></div>
+  <div class="detail-item"><div class="detail-label">Duration</div><div class="detail-value highlight">${nights} night${nights!==1?'s':''}</div></div>
+  <div class="detail-item"><div class="detail-label">Guests</div><div class="detail-value">${b.guests||1} person${(b.guests||1)>1?'s':''}</div></div>
+  ${prop?.location?`<div class="detail-item" style="grid-column:1/-1"><div class="detail-label">Property Address</div><div class="detail-value">${prop.location}</div></div>`:''}
+  ${b.phone?`<div class="detail-item"><div class="detail-label">Contact Number</div><div class="detail-value">${b.phone}</div></div>`:''}
+</div>
+
+<div class="time-banner">
+  <div class="time-block">
+    <div class="time-label">Check-in Time</div>
+    <div class="time-value">1:00 PM</div>
+    <div class="time-date">${fmtDate(b.checkIn)}</div>
+  </div>
+  <div class="time-sep"></div>
+  <div class="time-block">
+    <div class="time-label">Check-out Time</div>
+    <div class="time-value">11:00 AM</div>
+    <div class="time-date">${fmtDate(b.checkOut)}</div>
+  </div>
+</div>
+
+<div class="warm-note">
+  💚 <strong>A little note from our heart to yours —</strong><br/>
+  Our home has been lovingly set up so you can feel completely at ease the moment you walk in. The kitchen is stocked with essentials, the beds are made, and everything is ready for you. Please treat this space as your own, explore freely, and do reach out anytime if you need something. Your comfort means the world to us, and we genuinely hope every moment of your stay feels special.
+</div>
+
+<div class="section-title" style="margin-bottom:16px">A Few Things to Keep in Mind 🏠</div>
+<div class="rules-wrap">
+  <p class="rules-intro">We've put together a few simple guidelines to make sure everyone — you, fellow guests, and our lovely neighbours — has the most comfortable and enjoyable experience. We know you'll understand the spirit behind each one, and we truly appreciate your thoughtfulness!</p>
+
+  <div class="rule">
+    <span class="rule-icon">🌙</span>
+    <div class="rule-body">
+      <div class="rule-title">Home by 10 PM — Sweet Dreams for the Neighbourhood</div>
+      <div class="rule-desc">Our neighbourhood is a quiet, peaceful community, and the evenings here are wonderfully serene. We kindly request that everyone plans to be back at the house by <strong>10 PM</strong> each night. This helps us keep a harmonious relationship with our lovely neighbours and ensures you get the restful night's sleep you deserve after a day of exploring!</div>
+    </div>
+  </div>
+
+  <div class="rule">
+    <span class="rule-icon">🕯️</span>
+    <div class="rule-body">
+      <div class="rule-title">A Home, Not a Party Venue — Keep the Vibe Cosy</div>
+      <div class="rule-desc">This home is designed to be a serene, intimate retreat — a place where you can truly breathe and be at peace. We'd love for it to stay that way! We kindly request that you keep gatherings to your immediate group and avoid hosting large get-togethers or loud events. Good conversations, laughter, and great memories are absolutely welcome — just keep it cosy and warm!</div>
+    </div>
+  </div>
+
+  <div class="rule">
+    <span class="rule-icon">🌿</span>
+    <div class="rule-body">
+      <div class="rule-title">Fresh Air Always — A Smoke-Free Home</div>
+      <div class="rule-desc">We've worked hard to keep the interiors of this home clean, fresh, and welcoming for every guest. To preserve that for you and for everyone who stays after you, the <strong>entire property — indoors and outdoors — is strictly non-smoking</strong>. We appreciate your cooperation with this, and if you do need a smoke, we kindly ask that you step outside the property gates. Thank you so much for your understanding!</div>
+    </div>
+  </div>
+
+  <div class="rule">
+    <span class="rule-icon">💡</span>
+    <div class="rule-body">
+      <div class="rule-title">Little Steps, Big Difference — Save Energy When You Step Out</div>
+      <div class="rule-desc">Every time you head out for an adventure, we'd be grateful if you could take a moment to switch off the <strong>lights, fans, and air conditioners</strong> before leaving. It's a small habit that makes a meaningful difference — both for the environment and for keeping things running smoothly. We truly appreciate every little act of care!</div>
+    </div>
+  </div>
+
+  <div class="rule">
+    <span class="rule-icon">🍽️</span>
+    <div class="rule-body">
+      <div class="rule-title">A Clean Kitchen is a Happy Kitchen — Wash Up After Yourself</div>
+      <div class="rule-desc">The kitchen is fully yours to use and enjoy! We just kindly ask that any <strong>utensils, pots, pans, or dishes used are washed and put back</strong> after each use. This keeps the space neat and ready for your next culinary adventure — or for your fellow travellers who may want to use it too. A tidy kitchen makes everyone's stay that much more pleasant!</div>
+    </div>
+  </div>
+
+  <div class="rule">
+    <span class="rule-icon">👟</span>
+    <div class="rule-body">
+      <div class="rule-title">Shoes Off at the Door — Step In and Feel at Home</div>
+      <div class="rule-desc">We follow the lovely tradition of <strong>leaving footwear outside the entrance</strong>. It keeps our floors clean, reduces dust indoors, and — honestly — there's something wonderfully grounding about walking barefoot in a comfortable home! There's a dedicated spot for your shoes right at the entrance, so you can step in and immediately feel at ease.</div>
+    </div>
+  </div>
+</div>
+
+<div class="footer">
+  <p style="font-size:15px;color:#1a1a1a;font-weight:500">We hope your stay at <strong style="color:#2d6a4f">${prop?.name||'our home'}</strong> is everything you've been looking forward to. 🌸</p>
+  <p style="margin-top:8px">Wishing you a wonderful, restful, and joy-filled stay.</p>
+  <p style="margin-top:4px">With warm regards &amp; a big welcome hug — <strong style="color:#2d6a4f">Your Hosts</strong></p>
+  <p style="margin-top:16px;font-size:12px;color:#afa99e">Generated by StayLog · ${new Date().toLocaleDateString('en-IN',{day:'numeric',month:'long',year:'numeric'})}</p>
+</div>
+
 </body></html>`;
   const blob=new Blob([html],{type:'text/html;charset=utf-8'});
   const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=`StayLog-Confirmation-${b.guestName.replace(/\s+/g,'-')}-${b.checkIn}.html`;a.click();
@@ -823,7 +930,7 @@ function renderPropertyModal(){
 function renderBookingModal(){
   const{data,editItem}=state;
   const isEdit=!!editItem;
-  const f=isEdit?{...editItem}:{propertyId:data.properties[0]?.id||'',guestName:'',phone:'',checkIn:'',checkOut:'',guests:1,totalAmount:'',paid:'',source:'Direct',status:'confirmed',notes:''};
+  const f=isEdit?{...editItem}:{propertyId:data.properties[0]?.id||'',guestName:'',phone:'',checkIn:'',checkOut:'',guests:1,totalAmount:'',paid:'',source:'Direct',status:'confirmed',notes:'',idProofType:'',idProofNumber:'',idProofImage:''};
   const content=()=>{
     const wrap=div({style:{display:'flex',flexDirection:'column',gap:11}});
     const propSel=h('select');
@@ -867,7 +974,48 @@ function renderBookingModal(){
     [['confirmed','Confirmed'],['checkedin','Checked In'],['checkedout','Checked Out'],['cancelled','Cancelled']].forEach(([v,l])=>stSel.appendChild(h('option',{value:v,selected:f.status===v},l)));
     stSel.addEventListener('change',e=>f.status=e.target.value);wrap.appendChild(stSel);
     const notesTA=h('textarea',{placeholder:'Notes (optional)',rows:2,style:{resize:'none'}});notesTA.textContent=f.notes||'';notesTA.addEventListener('input',e=>f.notes=e.target.value);wrap.appendChild(notesTA);
-    wrap.appendChild(btn({className:'btn-primary',style:{marginTop:4,width:'100%'},onClick:()=>{
+
+    // ── Identity Proof Section ────────────────────────────────────────────────
+    wrap.appendChild(div({style:{fontSize:12,fontWeight:600,color:'var(--muted)',textTransform:'uppercase',letterSpacing:'0.06em',marginTop:6}},'Identity Proof'));
+    const idRow=div({style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}});
+    const idTypeSel=h('select');
+    [['','Select ID type'],['Aadhaar','Aadhaar Card'],['Passport','Passport'],['DrivingLicense','Driving Licence'],['VoterID','Voter ID'],['PAN','PAN Card'],['Other','Other']].forEach(([v,l])=>idTypeSel.appendChild(h('option',{value:v,selected:(f.idProofType||'')===v},l)));
+    idTypeSel.addEventListener('change',e=>f.idProofType=e.target.value);
+    const idNumInp=h('input',{type:'text',placeholder:'ID number',value:f.idProofNumber||''});idNumInp.addEventListener('input',e=>f.idProofNumber=e.target.value);
+    idRow.appendChild(idTypeSel);idRow.appendChild(idNumInp);wrap.appendChild(idRow);
+
+    // Image upload + preview
+    const imgPreviewWrap=div({style:{display:'flex',flexDirection:'column',gap:8}});
+    const imgPreview=div({style:{display:f.idProofImage?'block':'none'}});
+    if(f.idProofImage){
+      const imgEl=h('img',{src:f.idProofImage,style:{width:'100%',maxHeight:'180px',objectFit:'contain',borderRadius:8,border:'1px solid var(--border)'}});
+      imgPreview.appendChild(imgEl);
+      imgPreview.appendChild(btn({style:{marginTop:6,background:'var(--danger-light)',color:'var(--danger)',border:'1.5px solid #f5c6c6',borderRadius:'var(--radius-sm)',padding:'5px 12px',fontSize:12,fontWeight:600,cursor:'pointer',width:'100%'},onClick:()=>{f.idProofImage='';imgPreview.style.display='none';uploadBtn.style.display='flex';}},'Remove photo'));
+    }
+    const uploadBtn=div({style:{display:f.idProofImage?'none':'flex',alignItems:'center',justifyContent:'center',gap:8,background:'var(--cream)',border:'2px dashed var(--border)',borderRadius:'var(--radius-sm)',padding:'14px',cursor:'pointer',color:'var(--muted)',fontSize:13,fontWeight:500}});
+    uploadBtn.appendChild(ico('camera',{style:{fontSize:18}}));
+    uploadBtn.appendChild(document.createTextNode('Attach ID photo'));
+    const fileInp=h('input',{type:'file',accept:'image/*',style:{display:'none'}});
+    fileInp.addEventListener('change',e=>{
+      const file=e.target.files[0];if(!file)return;
+      if(file.size>5*1024*1024){alert('Image too large. Please use an image under 5 MB.');return;}
+      const reader=new FileReader();
+      reader.onload=ev=>{
+        f.idProofImage=ev.target.result;
+        imgPreview.innerHTML='';
+        const imgEl=h('img',{src:f.idProofImage,style:{width:'100%',maxHeight:'180px',objectFit:'contain',borderRadius:8,border:'1px solid var(--border)'}});
+        imgPreview.appendChild(imgEl);
+        imgPreview.appendChild(btn({style:{marginTop:6,background:'var(--danger-light)',color:'var(--danger)',border:'1.5px solid #f5c6c6',borderRadius:'var(--radius-sm)',padding:'5px 12px',fontSize:12,fontWeight:600,cursor:'pointer',width:'100%'},onClick:()=>{f.idProofImage='';imgPreview.style.display='none';uploadBtn.style.display='flex';}},'Remove photo'));
+        imgPreview.style.display='block';
+        uploadBtn.style.display='none';
+      };
+      reader.readAsDataURL(file);
+    });
+    uploadBtn.addEventListener('click',()=>fileInp.click());
+    imgPreviewWrap.appendChild(uploadBtn);imgPreviewWrap.appendChild(imgPreview);imgPreviewWrap.appendChild(fileInp);
+    wrap.appendChild(imgPreviewWrap);
+
+    wrap.appendChild(btn({className:'btn-primary',style:{marginTop:8,width:'100%'},onClick:()=>{
       if(!f.guestName||!f.checkIn||!f.checkOut||!f.propertyId)return;
       if(hasConflict(f.propertyId,f.checkIn,f.checkOut,isEdit?f.id:null)){alert('These dates overlap with an existing booking. Please choose different dates.');return;}
       mutateData(d=>{if(isEdit)d.bookings=d.bookings.map(b=>b.id===f.id?f:b);else d.bookings.push({...f,id:uid()});});
