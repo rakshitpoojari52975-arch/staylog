@@ -553,6 +553,17 @@ function bookingCard(b){   // dense row; expands into the full detail
     div({style:{fontSize:10,color:due>0?'var(--warn)':'var(--muted)',fontWeight:600,marginTop:1}},
       b.status==='cancelled'?'cancelled':due>0?fmtCur(due)+' due':'paid')
   ));
+  if(waNumber(b.phone)&&b.status!=='cancelled'){
+    const sent=!!b.confirmSentOn;
+    row.appendChild(btn({
+      'aria-label':sent?`Resend confirmation to ${b.guestName}`:`Send confirmation to ${b.guestName}`,
+      title:sent?`Confirmation sent ${fmtDate(b.confirmSentOn)}`:'Confirmation not sent yet',
+      style:{flexShrink:0,minWidth:38,minHeight:38,borderRadius:'50%',display:'flex',alignItems:'center',
+        justifyContent:'center',border:`1.5px solid ${sent?'var(--border)':'var(--accent)'}`,
+        background:sent?'transparent':'var(--accent-light)',color:sent?'var(--light)':'var(--accent)'},
+      onClick:e=>{e.stopPropagation();setState({modal:'sendConfirm',editItem:b});}},
+      ico('brand-whatsapp',{style:{fontSize:17}})));
+  }
   card.appendChild(row);
 
   if(isExpanded){
@@ -564,6 +575,12 @@ function bookingCard(b){   // dense row; expands into the full detail
     const infoRow=(icon,text)=>text?div({style:{fontSize:12.5,color:'var(--text-mid)',marginBottom:6,display:'flex',alignItems:'center',gap:8}},ico(icon,{style:{fontSize:15,color:'var(--light)'}}),text):null;
     [infoRow('home',prop?.name),
      infoRow('phone',b.phone),
+     waNumber(b.phone)&&b.status!=='cancelled'
+       ? div({style:{fontSize:12.5,marginBottom:6,display:'flex',alignItems:'center',gap:8,
+           color:b.confirmSentOn?'var(--accent)':'var(--warn)',fontWeight:600}},
+           ico(b.confirmSentOn?'circle-check':'alert-circle',{style:{fontSize:15}}),
+           b.confirmSentOn?`Confirmation opened ${fmtDate(b.confirmSentOn)}`:'Confirmation not sent yet')
+       : null,
      infoRow('users',b.guests?`${b.guests} guest${b.guests>1?'s':''}`:''),
      infoRow('currency-rupee',paid>0?`Paid ${fmtCur(paid)} · ${due>0?'Due '+fmtCur(due):'fully paid'}`:null)
     ].forEach(r=>r&&detail.appendChild(r));
@@ -783,17 +800,23 @@ function whatsappText(b){
   L.push('','The full confirmation is attached. Do reach out any time before your arrival.');
   return L.join('\n');
 }
+// Best effort: we know the message was opened with the guest's chat, not that it was sent
+function markConfirmationSent(id){
+  mutateData(d=>d.bookings=d.bookings.map(x=>x.id===id?{...x,confirmSentOn:today()}:x));
+  if(state.editItem&&state.editItem.id===id)state.editItem={...state.editItem,confirmSentOn:today()};
+}
 function openWhatsApp(b){
   const num=waNumber(b.phone);
   if(!num){alert('This booking has no usable phone number. Add one with the country code and try again.');return;}
   window.open(`https://wa.me/${num}?text=${encodeURIComponent(whatsappText(b))}`,'_blank');
+  markConfirmationSent(b.id);
 }
 async function shareConfirmation(b){
   let blob;
   try{ blob=await confirmationBlob(b); }catch(err){ pdfError(err); return; }
   const file=new File([blob],confirmationFileName(b),{type:'application/pdf'});
   if(navigator.canShare&&navigator.canShare({files:[file]})){
-    try{ await navigator.share({files:[file],title:`Booking confirmation — ${b.guestName}`}); }
+    try{ await navigator.share({files:[file],title:`Booking confirmation — ${b.guestName}`}); markConfirmationSent(b.id); }
     catch(err){ if(err&&err.name!=='AbortError')pdfError(err); }
   } else {
     const a=document.createElement('a');
@@ -817,10 +840,13 @@ function renderSendModal(){
       div({style:{fontSize:12.5,color:'var(--muted)',marginTop:2}},
         `${fmtDate(b.checkIn)} → ${fmtDate(b.checkOut)} · ${prop?.name||''}`),
       div({style:{fontSize:12.5,color:num?'var(--accent)':'var(--danger)',fontWeight:600,marginTop:4}},
-        num?`+${num}`:'No usable phone number on this booking')
+        num?`+${num}`:'No usable phone number on this booking'),
+      b.confirmSentOn?div({style:{fontSize:11.5,color:'var(--muted)',marginTop:3}},
+        `You last opened this confirmation on ${fmtDate(b.confirmSentOn)}`):null
     ));
     wrap.appendChild(btn({className:'btn-primary',style:{width:'100%'},disabled:!num,
-      onClick:()=>openWhatsApp(b)},ico('brand-whatsapp',{style:{marginRight:8,fontSize:17}}),'Open WhatsApp with message'));
+      onClick:()=>openWhatsApp(b)},ico('brand-whatsapp',{style:{marginRight:8,fontSize:17}}),
+      b.confirmSentOn?'Open WhatsApp again':'Open WhatsApp with message'));
     wrap.appendChild(btn({className:'btn-gold',style:{width:'100%',justifyContent:'center',display:'flex',
       alignItems:'center',gap:7,minHeight:46},onClick:()=>shareConfirmation(b)},
       ico('file-text',{style:{fontSize:16}}),'Attach confirmation PDF'));
