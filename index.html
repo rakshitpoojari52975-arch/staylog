@@ -236,8 +236,19 @@
   <script src="app.js"></script>
   <script>
     if ('serviceWorker' in navigator) {
+      // Reload once when a NEW build takes over. On a first-ever visit there is
+      // no controller yet, and reloading then would just cost a round trip.
+      const hadController = !!navigator.serviceWorker.controller;
+      let refreshing = false;
+      navigator.serviceWorker.addEventListener('controllerchange', () => {
+        if (!hadController || refreshing) return;
+        refreshing = true;
+        location.reload();
+      });
       window.addEventListener('load', () => {
-        navigator.serviceWorker.register('sw.js').catch(() => {});
+        navigator.serviceWorker.register('sw.js')
+          .then(reg => { reg.update(); setInterval(() => reg.update(), 60 * 60 * 1000); })
+          .catch(() => {});
       });
     }
   </script>

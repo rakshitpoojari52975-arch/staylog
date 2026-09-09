@@ -3,6 +3,9 @@
    v8: Staff registry + staff loan module — repayment schedule, payout deduction, loan analysis */
 'use strict';
 
+// ─── Build ────────────────────────────────────────────────────────────────────
+const APP_VERSION='v10', APP_BUILT='9 Sept 2026';
+
 // ─── Auth ─────────────────────────────────────────────────────────────────────
 const AUTH_KEY   = 'staylog_auth';
 const PIN_LENGTH = 4;
@@ -375,7 +378,10 @@ function renderMenuModal(){
     menuRow('plus','Add property','Rooms, base tariff and location',()=>setState({modal:'addProp',editItem:null})),
     menuRow('download','Back up data',`${data.bookings.length} bookings · ${data.expenses.length} expenses · ${data.loans.length} loans`,()=>{downloadBackup();closeModal();}),
     menuRow('upload','Restore from backup','Replaces everything on this device',()=>{closeModal();restoreBackup();}),
-    menuRow('lock','Lock app','Ask for the PIN again',()=>{state.modal=null;state.loggedIn=false;render();},true)
+    menuRow('lock','Lock app','Ask for the PIN again',()=>{state.modal=null;state.loggedIn=false;render();},true),
+    div({style:{textAlign:'center',fontSize:11.5,color:'var(--muted)',padding:'14px 0 2px',
+      borderTop:'1px solid var(--border-soft)',marginTop:6}},
+      `StayLog ${APP_VERSION} · built ${APP_BUILT}`)
   );
   return modal('StayLog',content);
 }
