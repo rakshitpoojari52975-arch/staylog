@@ -1,11 +1,11 @@
 /* StayLog Service Worker — Offline support */
-const CACHE_NAME = 'staylog-v3';
+const CACHE_NAME = 'staylog-v4';
 const ASSETS = [
   './',
   './index.html',
   './app.js',
   './manifest.json',
-  'https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;1,9..40,300&family=Playfair+Display:wght@500;600&display=swap',
+  'https://fonts.googleapis.com/css2?family=Prata&family=Manrope:wght@400;500;600;700&display=swap',
   'https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.19.0/dist/tabler-icons.min.css',
 ];
 
