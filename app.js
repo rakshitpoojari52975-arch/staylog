@@ -786,18 +786,20 @@ function waNumber(phone){
 function whatsappText(b){
   const prop=state.data.properties.find(p=>p.id===b.propertyId);
   const nights=diffDays(b.checkIn,b.checkOut);
-  const total=Number(b.totalAmount||0), paid=Number(b.paid||0), due=total-paid;
+  const firstName=String(b.guestName||'').trim().split(/\s+/)[0]||'there';
+  // OTA guests pay the platform, so quoting a balance would be wrong at the door
+  const isDirect=(b.source||'Direct')==='Direct';
+  const total=Number(b.totalAmount||0), due=total-Number(b.paid||0);
   const L=[];
   L.push(`*Booking confirmed — ${prop?.name||'our homestay'}*`,'');
-  L.push(`Namaste ${b.guestName}, your stay is confirmed. We're looking forward to hosting you.`,'');
+  L.push(`Namaste ${firstName}, your stay is confirmed. We're looking forward to hosting you.`,'');
   L.push(`*Reference:* SL-${b.id.slice(-6).toUpperCase()}`);
   L.push(`*Check-in:* ${fmtDate(b.checkIn)} from ${CHECKIN_TIME}`);
   L.push(`*Check-out:* ${fmtDate(b.checkOut)} by ${CHECKOUT_TIME}`);
   L.push(`*Stay:* ${nights} night${nights===1?'':'s'} · ${b.guests||1} guest${(b.guests||1)>1?'s':''}`);
   if(prop?.location)L.push(`*Address:* ${prop.location}`);
-  if(total>0)L.push(`*Total:* ${fmtCur(total)}${due>0?` · *Balance due:* ${fmtCur(due)} (payable at check-in)`:' · fully paid'}`);
-  L.push('','A few house notes: back home by 10 PM, the property is entirely non-smoking, footwear off at the door, and please switch off lights, fans and AC when you step out.');
-  L.push('','The full confirmation is attached. Do reach out any time before your arrival.');
+  if(isDirect&&total>0)L.push(`*Total:* ${fmtCur(total)}${due>0?` · *Balance due:* ${fmtCur(due)} (payable at check-in)`:' · fully paid'}`);
+  L.push('',"I'll send the detailed confirmation right after this. Do reach out any time before your arrival.");
   return L.join('\n');
 }
 // Best effort: we know the message was opened with the guest's chat, not that it was sent
