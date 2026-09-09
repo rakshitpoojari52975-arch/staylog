@@ -3,15 +3,15 @@
    App shell (index.html, app.js, manifest) is network-first: a deploy shows up
    on the next launch that has a connection, and falls back to cache offline.
    Fonts and libraries are cache-first — they never change under a fixed URL. */
-const CACHE_NAME = 'staylog-v6';
+const CACHE_NAME = 'staylog-v7';
 const ASSETS = [
   './',
   './index.html',
   './app.js',
   './manifest.json',
+  './vendor/jspdf.umd.min.js',
   'https://fonts.googleapis.com/css2?family=Prata&family=Manrope:wght@400;500;600;700&display=swap',
   'https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.19.0/dist/tabler-icons.min.css',
-  'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.2/jspdf.umd.min.js',
 ];
 
 self.addEventListener('install', e => {
@@ -33,6 +33,8 @@ self.addEventListener('activate', e => {
 const isAppShell = req => {
   const url = new URL(req.url);
   if (url.origin !== self.location.origin) return false;
+  // vendored libraries are pinned by version and never change — cache them
+  if (url.pathname.includes('/vendor/')) return false;
   return req.mode === 'navigate' || /\.(html|js|json)$/.test(url.pathname) || url.pathname.endsWith('/');
 };
 
@@ -44,11 +46,14 @@ self.addEventListener('fetch', e => {
     e.respondWith(
       fetch(e.request)
         .then(res => {
-          if (res && res.status === 200) {
+          if (res && res.ok) {
             const copy = res.clone();
             caches.open(CACHE_NAME).then(c => c.put(e.request, copy));
+            return res;
           }
-          return res;
+          // A 5xx, a 404 or a captive-portal page is not a new deploy —
+          // keep serving what we already have rather than breaking the app.
+          return caches.match(e.request).then(hit => hit || res);
         })
         // Offline: serve the cached copy. index.html is a fallback for page
         // loads only — handing it to a script request would execute HTML as JS.
@@ -58,7 +63,7 @@ self.addEventListener('fetch', e => {
     return;
   }
 
-  // Versioned third-party assets: cache first, they never change
+  // Vendored and third-party assets: cache first, they never change
   e.respondWith(
     caches.match(e.request).then(hit => hit || fetch(e.request).then(res => {
       if (res && res.status === 200 && res.type !== 'opaque') {

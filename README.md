@@ -11,7 +11,7 @@ A lightweight, offline-first Progressive Web App (PWA) for managing your homesta
 - **Staff & Loans** — staff registry, interest-free loans with a monthly repayment schedule, instalments deducted straight from the staff payout, and recovery analysis
 - **Dashboard** — today's activity alerts, revenue at a glance
 - **Reports** — monthly revenue vs expenses chart, property performance, booking sources
-- **Offline Support** — works without internet once loaded (open it online once so the PDF builder is cached)
+- **Offline Support** — fully offline after the first load; nothing is fetched from a CDN at runtime
 - **Light & dark** — follows your phone's appearance setting
 - **Local Storage** — all data stays on your device, private and secure
 
@@ -37,6 +37,7 @@ Go to [github.com](https://github.com) and sign up for a free account if you don
    - `sw.js`
    - `manifest.json`
    - `icons/` folder (both icon files)
+   - `vendor/` folder (the PDF builder)
    - `.github/` folder (with the `workflows/deploy.yml` file)
 3. Click **Commit changes**
 

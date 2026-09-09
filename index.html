@@ -247,7 +247,12 @@
       });
       window.addEventListener('load', () => {
         navigator.serviceWorker.register('sw.js')
-          .then(reg => { reg.update(); setInterval(() => reg.update(), 60 * 60 * 1000); })
+          .then(reg => {
+            // update() rejects when offline — that is expected, not an error
+            const check = () => reg.update().catch(() => {});
+            check();
+            setInterval(check, 60 * 60 * 1000);
+          })
           .catch(() => {});
       });
     }

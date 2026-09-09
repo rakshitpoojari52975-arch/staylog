@@ -632,8 +632,8 @@ const HOUSE_RULES=[
   ['Shoes off at the door','We follow the lovely tradition of leaving footwear outside the entrance. There is a dedicated spot for shoes right at the door — step in and feel at home.'],
 ];
 
-// ─── jsPDF, loaded on first use and precached by the service worker ───────────
-const JSPDF_SRC='https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.2/jspdf.umd.min.js';
+// ─── jsPDF, shipped with the app so no CDN is involved ────────────────────────
+const JSPDF_SRC='./vendor/jspdf.umd.min.js';
 let _jspdfPromise=null;
 function loadJsPDF(){
   if(window.jspdf?.jsPDF)return Promise.resolve(window.jspdf.jsPDF);
@@ -642,7 +642,7 @@ function loadJsPDF(){
     const s=document.createElement('script');
     s.src=JSPDF_SRC;
     s.onload=()=>window.jspdf?.jsPDF?res(window.jspdf.jsPDF):rej(new Error('jsPDF failed to initialise'));
-    s.onerror=()=>{_jspdfPromise=null;rej(new Error('offline'));};
+    s.onerror=()=>{_jspdfPromise=null;rej(new Error('missing'));};
     document.head.appendChild(s);
   });
   return _jspdfPromise;
@@ -770,8 +770,8 @@ async function confirmationBlob(b){
 }
 
 function pdfError(err){
-  alert(err&&err.message==='offline'
-    ? 'The PDF builder could not be downloaded. Open StayLog once with an internet connection and it will work offline after that.'
+  alert(err&&err.message==='missing'
+    ? 'The PDF builder (vendor/jspdf.umd.min.js) did not load. Make sure the vendor folder was uploaded with the app, then reopen StayLog.'
     : 'Could not build the PDF: '+(err?.message||err));
 }
 
