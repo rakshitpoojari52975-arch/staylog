@@ -4,7 +4,7 @@
 'use strict';
 
 // ─── Build ────────────────────────────────────────────────────────────────────
-const APP_VERSION='v10', APP_BUILT='9 Sept 2026';
+const APP_VERSION='v11', APP_BUILT='9 Sept 2026';
 
 // ─── Auth ─────────────────────────────────────────────────────────────────────
 const AUTH_KEY   = 'staylog_auth';
@@ -64,7 +64,9 @@ const fmtDate    =s=>s?new Date(s+'T00:00:00').toLocaleDateString('en-IN',{day:'
 const fmtDateLong=s=>s?new Date(s+'T00:00:00').toLocaleDateString('en-IN',{weekday:'long',day:'numeric',month:'long',year:'numeric'}):'—';
 const fmtCur     =n=>'₹'+Number(n||0).toLocaleString('en-IN');
 const diffDays   =(a,b)=>Math.max(0,Math.ceil((new Date(b)-new Date(a))/86400000));
-const today      =()=>new Date().toISOString().split('T')[0];
+const isoOf      =d=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+const today      =()=>isoOf(new Date());          // local, not UTC
+const addDaysISO =(iso,n)=>{const d=new Date(iso+'T00:00:00');d.setDate(d.getDate()+n);return isoOf(d);};
 
 // ─── State ────────────────────────────────────────────────────────────────────
 let state={
@@ -402,7 +404,13 @@ function renderPropPickerModal(){
     wrap.appendChild(row('all','All properties',`${data.properties.length} in total`));
     data.properties.forEach(p=>{
       const n=data.bookings.filter(b=>b.propertyId===p.id&&b.status!=='cancelled').length;
-      wrap.appendChild(row(p.id,p.name,`${p.location||'No location'} · ${n} booking${n===1?'':'s'}`));
+      const line=div({style:{display:'flex',alignItems:'center',gap:4}});
+      const r=row(p.id,p.name,`${p.location||'No location'} · ${n} booking${n===1?'':'s'}`);
+      r.style.flex='1';
+      line.appendChild(r);
+      line.appendChild(btn({className:'btn-icon','aria-label':`Edit ${p.name}`,
+        onClick:()=>setState({modal:'addProp',editItem:p})},ico('edit',{style:{fontSize:16}})));
+      wrap.appendChild(line);
     });
     wrap.appendChild(div({style:{height:1,background:'var(--border-soft)',margin:'6px 0'}}));
     wrap.appendChild(menuRow('plus','Add property','',()=>setState({modal:'addProp',editItem:null})));
@@ -560,10 +568,12 @@ function bookingCard(b){   // dense row; expands into the full detail
       b.status==='cancelled'?'cancelled':due>0?fmtCur(due)+' due':'paid')
   ));
   if(waNumber(b.phone)&&b.status!=='cancelled'){
-    const sent=!!b.confirmSentOn;
+    const pending=dueMessages([b]).length;
+    const sent=pending===0;
     row.appendChild(btn({
-      'aria-label':sent?`Resend confirmation to ${b.guestName}`:`Send confirmation to ${b.guestName}`,
-      title:sent?`Confirmation sent ${fmtDate(b.confirmSentOn)}`:'Confirmation not sent yet',
+      'data-msgbtn':String(pending),
+      'aria-label':sent?`Message ${b.guestName}`:`${pending} message${pending>1?'s':''} to send to ${b.guestName}`,
+      title:sent?'Nothing outstanding':`${pending} message${pending>1?'s':''} due`,
       style:{flexShrink:0,minWidth:38,minHeight:38,borderRadius:'50%',display:'flex',alignItems:'center',
         justifyContent:'center',border:`1.5px solid ${sent?'var(--border)':'var(--accent)'}`,
         background:sent?'transparent':'var(--accent-light)',color:sent?'var(--light)':'var(--accent)'},
@@ -582,10 +592,12 @@ function bookingCard(b){   // dense row; expands into the full detail
     [infoRow('home',prop?.name),
      infoRow('phone',b.phone),
      waNumber(b.phone)&&b.status!=='cancelled'
-       ? div({style:{fontSize:12.5,marginBottom:6,display:'flex',alignItems:'center',gap:8,
-           color:b.confirmSentOn?'var(--accent)':'var(--warn)',fontWeight:600}},
-           ico(b.confirmSentOn?'circle-check':'alert-circle',{style:{fontSize:15}}),
-           b.confirmSentOn?`Confirmation opened ${fmtDate(b.confirmSentOn)}`:'Confirmation not sent yet')
+       ? (()=>{const pend=dueMessages([b]);
+           return div({style:{fontSize:12.5,marginBottom:6,display:'flex',alignItems:'center',gap:8,
+             color:pend.length?'var(--warn)':'var(--accent)',fontWeight:600}},
+             ico(pend.length?'alert-circle':'circle-check',{style:{fontSize:15}}),
+             pend.length?`To send: ${pend.map(x=>MSG_META[x.kind].label.toLowerCase()).join(', ')}`
+                        :'All messages sent');})()
        : null,
      infoRow('users',b.guests?`${b.guests} guest${b.guests>1?'s':''}`:''),
      infoRow('currency-rupee',paid>0?`Paid ${fmtCur(paid)} · ${due>0?'Due '+fmtCur(due):'fully paid'}`:null)
@@ -808,23 +820,116 @@ function whatsappText(b){
   L.push('',"I'll send the detailed confirmation right after this. Do reach out any time before your arrival.");
   return L.join('\n');
 }
-// Best effort: we know the message was opened with the guest's chat, not that it was sent
-function markConfirmationSent(id){
-  mutateData(d=>d.bookings=d.bookings.map(x=>x.id===id?{...x,confirmSentOn:today()}:x));
-  if(state.editItem&&state.editItem.id===id)state.editItem={...state.editItem,confirmSentOn:today()};
+// ─── Guest messages through the stay ──────────────────────────────────────────
+const MSG_KINDS=[
+  ['confirm',  'Booking confirmation','file-check',  'When the booking is made'],
+  ['arrival',  'Directions & arrival', 'map-pin',    'The day before check-in'],
+  ['stay',     'Welcome & house info', 'home',       'Once they have checked in'],
+  ['departure','Check-out reminder',   'door-exit',  'The day before check-out'],
+];
+const MSG_META=Object.fromEntries(MSG_KINDS.map(([k,label,icon,when])=>[k,{label,icon,when}]));
+
+function msgSentOn(b,kind){
+  if(kind==='confirm')return (b.msgSent&&b.msgSent.confirm)||b.confirmSentOn||'';
+  return (b.msgSent&&b.msgSent[kind])||'';
 }
+function markMsgSent(id,kind){
+  const stamp=today();
+  mutateData(d=>d.bookings=d.bookings.map(x=>x.id===id
+    ?{...x,msgSent:{...(x.msgSent||{}),[kind]:stamp},...(kind==='confirm'?{confirmSentOn:stamp}:{})}:x));
+  if(state.editItem&&state.editItem.id===id)
+    state.editItem={...state.editItem,msgSent:{...(state.editItem.msgSent||{}),[kind]:stamp}};
+}
+
+// What needs sending today, in the order it becomes urgent
+function dueMessages(bookings){
+  const t=today(), soon=addDaysISO(t,1), out=[];
+  bookings.forEach(b=>{
+    if(b.status==='cancelled'||!waNumber(b.phone))return;
+    const sent=k=>!!msgSentOn(b,k);
+    if((b.status==='confirmed'||b.status==='checkedin')&&b.checkOut>=t&&!sent('confirm'))
+      out.push({b,kind:'confirm',on:b.checkIn});
+    if(b.status==='confirmed'&&b.checkIn<=soon&&b.checkIn>=t&&!sent('arrival'))
+      out.push({b,kind:'arrival',on:b.checkIn});
+    if(b.status==='checkedin'&&!sent('stay'))
+      out.push({b,kind:'stay',on:b.checkIn});
+    if(b.status==='checkedin'&&b.checkOut<=soon&&!sent('departure'))
+      out.push({b,kind:'departure',on:b.checkOut});
+  });
+  const rank={departure:0,stay:1,arrival:2,confirm:3};
+  return out.sort((x,y)=>String(x.on).localeCompare(String(y.on))||rank[x.kind]-rank[y.kind]);
+}
+
+const firstNameOf=b=>String(b.guestName||'').trim().split(/\s+/)[0]||'there';
+
+function arrivalText(b){
+  const prop=state.data.properties.find(p=>p.id===b.propertyId);
+  const when=b.checkIn===today()?'today':b.checkIn===addDaysISO(today(),1)?'tomorrow':`on ${fmtDate(b.checkIn)}`;
+  const L=[];
+  L.push(`*Seeing you ${when} — ${prop?.name||'our homestay'}*`,'');
+  L.push(`Namaste ${firstNameOf(b)}, everything is ready for your arrival ${when}, any time after ${CHECKIN_TIME}.`,'');
+  if(prop?.mapsLink)L.push(`*Getting here:* ${prop.mapsLink}`);
+  else if(prop?.location)L.push(`*Address:* ${prop.location}`);
+  if(prop?.arrivalNotes)L.push('',prop.arrivalNotes);
+  L.push('','Do message us when you set off, and again if you are running late, so someone is here to meet you.');
+  L.push('','Safe travels.');
+  return L.join('\n');
+}
+
+function stayText(b){
+  const prop=state.data.properties.find(p=>p.id===b.propertyId);
+  const L=[];
+  L.push(`*Welcome in, ${firstNameOf(b)}*`,'');
+  L.push('A few things to make the stay easy:','');
+  if(prop?.wifiName)L.push(`*Wi-Fi:* ${prop.wifiName}${prop.wifiPassword?` · password *${prop.wifiPassword}*`:''}`);
+  L.push('*Kitchen:* yours to use — we only ask that everything is washed and put back after each use.');
+  L.push('*Stepping out:* please switch off the lights, fans and AC, and pull the door shut behind you.');
+  L.push('*Evenings:* the neighbourhood turns in early, so do keep things quiet and plan to be back by 10 PM.');
+  L.push('*Footwear:* there is a spot at the entrance — shoes stay outside.');
+  L.push('','The house is entirely non-smoking, indoors and out.');
+  L.push('','Anything you cannot find, just message here. Enjoy Udupi.');
+  return L.join('\n');
+}
+
+function departureText(b){
+  const prop=state.data.properties.find(p=>p.id===b.propertyId);
+  const when=b.checkOut===today()?'today':b.checkOut===addDaysISO(today(),1)?'tomorrow':`on ${fmtDate(b.checkOut)}`;
+  const isDirect=(b.source||'Direct')==='Direct';
+  const due=Number(b.totalAmount||0)-Number(b.paid||0);
+  const L=[];
+  L.push(`*Checking out ${when}*`,'');
+  L.push(`${firstNameOf(b)}, a small reminder that check-out is by ${CHECKOUT_TIME} ${when}.`,'');
+  L.push('On your way out, it would help us a lot if you could:');
+  L.push('• Switch off the lights, fans, AC and geyser');
+  L.push('• Wash up anything used in the kitchen');
+  L.push('• Pull the main door shut behind you');
+  if(prop?.departureNotes)L.push('',prop.departureNotes);
+  if(isDirect&&due>0)L.push('',`A balance of ${fmtCur(due)} is pending — you can settle it before you leave.`);
+  L.push('','It has been lovely having you. If the stay was good to you, a review would mean a great deal — and do come back.');
+  return L.join('\n');
+}
+
+const MSG_BUILDERS={confirm:whatsappText,arrival:arrivalText,stay:stayText,departure:departureText};
+
+function sendMessage(b,kind){
+  const num=waNumber(b.phone);
+  if(!num){alert('This booking has no usable phone number. Add one and try again.');return;}
+  window.open(`https://wa.me/${num}?text=${encodeURIComponent(MSG_BUILDERS[kind](b))}`,'_blank');
+  markMsgSent(b.id,kind);
+}
+
 function openWhatsApp(b){
   const num=waNumber(b.phone);
   if(!num){alert('This booking has no usable phone number. Add one with the country code and try again.');return;}
   window.open(`https://wa.me/${num}?text=${encodeURIComponent(whatsappText(b))}`,'_blank');
-  markConfirmationSent(b.id);
+  markMsgSent(b.id,'confirm');
 }
 async function shareConfirmation(b){
   let blob;
   try{ blob=await confirmationBlob(b); }catch(err){ pdfError(err); return; }
   const file=new File([blob],confirmationFileName(b),{type:'application/pdf'});
   if(navigator.canShare&&navigator.canShare({files:[file]})){
-    try{ await navigator.share({files:[file],title:`Booking confirmation — ${b.guestName}`}); markConfirmationSent(b.id); }
+    try{ await navigator.share({files:[file],title:`Booking confirmation — ${b.guestName}`}); markMsgSent(b.id,'confirm'); }
     catch(err){ if(err&&err.name!=='AbortError')pdfError(err); }
   } else {
     const a=document.createElement('a');
@@ -834,39 +939,67 @@ async function shareConfirmation(b){
   }
 }
 
-// ─── Send-confirmation sheet ──────────────────────────────────────────────────
+// ─── Guest message sheet ──────────────────────────────────────────────────────
+function hintLine(t){
+  return div({style:{fontSize:11.5,color:'var(--muted)',lineHeight:1.45,padding:'0 4px',marginTop:-4}},t);
+}
 function renderSendModal(){
   const b=state.editItem;
-  if(!b)return modal('Send confirmation',()=>div({}));
+  if(!b)return modal('Send to guest',()=>div({}));
   const prop=state.data.properties.find(p=>p.id===b.propertyId);
   const num=waNumber(b.phone);
+  const due=new Set(dueMessages([b]).map(x=>x.kind));
+
   const content=()=>{
-    const wrap=div({style:{display:'flex',flexDirection:'column',gap:11}});
+    const wrap=div({style:{display:'flex',flexDirection:'column',gap:10}});
     wrap.appendChild(div({style:{background:'var(--surface-2)',border:'1px solid var(--border)',
       borderRadius:'var(--radius-sm)',padding:'12px 13px'}},
       div({style:{fontSize:14.5,fontWeight:700}},b.guestName),
       div({style:{fontSize:12.5,color:'var(--muted)',marginTop:2}},
         `${fmtDate(b.checkIn)} → ${fmtDate(b.checkOut)} · ${prop?.name||''}`),
       div({style:{fontSize:12.5,color:num?'var(--accent)':'var(--danger)',fontWeight:600,marginTop:4}},
-        num?`+${num}`:'No usable phone number on this booking'),
-      b.confirmSentOn?div({style:{fontSize:11.5,color:'var(--muted)',marginTop:3}},
-        `You last opened this confirmation on ${fmtDate(b.confirmSentOn)}`):null
+        num?`+${num}`:'No usable phone number on this booking')
     ));
-    wrap.appendChild(btn({className:'btn-primary',style:{width:'100%'},disabled:!num,
-      onClick:()=>openWhatsApp(b)},ico('brand-whatsapp',{style:{marginRight:8,fontSize:17}}),
-      b.confirmSentOn?'Open WhatsApp again':'Open WhatsApp with message'));
+
+    MSG_KINDS.forEach(([kind,label,icon,when])=>{
+      const sent=msgSentOn(b,kind);
+      const isDue=due.has(kind);
+      const row=div({style:{display:'flex',alignItems:'center',gap:11,padding:'11px 12px',
+        border:`1.5px solid ${isDue?'var(--accent)':'var(--border)'}`,borderRadius:'var(--radius-sm)',
+        background:isDue?'var(--accent-light)':'transparent'}});
+      row.appendChild(div({style:{width:34,height:34,borderRadius:9,flexShrink:0,display:'flex',
+        alignItems:'center',justifyContent:'center',background:'var(--white)',border:'1px solid var(--border)'}},
+        ico(icon,{style:{fontSize:16,color:isDue?'var(--accent)':'var(--muted)'}})));
+      row.appendChild(div({style:{flex:1,minWidth:0}},
+        div({style:{fontSize:13.5,fontWeight:700}},label),
+        div({style:{fontSize:11.5,color:'var(--muted)',marginTop:1}},
+          sent?`Opened ${fmtDate(sent)}`:isDue?'Due now':when)
+      ));
+      row.appendChild(btn({disabled:!num,style:{flexShrink:0,minHeight:36,padding:'7px 13px',fontSize:12.5,
+        fontWeight:700,borderRadius:20,border:`1.5px solid ${num?'var(--accent)':'var(--border)'}`,
+        background:isDue&&!sent?'var(--accent)':'transparent',
+        color:isDue&&!sent?'var(--on-accent)':num?'var(--accent)':'var(--light)'},
+        onClick:()=>sendMessage(b,kind)},sent?'Resend':'Send'));
+      wrap.appendChild(row);
+
+      if(kind==='arrival'&&!prop?.mapsLink)
+        wrap.appendChild(hintLine('No Google Maps link on this property — the arrival message falls back to the address. Add one from the property list.'));
+      if(kind==='stay'&&!prop?.wifiName)
+        wrap.appendChild(hintLine('No Wi-Fi details on this property — the welcome message skips that line.'));
+    });
+
     wrap.appendChild(btn({className:'btn-gold',style:{width:'100%',justifyContent:'center',display:'flex',
-      alignItems:'center',gap:7,minHeight:46},onClick:()=>shareConfirmation(b)},
+      alignItems:'center',gap:7,minHeight:46,marginTop:2},onClick:()=>shareConfirmation(b)},
       ico('file-text',{style:{fontSize:16}}),'Attach confirmation PDF'));
     wrap.appendChild(div({style:{fontSize:12,color:'var(--muted)',lineHeight:1.55,background:'var(--warn-light)',
       border:'1px solid var(--warn-line)',borderRadius:'var(--radius-sm)',padding:'10px 12px'}},
-      'WhatsApp links cannot carry a file. Send the message first, then use ',
+      'WhatsApp links cannot carry a file. Send a message first, then use ',
       span({style:{fontWeight:700}},'Attach confirmation PDF'),
       ' and pick the same chat from the share sheet.'));
-    wrap.appendChild(btn({className:'btn-ghost',style:{width:'100%'},onClick:closeModal},'Not now'));
+    wrap.appendChild(btn({className:'btn-ghost',style:{width:'100%'},onClick:closeModal},'Close'));
     return wrap;
   };
-  return modal('Send confirmation',content);
+  return modal('Send to guest',content);
 }
 
 function renderCalDayModal(){
@@ -1000,6 +1133,35 @@ function renderDashboard(){
     };
     todayOut.forEach(b=>card.appendChild(line(b,'out')));
     todayIn.forEach(b=>card.appendChild(line(b,'in')));
+    wrap.appendChild(card);
+  }
+
+  // ── Messages waiting to go out ─────────────────────────────────────────────
+  const pending=dueMessages(allB);
+  if(pending.length>0){
+    const card=div({className:'card',style:{overflow:'hidden',borderColor:'var(--accent-line)'}});
+    card.appendChild(div({style:{display:'flex',justifyContent:'space-between',alignItems:'center',
+      padding:'10px 13px 8px'}},
+      div({style:{fontSize:12.5,fontWeight:700,display:'flex',alignItems:'center',gap:7}},
+        ico('brand-whatsapp',{style:{fontSize:16,color:'var(--accent)'}}),'Messages to send'),
+      div({style:{fontSize:11,color:'var(--muted)',fontWeight:600}},String(pending.length))));
+    pending.slice(0,5).forEach(({b,kind})=>{
+      const m=MSG_META[kind];
+      card.appendChild(div({style:{display:'flex',alignItems:'center',gap:11,padding:'9px 13px',
+        borderTop:'1px solid var(--border-soft)'}},
+        div({style:{width:32,height:32,borderRadius:9,flexShrink:0,background:'var(--accent-light)',
+          display:'flex',alignItems:'center',justifyContent:'center'}},
+          ico(m.icon,{style:{fontSize:15,color:'var(--accent)'}})),
+        div({style:{flex:1,minWidth:0}},
+          div({style:{fontSize:13,fontWeight:700,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}},b.guestName),
+          div({style:{fontSize:11.5,color:'var(--muted)',marginTop:1,whiteSpace:'nowrap',overflow:'hidden',
+            textOverflow:'ellipsis'}},m.label)),
+        btn({style:{flexShrink:0,minHeight:36,padding:'7px 13px',fontSize:12,fontWeight:700,borderRadius:20,
+          border:'1.5px solid var(--accent)',background:'var(--accent)',color:'var(--on-accent)'},
+          onClick:()=>sendMessage(b,kind)},'Send')));
+    });
+    if(pending.length>5)card.appendChild(div({style:{padding:'8px 13px',fontSize:11.5,color:'var(--muted)',
+      borderTop:'1px solid var(--border-soft)'}},`+${pending.length-5} more on the bookings tab`));
     wrap.appendChild(card);
   }
 
@@ -1902,17 +2064,39 @@ function renderRepaymentModal(){
 }
 
 function renderPropertyModal(){
-  const f={name:'',location:'',rooms:'',pricePerNight:'',description:''};
+  const{editItem}=state; const isEdit=!!editItem;
+  const f=isEdit?{...editItem}:{name:'',location:'',rooms:'',pricePerNight:'',description:'',
+    mapsLink:'',wifiName:'',wifiPassword:'',arrivalNotes:'',departureNotes:''};
   const content=()=>{
     const wrap=div({style:{display:'flex',flexDirection:'column',gap:11}});
-    [['name','Property name *','text'],['location','Location / Address','text'],['rooms','Number of rooms','number'],['pricePerNight','Base price per night (₹)','number']].forEach(([k,ph,t])=>{
-      const inp=h('input',{type:t,placeholder:ph,value:f[k]||''});inp.addEventListener('input',e=>f[k]=e.target.value);wrap.appendChild(inp);
-    });
-    const ta=h('textarea',{placeholder:'Notes / description',rows:2,style:{resize:'none'}});ta.addEventListener('input',e=>f.description=e.target.value);wrap.appendChild(ta);
-    wrap.appendChild(btn({className:'btn-primary',style:{marginTop:4,width:'100%'},onClick:()=>{if(!f.name)return;mutateData(d=>d.properties.push({...f,id:uid()}));closeModal();}},'Save Property'));
+    const field=(k,ph,t)=>{const inp=h('input',{type:t||'text',placeholder:ph,value:f[k]||''});
+      inp.addEventListener('input',e=>f[k]=e.target.value);return inp;};
+    const area=(k,ph,rows)=>{const ta=h('textarea',{placeholder:ph,rows:rows||2,style:{resize:'none'}});
+      ta.textContent=f[k]||'';ta.addEventListener('input',e=>f[k]=e.target.value);return ta;};
+    const heading=t=>div({className:'kicker',style:{marginTop:6}},t);
+
+    [['name','Property name *','text'],['location','Location / Address','text'],
+     ['rooms','Number of rooms','number'],['pricePerNight','Base price per night (₹)','number']]
+      .forEach(([k,ph,t])=>wrap.appendChild(field(k,ph,t)));
+    wrap.appendChild(area('description','Notes / description'));
+
+    wrap.appendChild(heading('For guest messages'));
+    wrap.appendChild(field('mapsLink','Google Maps link','url'));
+    const wifi=div({style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}});
+    wifi.appendChild(field('wifiName','Wi-Fi name'));
+    wifi.appendChild(field('wifiPassword','Wi-Fi password'));
+    wrap.appendChild(wifi);
+    wrap.appendChild(area('arrivalNotes','Arrival notes — gate, parking, landmark…',2));
+    wrap.appendChild(area('departureNotes','Departure notes — where to leave the keys…',2));
+
+    wrap.appendChild(btn({className:'btn-primary',style:{marginTop:4,width:'100%'},onClick:()=>{
+      if(!f.name)return;
+      mutateData(d=>{if(isEdit)d.properties=d.properties.map(p=>p.id===f.id?f:p);else d.properties.push({...f,id:uid()});});
+      closeModal();
+    }},isEdit?'Update Property':'Save Property'));
     return wrap;
   };
-  return modal('Add Property',content);
+  return modal(isEdit?'Edit Property':'Add Property',content);
 }
 
 function renderBookingModal(){
@@ -2193,7 +2377,12 @@ function renderExpenseModal(){
 }
 
 // ─── Actions ──────────────────────────────────────────────────────────────────
-function updateStatus(id,status){mutateData(d=>d.bookings=d.bookings.map(b=>b.id===id?{...b,status}:b));}
+function updateStatus(id,status){
+  mutateData(d=>d.bookings=d.bookings.map(b=>b.id===id?{...b,status}:b));
+  if(status!=='checkedin')return;
+  const b=state.data.bookings.find(x=>x.id===id);
+  if(b&&waNumber(b.phone)&&!msgSentOn(b,'stay'))setState({modal:'sendConfirm',editItem:b});
+}
 
 // ─── Main Render ──────────────────────────────────────────────────────────────
 let currentModal=null;
