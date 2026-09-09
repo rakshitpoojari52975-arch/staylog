@@ -7,10 +7,12 @@ A lightweight, offline-first Progressive Web App (PWA) for managing your homesta
 - **Multiple Properties** — manage any number of homestay properties
 - **Booking Management** — track guests, check-in/out dates, status, payments
 - **Expense Logging** — log expenses by category per property
+- **Guest confirmations** — a real PDF confirmation, plus a one-tap WhatsApp message to the guest's number after a booking is saved
 - **Staff & Loans** — staff registry, interest-free loans with a monthly repayment schedule, instalments deducted straight from the staff payout, and recovery analysis
 - **Dashboard** — today's activity alerts, revenue at a glance
 - **Reports** — monthly revenue vs expenses chart, property performance, booking sources
-- **Offline Support** — works without internet once loaded
+- **Offline Support** — works without internet once loaded (open it online once so the PDF builder is cached)
+- **Light & dark** — follows your phone's appearance setting
 - **Local Storage** — all data stays on your device, private and secure
 
 ---

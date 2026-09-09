@@ -1,5 +1,5 @@
 /* StayLog Service Worker — Offline support */
-const CACHE_NAME = 'staylog-v4';
+const CACHE_NAME = 'staylog-v5';
 const ASSETS = [
   './',
   './index.html',
@@ -7,6 +7,7 @@ const ASSETS = [
   './manifest.json',
   'https://fonts.googleapis.com/css2?family=Prata&family=Manrope:wght@400;500;600;700&display=swap',
   'https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.19.0/dist/tabler-icons.min.css',
+  'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.2/jspdf.umd.min.js',
 ];
 
 self.addEventListener('install', e => {

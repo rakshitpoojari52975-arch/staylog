@@ -587,6 +587,7 @@ function bookingCard(b){   // dense row; expands into the full detail
     if(b.status==='checkedin')actions.appendChild(btn({className:'btn-primary btn-sm',onClick:()=>updateStatus(b.id,'checkedout')},ico('door-exit',{style:{marginRight:5}}),'Check Out'));
     if(b.status!=='cancelled'&&b.status!=='checkedout')actions.appendChild(btn({className:'btn-ghost btn-sm',onClick:()=>updateStatus(b.id,'cancelled')},'Cancel'));
     actions.appendChild(btn({className:'btn-ghost btn-sm',onClick:()=>setState({modal:'addBooking',editItem:b})},ico('edit',{style:{marginRight:4}}),'Edit'));
+    if(waNumber(b.phone))actions.appendChild(btn({className:'btn-ghost btn-sm',style:{color:'var(--accent)',borderColor:'var(--accent-line)'},onClick:()=>setState({modal:'sendConfirm',editItem:b})},ico('brand-whatsapp',{style:{marginRight:4,fontSize:15}}),'Send'));
     actions.appendChild(btn({className:'btn-gold btn-sm',onClick:()=>downloadConfirmation(b)},ico('file-text',{style:{marginRight:4,fontSize:14}}),'PDF'));
     actions.appendChild(btn({className:'btn-danger btn-sm',onClick:()=>{if(confirm('Delete this booking?')){mutateData(d=>d.bookings=d.bookings.filter(x=>x.id!==b.id));setState({expandedBooking:null});}}},ico('trash',{style:{marginRight:4}}),'Delete'));
     detail.appendChild(actions);card.appendChild(detail);
@@ -594,158 +595,246 @@ function bookingCard(b){   // dense row; expands into the full detail
   return card;
 }
 
-// ─── Guest Confirmation PDF ───────────────────────────────────────────────────
-function downloadConfirmation(b){
-  const prop=state.data.properties.find(p=>p.id===b.propertyId);
-  const nights=diffDays(b.checkIn,b.checkOut);
-  const bookingRef='SL-'+b.id.slice(-6).toUpperCase();
-  const idTypeLabels={Aadhaar:'Aadhaar Card',Passport:'Passport',DrivingLicense:'Driving Licence',VoterID:'Voter ID',PAN:'PAN Card',Other:'ID Proof'};
-  const html=`<!DOCTYPE html>
-<html lang="en"><head><meta charset="UTF-8"/><title>Booking Confirmation — ${b.guestName}</title>
-<style>
-@import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@500;600&family=DM+Sans:wght@300;400;500;600&display=swap');
-*{box-sizing:border-box;margin:0;padding:0}
-body{font-family:'DM Sans',sans-serif;background:#fff;color:#1a1a1a;padding:40px;max-width:700px;margin:0 auto;font-size:15px;line-height:1.65}
-.header{text-align:center;margin-bottom:36px;padding-bottom:24px;border-bottom:2px solid #e8f4ef}
-.logo{font-family:'Playfair Display',serif;font-size:34px;color:#2d6a4f;margin-bottom:4px;letter-spacing:-0.01em}
-.tagline{font-size:12px;color:#7a7570;letter-spacing:0.08em;text-transform:uppercase}
-.hero{background:linear-gradient(135deg,#e8f4ef 0%,#f7f5f0 100%);border-radius:18px;padding:30px 34px;margin-bottom:28px;border:1px solid #c8e0d0}
-.hero h1{font-family:'Playfair Display',serif;font-size:26px;color:#1a1a1a;margin-bottom:8px}
-.hero p{font-size:14.5px;color:#4a4540;line-height:1.75}
-.ref{display:inline-block;background:#2d6a4f;color:#fff;padding:5px 16px;border-radius:20px;font-size:12px;font-weight:600;letter-spacing:0.06em;margin-top:12px}
-.section-title{font-size:11px;font-weight:700;color:#2d6a4f;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:12px;padding-bottom:6px;border-bottom:1px solid #e8e3da}
-.detail-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:24px}
-.detail-item{background:#f7f5f0;border-radius:10px;padding:13px 15px}
-.detail-label{font-size:10.5px;color:#7a7570;font-weight:600;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:4px}
-.detail-value{font-size:15px;font-weight:600;color:#1a1a1a}
-.detail-value.highlight{color:#2d6a4f;font-size:16px}
-.time-banner{background:#2d6a4f;color:#fff;border-radius:12px;padding:16px 22px;margin-bottom:24px;display:flex;justify-content:space-around;align-items:center;gap:12px}
-.time-block{text-align:center}
-.time-label{font-size:10px;letter-spacing:0.1em;text-transform:uppercase;opacity:0.8;margin-bottom:4px}
-.time-value{font-size:22px;font-weight:700;letter-spacing:-0.01em}
-.time-date{font-size:12px;opacity:0.85;margin-top:2px}
-.time-sep{width:1px;background:rgba(255,255,255,0.3);height:48px}
-.warm-note{background:#e8f4ef;border-radius:12px;padding:18px 22px;margin-bottom:24px;font-size:14px;color:#2d6a4f;line-height:1.75;border-left:4px solid #2d6a4f}
-.rules-wrap{background:#fffbf0;border:1px solid #edd890;border-radius:16px;padding:26px 28px;margin-bottom:24px}
-.rules-intro{font-size:13.5px;color:#7a6020;line-height:1.7;margin-bottom:20px}
-.rule{display:flex;gap:14px;margin-bottom:18px;align-items:flex-start}
-.rule:last-child{margin-bottom:0}
-.rule-icon{font-size:22px;flex-shrink:0;margin-top:2px}
-.rule-body{}
-.rule-title{font-weight:700;font-size:14.5px;color:#2d6a4f;margin-bottom:4px}
-.rule-desc{font-size:13.5px;color:#3a3530;line-height:1.6}
-.footer{text-align:center;margin-top:36px;padding-top:20px;border-top:1px solid #e8e3da;color:#7a7570;font-size:13px;line-height:1.9}
-@media print{body{padding:20px}}
-</style></head><body>
+// ─── Guest Confirmation: PDF + WhatsApp ───────────────────────────────────────
+const CHECKIN_TIME='1:00 PM', CHECKOUT_TIME='11:00 AM';
+const ID_LABELS={Aadhaar:'Aadhaar Card',Passport:'Passport',DrivingLicense:'Driving Licence',
+  VoterID:'Voter ID',PAN:'PAN Card',Other:'ID Proof'};
 
-<div class="header">
-  <div class="logo">Raaya Vasyam</div>
-  <div class="tagline">Booking Confirmation</div>
-</div>
+const HOUSE_RULES=[
+  ['Home by 10 PM','Ours is a quiet neighbourhood and the evenings here are wonderfully serene. We kindly ask that everyone is back at the house by 10 PM. It keeps us on good terms with our neighbours and gives you the restful night you deserve after a day of exploring.'],
+  ['A home, not a party venue','This house is meant as a calm, intimate retreat. Please keep gatherings to your own group and avoid large get-togethers or loud events. Good conversation and laughter are always welcome — just keep it cosy.'],
+  ['A smoke-free home','The entire property, indoors and outdoors, is strictly non-smoking. If you do need a smoke, we kindly ask that you step outside the property gates. Thank you for understanding.'],
+  ['Switch off when you step out','When you head out, please turn off the lights, fans and air conditioners. A small habit that makes a real difference — to the environment and to keeping things running smoothly.'],
+  ['A clean kitchen is a happy kitchen','The kitchen is yours to use and enjoy. We only ask that utensils, pots, pans and dishes are washed and put back after use, so the space stays ready for your next meal.'],
+  ['Shoes off at the door','We follow the lovely tradition of leaving footwear outside the entrance. There is a dedicated spot for shoes right at the door — step in and feel at home.'],
+];
 
-<div class="hero">
-  <h1>Welcome, ${b.guestName}! 🏡</h1>
-  <p>We are so thrilled to have you with us at <strong>${prop?.name||'our home'}</strong>! Your booking is all set, and we truly cannot wait to welcome you. We hope this stay gives you a chance to unwind, recharge, and create some wonderful memories. Think of this home as your own little retreat — we've put our heart into making it comfortable, warm, and welcoming just for you.</p>
-  <span class="ref">Booking Ref: ${bookingRef}</span>
-</div>
-
-<div class="section-title">Your Stay at a Glance</div>
-<div class="detail-grid">
-  <div class="detail-item"><div class="detail-label">Guest Name</div><div class="detail-value">${b.guestName}</div></div>
-  <div class="detail-item"><div class="detail-label">Property</div><div class="detail-value">${prop?.name||'Our Home'}</div></div>
-  <div class="detail-item"><div class="detail-label">Check-in</div><div class="detail-value">${fmtDateLong(b.checkIn)}</div></div>
-  <div class="detail-item"><div class="detail-label">Check-out</div><div class="detail-value">${fmtDateLong(b.checkOut)}</div></div>
-  <div class="detail-item"><div class="detail-label">Duration</div><div class="detail-value highlight">${nights} night${nights!==1?'s':''}</div></div>
-  <div class="detail-item"><div class="detail-label">Guests</div><div class="detail-value">${b.guests||1} person${(b.guests||1)>1?'s':''}</div></div>
-  ${prop?.location?`<div class="detail-item" style="grid-column:1/-1"><div class="detail-label">Property Address</div><div class="detail-value">${prop.location}</div></div>`:''}
-  ${b.phone?`<div class="detail-item"><div class="detail-label">Contact Number</div><div class="detail-value">${b.phone}</div></div>`:''}
-</div>
-
-<div class="time-banner">
-  <div class="time-block">
-    <div class="time-label">Check-in Time</div>
-    <div class="time-value">1:00 PM</div>
-    <div class="time-date">${fmtDate(b.checkIn)}</div>
-  </div>
-  <div class="time-sep"></div>
-  <div class="time-block">
-    <div class="time-label">Check-out Time</div>
-    <div class="time-value">11:00 AM</div>
-    <div class="time-date">${fmtDate(b.checkOut)}</div>
-  </div>
-</div>
-
-<div class="warm-note">
-  💚 <strong>A little note from our heart to yours —</strong><br/>
-  Our home has been lovingly set up so you can feel completely at ease the moment you walk in. The kitchen is stocked with essentials, the beds are made, and everything is ready for you. Please treat this space as your own, explore freely, and do reach out anytime if you need something. Your comfort means the world to us, and we genuinely hope every moment of your stay feels special.
-</div>
-
-<div class="section-title" style="margin-bottom:16px">A Few Things to Keep in Mind 🏠</div>
-<div class="rules-wrap">
-  <p class="rules-intro">We've put together a few simple guidelines to make sure everyone — you, fellow guests, and our lovely neighbours — has the most comfortable and enjoyable experience. We know you'll understand the spirit behind each one, and we truly appreciate your thoughtfulness!</p>
-
-  <div class="rule">
-    <span class="rule-icon">🌙</span>
-    <div class="rule-body">
-      <div class="rule-title">Home by 10 PM — Sweet Dreams for the Neighbourhood</div>
-      <div class="rule-desc">Our neighbourhood is a quiet, peaceful community, and the evenings here are wonderfully serene. We kindly request that everyone plans to be back at the house by <strong>10 PM</strong> each night. This helps us keep a harmonious relationship with our lovely neighbours and ensures you get the restful night's sleep you deserve after a day of exploring!</div>
-    </div>
-  </div>
-
-  <div class="rule">
-    <span class="rule-icon">🕯️</span>
-    <div class="rule-body">
-      <div class="rule-title">A Home, Not a Party Venue — Keep the Vibe Cosy</div>
-      <div class="rule-desc">This home is designed to be a serene, intimate retreat — a place where you can truly breathe and be at peace. We'd love for it to stay that way! We kindly request that you keep gatherings to your immediate group and avoid hosting large get-togethers or loud events. Good conversations, laughter, and great memories are absolutely welcome — just keep it cosy and warm!</div>
-    </div>
-  </div>
-
-  <div class="rule">
-    <span class="rule-icon">🌿</span>
-    <div class="rule-body">
-      <div class="rule-title">Fresh Air Always — A Smoke-Free Home</div>
-      <div class="rule-desc">We've worked hard to keep the interiors of this home clean, fresh, and welcoming for every guest. To preserve that for you and for everyone who stays after you, the <strong>entire property — indoors and outdoors — is strictly non-smoking</strong>. We appreciate your cooperation with this, and if you do need a smoke, we kindly ask that you step outside the property gates. Thank you so much for your understanding!</div>
-    </div>
-  </div>
-
-  <div class="rule">
-    <span class="rule-icon">💡</span>
-    <div class="rule-body">
-      <div class="rule-title">Little Steps, Big Difference — Save Energy When You Step Out</div>
-      <div class="rule-desc">Every time you head out for an adventure, we'd be grateful if you could take a moment to switch off the <strong>lights, fans, and air conditioners</strong> before leaving. It's a small habit that makes a meaningful difference — both for the environment and for keeping things running smoothly. We truly appreciate every little act of care!</div>
-    </div>
-  </div>
-
-  <div class="rule">
-    <span class="rule-icon">🍽️</span>
-    <div class="rule-body">
-      <div class="rule-title">A Clean Kitchen is a Happy Kitchen — Wash Up After Yourself</div>
-      <div class="rule-desc">The kitchen is fully yours to use and enjoy! We just kindly ask that any <strong>utensils, pots, pans, or dishes used are washed and put back</strong> after each use. This keeps the space neat and ready for your next culinary adventure — or for your fellow travellers who may want to use it too. A tidy kitchen makes everyone's stay that much more pleasant!</div>
-    </div>
-  </div>
-
-  <div class="rule">
-    <span class="rule-icon">👟</span>
-    <div class="rule-body">
-      <div class="rule-title">Shoes Off at the Door — Step In and Feel at Home</div>
-      <div class="rule-desc">We follow the lovely tradition of <strong>leaving footwear outside the entrance</strong>. It keeps our floors clean, reduces dust indoors, and — honestly — there's something wonderfully grounding about walking barefoot in a comfortable home! There's a dedicated spot for your shoes right at the entrance, so you can step in and immediately feel at ease.</div>
-    </div>
-  </div>
-</div>
-
-<div class="footer">
-  <p style="font-size:15px;color:#1a1a1a;font-weight:500">We hope your stay at <strong style="color:#2d6a4f">${prop?.name||'our home'}</strong> is everything you've been looking forward to. 🌸</p>
-  <p style="margin-top:8px">Wishing you a wonderful, restful, and joy-filled stay.</p>
-  <p style="margin-top:4px">With warm regards &amp; a big welcome hug — <strong style="color:#2d6a4f">Your Hosts</strong></p>
-  <p style="margin-top:16px;font-size:12px;color:#afa99e">Generated by StayLog · ${new Date().toLocaleDateString('en-IN',{day:'numeric',month:'long',year:'numeric'})}</p>
-</div>
-
-</body></html>`;
-  const blob=new Blob([html],{type:'text/html;charset=utf-8'});
-  const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=`StayLog-Confirmation-${b.guestName.replace(/\s+/g,'-')}-${b.checkIn}.html`;a.click();
+// ─── jsPDF, loaded on first use and precached by the service worker ───────────
+const JSPDF_SRC='https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.2/jspdf.umd.min.js';
+let _jspdfPromise=null;
+function loadJsPDF(){
+  if(window.jspdf?.jsPDF)return Promise.resolve(window.jspdf.jsPDF);
+  if(_jspdfPromise)return _jspdfPromise;
+  _jspdfPromise=new Promise((res,rej)=>{
+    const s=document.createElement('script');
+    s.src=JSPDF_SRC;
+    s.onload=()=>window.jspdf?.jsPDF?res(window.jspdf.jsPDF):rej(new Error('jsPDF failed to initialise'));
+    s.onerror=()=>{_jspdfPromise=null;rej(new Error('offline'));};
+    document.head.appendChild(s);
+  });
+  return _jspdfPromise;
 }
 
-// ─── Day detail modal ─────────────────────────────────────────────────────────
+function confirmationFileName(b){
+  return `Confirmation-${(b.guestName||'Guest').replace(/[^\w]+/g,'-')}-${b.checkIn}.pdf`;
+}
+
+// ─── The confirmation document ────────────────────────────────────────────────
+async function buildConfirmationPDF(b){
+  const jsPDF=await loadJsPDF();
+  const prop=state.data.properties.find(p=>p.id===b.propertyId);
+  const nights=diffDays(b.checkIn,b.checkOut);
+  const ref='SL-'+b.id.slice(-6).toUpperCase();
+
+  const doc=new jsPDF({unit:'pt',format:'a4'});
+  const W=doc.internal.pageSize.getWidth(), H=doc.internal.pageSize.getHeight();
+  const M=46, CW=W-M*2;
+  const GREEN=[47,107,79], INK=[31,36,32], GREY=[124,120,105], LINE=[231,223,206],
+        CREAM=[250,246,238];
+  let y=0;
+
+  const ensure=need=>{ if(y+need>H-52){doc.addPage();y=M;} };
+  const text=(t,x,size,{font='helvetica',style='normal',color=INK,align='left',width=CW,lead=1.35}={})=>{
+    doc.setFont(font,style); doc.setFontSize(size); doc.setTextColor(...color);
+    const lines=doc.splitTextToSize(String(t),width);
+    lines.forEach(ln=>{ ensure(size*lead); doc.text(ln,x,y,{align}); y+=size*lead; });
+  };
+  const rule=()=>{ doc.setDrawColor(...LINE); doc.setLineWidth(.7); doc.line(M,y,W-M,y); y+=1; };
+  const sectionLabel=t=>{ ensure(96); y+=6;
+    doc.setFont('helvetica','bold'); doc.setFontSize(8.5); doc.setTextColor(...GREEN);
+    doc.text(String(t).toUpperCase(),M,y,{charSpace:1.1}); y+=7; rule(); y+=13; };
+
+  // Header
+  y=M+12;
+  doc.setFont('times','normal'); doc.setFontSize(25); doc.setTextColor(...GREEN);
+  doc.text(prop?.name||'Raaya Vasyam',W/2,y,{align:'center'}); y+=15;
+  doc.setFont('helvetica','normal'); doc.setFontSize(8.5); doc.setTextColor(...GREY);
+  doc.text('BOOKING CONFIRMATION',W/2,y,{align:'center',charSpace:1.6}); y+=16;
+  rule(); y+=22;
+
+  // Greeting
+  doc.setFont('times','normal'); doc.setFontSize(17); doc.setTextColor(...INK);
+  doc.text(`Welcome, ${b.guestName}`,M,y); y+=20;
+  text(`We are delighted to have you with us at ${prop?.name||'our home'}. Your booking is confirmed and everything is being made ready for your arrival. We hope this stay gives you the chance to slow down, rest well, and take something lovely home with you.`,
+    M,10.5,{color:[78,84,73],lead:1.5}); y+=10;
+
+  // Reference pill
+  ensure(30);
+  doc.setFillColor(...GREEN); doc.roundedRect(M,y-1,150,22,11,11,'F');
+  doc.setFont('helvetica','bold'); doc.setFontSize(9); doc.setTextColor(255,253,248);
+  doc.text(`BOOKING REF  ${ref}`,M+14,y+13.5,{charSpace:.4}); y+=36;
+
+  // Stay details
+  sectionLabel('Your stay at a glance');
+  const cell=(label,value,x,w)=>{
+    doc.setFillColor(...CREAM); doc.roundedRect(x,y,w,44,7,7,'F');
+    doc.setFont('helvetica','bold'); doc.setFontSize(7.5); doc.setTextColor(...GREY);
+    doc.text(String(label).toUpperCase(),x+12,y+15,{charSpace:.7});
+    doc.setFont('helvetica','bold'); doc.setFontSize(11); doc.setTextColor(...INK);
+    doc.text(doc.splitTextToSize(String(value),w-24)[0],x+12,y+32);
+  };
+  const half=(CW-12)/2;
+  const pairs=[
+    ['Guest name',b.guestName],['Property',prop?.name||'Our home'],
+    ['Check-in',fmtDateLong(b.checkIn)],['Check-out',fmtDateLong(b.checkOut)],
+    [`Duration`,`${nights} night${nights===1?'':'s'}`],['Guests',`${b.guests||1} person${(b.guests||1)>1?'s':''}`],
+  ];
+  if(b.phone)pairs.push(['Contact',b.phone]);
+  if(b.idProofType)pairs.push(['ID on record',ID_LABELS[b.idProofType]||b.idProofType]);
+  for(let i=0;i<pairs.length;i+=2){
+    ensure(56);
+    cell(pairs[i][0],pairs[i][1],M,half);
+    if(pairs[i+1])cell(pairs[i+1][0],pairs[i+1][1],M+half+12,half);
+    y+=56;
+  }
+  if(prop?.location){ ensure(56); cell('Address',prop.location,M,CW); y+=56; }
+
+  // Arrival / departure banner
+  ensure(76); y+=4;
+  doc.setFillColor(...GREEN); doc.roundedRect(M,y,CW,62,10,10,'F');
+  const block=(label,time,date,cx)=>{
+    doc.setFont('helvetica','bold'); doc.setFontSize(7.5); doc.setTextColor(210,230,218);
+    doc.text(String(label).toUpperCase(),cx,y+20,{align:'center',charSpace:.9});
+    doc.setFont('helvetica','bold'); doc.setFontSize(17); doc.setTextColor(255,253,248);
+    doc.text(time,cx,y+41,{align:'center'});
+    doc.setFont('helvetica','normal'); doc.setFontSize(8.5); doc.setTextColor(205,226,213);
+    doc.text(date,cx,y+53,{align:'center'});
+  };
+  block('Check-in from',CHECKIN_TIME,fmtDate(b.checkIn),M+CW*0.27);
+  block('Check-out by',CHECKOUT_TIME,fmtDate(b.checkOut),M+CW*0.73);
+  doc.setDrawColor(120,170,142); doc.setLineWidth(.8); doc.line(M+CW/2,y+14,M+CW/2,y+48);
+  y+=78;
+
+  // House notes
+  sectionLabel('A few things to keep in mind');
+  text('These are simple guidelines that keep the stay comfortable for you, for guests after you, and for our neighbours. We appreciate your thoughtfulness.',
+    M,10,{color:[78,84,73],lead:1.5}); y+=12;
+  HOUSE_RULES.forEach(([title,desc])=>{
+    ensure(58);
+    doc.setFillColor(...GREEN); doc.circle(M+3,y-3.5,2.6,'F');
+    text(title,M+16,10.5,{style:'bold',color:GREEN,width:CW-16});
+    y+=1;
+    text(desc,M+16,9.5,{color:[78,84,73],width:CW-16,lead:1.42});
+    y+=11;
+  });
+
+  // Footer
+  ensure(70); y+=8; rule(); y+=18;
+  // centred lines anchor on the page centre, not the left margin
+  text(`We hope your stay at ${prop?.name||'our home'} is everything you have been looking forward to.`,
+    W/2,10.5,{align:'center',color:INK,width:CW});
+  y+=2;
+  text('With warm regards — your hosts',W/2,10.5,{align:'center',style:'bold',color:GREEN,width:CW});
+  y+=6;
+  text(`Generated by StayLog on ${new Date().toLocaleDateString('en-IN',{day:'numeric',month:'long',year:'numeric'})}  ·  Ref ${ref}`,
+    W/2,8,{align:'center',color:GREY,width:CW});
+  return doc;
+}
+
+async function confirmationBlob(b){
+  const doc=await buildConfirmationPDF(b);
+  return doc.output('blob');
+}
+
+function pdfError(err){
+  alert(err&&err.message==='offline'
+    ? 'The PDF builder could not be downloaded. Open StayLog once with an internet connection and it will work offline after that.'
+    : 'Could not build the PDF: '+(err?.message||err));
+}
+
+async function downloadConfirmation(b){
+  try{ (await buildConfirmationPDF(b)).save(confirmationFileName(b)); }
+  catch(err){ pdfError(err); }
+}
+
+// ─── WhatsApp ─────────────────────────────────────────────────────────────────
+// India-first: bare 10-digit numbers get +91; anything already carrying a country code is left alone
+function waNumber(phone){
+  let d=String(phone||'').replace(/[^\d]/g,'');
+  if(!d)return null;
+  d=d.replace(/^0+/,'');
+  if(d.length===10)d='91'+d;
+  return d.length>=11&&d.length<=15?d:null;
+}
+function whatsappText(b){
+  const prop=state.data.properties.find(p=>p.id===b.propertyId);
+  const nights=diffDays(b.checkIn,b.checkOut);
+  const total=Number(b.totalAmount||0), paid=Number(b.paid||0), due=total-paid;
+  const L=[];
+  L.push(`*Booking confirmed — ${prop?.name||'our homestay'}*`,'');
+  L.push(`Namaste ${b.guestName}, your stay is confirmed. We're looking forward to hosting you.`,'');
+  L.push(`*Reference:* SL-${b.id.slice(-6).toUpperCase()}`);
+  L.push(`*Check-in:* ${fmtDate(b.checkIn)} from ${CHECKIN_TIME}`);
+  L.push(`*Check-out:* ${fmtDate(b.checkOut)} by ${CHECKOUT_TIME}`);
+  L.push(`*Stay:* ${nights} night${nights===1?'':'s'} · ${b.guests||1} guest${(b.guests||1)>1?'s':''}`);
+  if(prop?.location)L.push(`*Address:* ${prop.location}`);
+  if(total>0)L.push(`*Total:* ${fmtCur(total)}${due>0?` · *Balance due:* ${fmtCur(due)} (payable at check-in)`:' · fully paid'}`);
+  L.push('','A few house notes: back home by 10 PM, the property is entirely non-smoking, footwear off at the door, and please switch off lights, fans and AC when you step out.');
+  L.push('','The full confirmation is attached. Do reach out any time before your arrival.');
+  return L.join('\n');
+}
+function openWhatsApp(b){
+  const num=waNumber(b.phone);
+  if(!num){alert('This booking has no usable phone number. Add one with the country code and try again.');return;}
+  window.open(`https://wa.me/${num}?text=${encodeURIComponent(whatsappText(b))}`,'_blank');
+}
+async function shareConfirmation(b){
+  let blob;
+  try{ blob=await confirmationBlob(b); }catch(err){ pdfError(err); return; }
+  const file=new File([blob],confirmationFileName(b),{type:'application/pdf'});
+  if(navigator.canShare&&navigator.canShare({files:[file]})){
+    try{ await navigator.share({files:[file],title:`Booking confirmation — ${b.guestName}`}); }
+    catch(err){ if(err&&err.name!=='AbortError')pdfError(err); }
+  } else {
+    const a=document.createElement('a');
+    a.href=URL.createObjectURL(blob); a.download=confirmationFileName(b); a.click();
+    setTimeout(()=>URL.revokeObjectURL(a.href),4000);
+    alert('Your browser cannot open the share sheet, so the PDF has been saved to Files. Attach it from there in WhatsApp.');
+  }
+}
+
+// ─── Send-confirmation sheet ──────────────────────────────────────────────────
+function renderSendModal(){
+  const b=state.editItem;
+  if(!b)return modal('Send confirmation',()=>div({}));
+  const prop=state.data.properties.find(p=>p.id===b.propertyId);
+  const num=waNumber(b.phone);
+  const content=()=>{
+    const wrap=div({style:{display:'flex',flexDirection:'column',gap:11}});
+    wrap.appendChild(div({style:{background:'var(--surface-2)',border:'1px solid var(--border)',
+      borderRadius:'var(--radius-sm)',padding:'12px 13px'}},
+      div({style:{fontSize:14.5,fontWeight:700}},b.guestName),
+      div({style:{fontSize:12.5,color:'var(--muted)',marginTop:2}},
+        `${fmtDate(b.checkIn)} → ${fmtDate(b.checkOut)} · ${prop?.name||''}`),
+      div({style:{fontSize:12.5,color:num?'var(--accent)':'var(--danger)',fontWeight:600,marginTop:4}},
+        num?`+${num}`:'No usable phone number on this booking')
+    ));
+    wrap.appendChild(btn({className:'btn-primary',style:{width:'100%'},disabled:!num,
+      onClick:()=>openWhatsApp(b)},ico('brand-whatsapp',{style:{marginRight:8,fontSize:17}}),'Open WhatsApp with message'));
+    wrap.appendChild(btn({className:'btn-gold',style:{width:'100%',justifyContent:'center',display:'flex',
+      alignItems:'center',gap:7,minHeight:46},onClick:()=>shareConfirmation(b)},
+      ico('file-text',{style:{fontSize:16}}),'Attach confirmation PDF'));
+    wrap.appendChild(div({style:{fontSize:12,color:'var(--muted)',lineHeight:1.55,background:'var(--warn-light)',
+      border:'1px solid var(--warn-line)',borderRadius:'var(--radius-sm)',padding:'10px 12px'}},
+      'WhatsApp links cannot carry a file. Send the message first, then use ',
+      span({style:{fontWeight:700}},'Attach confirmation PDF'),
+      ' and pick the same chat from the share sheet.'));
+    wrap.appendChild(btn({className:'btn-ghost',style:{width:'100%'},onClick:closeModal},'Not now'));
+    return wrap;
+  };
+  return modal('Send confirmation',content);
+}
+
 function renderCalDayModal(){
   const{date,bookings:dayBookings}=state.editItem;
   const content=()=>{
@@ -762,7 +851,8 @@ function renderCalDayModal(){
       card.appendChild(div({style:{fontSize:12,color:'var(--muted)'}},`${fmtDate(b.checkIn)} → ${fmtDate(b.checkOut)}`));
       const acts=div({style:{display:'flex',gap:6,marginTop:8,flexWrap:'wrap'}});
       acts.appendChild(btn({className:'btn-ghost btn-sm',onClick:()=>{closeModal();setState({modal:'addBooking',editItem:b});}},ico('edit',{style:{marginRight:3}}),'Edit'));
-      acts.appendChild(btn({style:{background:'var(--gold-light)',color:'var(--gold)',border:'1.5px solid var(--gold-line)',borderRadius:'var(--radius-sm)',padding:'6px 10px',fontSize:12,fontWeight:600,cursor:'pointer',display:'flex',alignItems:'center',gap:4},onClick:()=>downloadConfirmation(b)},ico('file-text',{style:{fontSize:13}}),'PDF'));
+      if(waNumber(b.phone))acts.appendChild(btn({className:'btn-ghost btn-sm',style:{padding:'6px 10px',fontSize:12,color:'var(--accent)',borderColor:'var(--accent-line)'},onClick:()=>{closeModal();setState({modal:'sendConfirm',editItem:b});}},ico('brand-whatsapp',{style:{marginRight:3,fontSize:14}}),'Send'));
+      acts.appendChild(btn({className:'btn-gold btn-sm',style:{padding:'6px 10px',fontSize:12},onClick:()=>downloadConfirmation(b)},ico('file-text',{style:{marginRight:3,fontSize:13}}),'PDF'));
       card.appendChild(acts);wrap.appendChild(card);
     });
     return wrap;
@@ -1882,8 +1972,10 @@ function renderBookingModal(){
     wrap.appendChild(btn({className:'btn-primary',style:{marginTop:8,width:'100%'},onClick:()=>{
       if(!f.guestName||!f.checkIn||!f.checkOut||!f.propertyId)return;
       if(hasConflict(f.propertyId,f.checkIn,f.checkOut,isEdit?f.id:null)){alert('These dates overlap with an existing booking. Please choose different dates.');return;}
-      mutateData(d=>{if(isEdit)d.bookings=d.bookings.map(b=>b.id===f.id?f:b);else d.bookings.push({...f,id:uid()});});
-      closeModal();
+      if(!isEdit)f.id=uid();
+      mutateData(d=>{if(isEdit)d.bookings=d.bookings.map(b=>b.id===f.id?f:b);else d.bookings.push({...f});});
+      if(!isEdit&&waNumber(f.phone))setState({modal:'sendConfirm',editItem:{...f}});
+      else closeModal();
     }},isEdit?'Update Booking':'Add Booking'));
     return wrap;
   };
@@ -2104,6 +2196,7 @@ function render(){
   else if(state.modal==='addRepayment'){currentModal=renderRepaymentModal();document.body.appendChild(currentModal);}
   else if(state.modal==='menu')     {currentModal=renderMenuModal();      document.body.appendChild(currentModal);}
   else if(state.modal==='propPicker'){currentModal=renderPropPickerModal();document.body.appendChild(currentModal);}
+  else if(state.modal==='sendConfirm'){currentModal=renderSendModal();     document.body.appendChild(currentModal);}
 }
 
 // ─── Boot ─────────────────────────────────────────────────────────────────────
