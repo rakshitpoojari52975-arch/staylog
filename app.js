@@ -1,5 +1,6 @@
 /* StayLog — Homestay Manager App
-   v7: ID proof attachment in bookings, warm PDF house rules, check-in/out times */
+   v7: ID proof attachment in bookings, warm PDF house rules, check-in/out times
+   v8: Staff registry + staff loan module — repayment schedule, payout deduction, loan analysis */
 'use strict';
 
 // ─── Auth ─────────────────────────────────────────────────────────────────────
@@ -9,7 +10,19 @@ const PIN_LENGTH = 4;
 // ─── Storage ──────────────────────────────────────────────────────────────────
 const DB_NAME='staylog_db', DB_VERSION=1, STORE_NAME='appdata';
 const DATA_KEY='staylog_main', LS_KEY='staylog_v2';
-const defaultData={ properties:[], bookings:[], expenses:[] };
+const defaultData={ properties:[], bookings:[], expenses:[], staff:[], loans:[] };
+
+// Ensures older saved data (pre-loan-module) gains the new collections
+function normalizeData(d){
+  if(!d||typeof d!=='object')return{...defaultData};
+  if(!Array.isArray(d.properties))d.properties=[];
+  if(!Array.isArray(d.bookings))d.bookings=[];
+  if(!Array.isArray(d.expenses))d.expenses=[];
+  if(!Array.isArray(d.staff))d.staff=[];
+  if(!Array.isArray(d.loans))d.loans=[];
+  d.loans.forEach(l=>{if(!Array.isArray(l.repayments))l.repayments=[];});
+  return d;
+}
 
 let _db=null;
 function openDB(){
@@ -28,9 +41,9 @@ function saveData(d){
   idbSet(DATA_KEY,JSON.parse(JSON.stringify(d))).catch(()=>{});
 }
 async function loadDataFromIDB(){
-  try{const d=await idbGet(DATA_KEY);if(d&&d.properties)return d;}catch{}
-  try{const ls=JSON.parse(localStorage.getItem(LS_KEY));if(ls&&ls.properties){saveData(ls);return ls;}}catch{}
-  return{...defaultData};
+  try{const d=await idbGet(DATA_KEY);if(d&&d.properties)return normalizeData(d);}catch{}
+  try{const ls=JSON.parse(localStorage.getItem(LS_KEY));if(ls&&ls.properties){const n=normalizeData(ls);saveData(n);return n;}}catch{}
+  return{...defaultData,staff:[],loans:[]};
 }
 async function loadAuth(){
   try{const a=await idbGet(AUTH_KEY);if(a)return a;}catch{}
@@ -55,6 +68,7 @@ let state={
   data:{...defaultData}, auth:null, loggedIn:false,
   tab:'dashboard', modal:null, editItem:null,
   filterProp:'all', bookingFilter:'all', expandedBooking:null,
+  loanFilter:'active', expandedLoan:null, showStaffPanel:false,
   dashMonth:{year:new Date().getFullYear(),month:new Date().getMonth()},
   reportMonth:null,
   calMonth:{year:new Date().getFullYear(),month:new Date().getMonth()},
@@ -64,10 +78,18 @@ function setState(p){Object.assign(state,typeof p==='function'?p(state):p);rende
 function mutateData(fn){fn(state.data);saveData(state.data);render();}
 
 // ─── DOM helpers ──────────────────────────────────────────────────────────────
+// Properties that legitimately take a bare number; everything else gets px appended,
+// otherwise numeric values (fontSize:14, width:44…) are silently dropped in standards mode.
+const UNITLESS_CSS=new Set(['opacity','zIndex','fontWeight','lineHeight','flex','flexGrow','flexShrink',
+  'order','zoom','columnCount','tabSize','gridRow','gridColumn','aspectRatio','strokeWidth','fillOpacity']);
+function applyStyle(el,v){
+  for(const[k,val] of Object.entries(v))
+    el.style[k]=(typeof val==='number'&&!UNITLESS_CSS.has(k))?val+'px':val;
+}
 const h=(tag,attrs={}, ...children)=>{
   const el=document.createElement(tag);
   for(const [k,v] of Object.entries(attrs)){
-    if(k==='style'&&typeof v==='object')Object.assign(el.style,v);
+    if(k==='style'&&typeof v==='object')applyStyle(el,v);
     else if(k.startsWith('on')&&typeof v==='function')el.addEventListener(k.slice(2).toLowerCase(),v);
     else if(k==='className')el.className=v;
     else if(k==='checked'||k==='disabled'||k==='selected')el[k]=v;
@@ -352,9 +374,9 @@ function restoreBackup(){
     const reader=new FileReader();
     reader.onload=ev=>{
       try{
-        const d=JSON.parse(ev.target.result);
+        const d=normalizeData(JSON.parse(ev.target.result));
         if(!d.properties||!d.bookings||!d.expenses)throw new Error('Invalid data structure');
-        if(confirm(`Restore ${d.bookings.length} bookings and ${d.expenses.length} expenses? Current data will be replaced.`)){
+        if(confirm(`Restore ${d.bookings.length} bookings, ${d.expenses.length} expenses and ${d.loans.length} loans? Current data will be replaced.`)){
           state.data=d;saveData(d);render();
         }
       }catch(err){
@@ -368,7 +390,7 @@ function restoreBackup(){
 
 // ─── Bottom Nav ───────────────────────────────────────────────────────────────
 function renderNav(){
-  const tabs=[['dashboard','home','Home'],['bookings','calendar','Bookings'],['expenses','receipt','Expenses'],['reports','chart-bar','Reports']];
+  const tabs=[['dashboard','home','Home'],['bookings','calendar','Bookings'],['expenses','receipt','Expenses'],['loans','wallet','Loans'],['reports','chart-bar','Reports']];
   const nav=div({style:{position:'fixed',bottom:0,left:'50%',transform:'translateX(-50%)',width:'100%',maxWidth:480,background:'var(--white)',borderTop:'1px solid var(--border)',display:'flex',zIndex:100,paddingBottom:'env(safe-area-inset-bottom,0)'}});
   tabs.forEach(([t,icon,label])=>{
     const active=state.tab===t||(t==='bookings'&&state.tab==='calendar');
@@ -702,6 +724,26 @@ function renderDashboard(){
     ));
   });
   wrap.appendChild(grid);
+  // Staff loan position
+  const openLoans=data.loans.filter(l=>l.status!=='writtenoff'&&loanBalance(l)>0.5);
+  if(openLoans.length>0){
+    const outstanding=round2(openLoans.reduce((s,l)=>s+loanBalance(l),0));
+    const overdue=round2(openLoans.reduce((s,l)=>s+loanOverdue(l),0));
+    wrap.appendChild(div({className:'card',style:{padding:'12px 14px',marginBottom:16,display:'flex',justifyContent:'space-between',alignItems:'center',gap:10,cursor:'pointer'},onClick:()=>setState({tab:'loans'})},
+      div({style:{display:'flex',alignItems:'center',gap:10,minWidth:0}},
+        div({style:{background:'var(--gold-light)',borderRadius:8,padding:'6px 8px'}},ico('wallet',{style:{fontSize:17,color:'var(--gold)'}})),
+        div({},
+          div({style:{fontSize:13,fontWeight:600}},`Staff loans · ${openLoans.length} running`),
+          div({style:{fontSize:12,color:overdue>0?'var(--danger)':'var(--muted)',marginTop:2}},
+            overdue>0?`${fmtCur(overdue)} behind schedule`:'On schedule')
+        )
+      ),
+      div({style:{textAlign:'right',flexShrink:0}},
+        div({style:{fontSize:16,fontWeight:700,color:'var(--gold)'}},fmtCur(outstanding)),
+        div({style:{fontSize:11,color:'var(--muted)'}},'outstanding')
+      )
+    ));
+  }
   if(todayCheckins.length>0||todayCheckouts.length>0){
     const alert=div({style:{background:'var(--warn-light)',border:'1.5px solid #f5cba0',borderRadius:'var(--radius)',padding:'12px 14px',marginBottom:16}});
     alert.appendChild(div({style:{fontWeight:600,fontSize:13,color:'var(--warn)',marginBottom:8,display:'flex',alignItems:'center',gap:6}},ico('bell',{style:{fontSize:16}}),"Today's Activity"));
@@ -725,7 +767,14 @@ function renderDashboard(){
       div({},div({style:{fontWeight:600,fontSize:15}},p.name),div({style:{fontSize:12,color:'var(--muted)',marginTop:3}},`${p.location||'No location'} · ${p.rooms||0} rooms · ${pBks.length} bookings`)),
       div({style:{textAlign:'right',display:'flex',flexDirection:'column',alignItems:'flex-end',gap:7}},
         div({style:{fontSize:14,fontWeight:700,color:'var(--accent)'}},fmtCur(pRev)),
-        btn({className:'btn-danger btn-sm',style:{padding:'4px 9px'},onClick:()=>{if(confirm(`Delete "${p.name}" and all its data?`)){mutateData(d=>{d.properties=d.properties.filter(x=>x.id!==p.id);d.bookings=d.bookings.filter(b=>b.propertyId!==p.id);d.expenses=d.expenses.filter(e=>e.propertyId!==p.id);});}}},ico('trash',{style:{fontSize:14}}))
+        btn({className:'btn-danger btn-sm',style:{padding:'4px 9px'},onClick:()=>{if(confirm(`Delete "${p.name}" and all its data?`)){mutateData(d=>{
+          const dropped=d.expenses.filter(e=>e.propertyId===p.id).map(e=>e.id);
+          d.properties=d.properties.filter(x=>x.id!==p.id);
+          d.bookings=d.bookings.filter(b=>b.propertyId!==p.id);
+          d.expenses=d.expenses.filter(e=>e.propertyId!==p.id);
+          dropped.forEach(id=>unlinkExpenseLoan(d,id));
+          d.loans=d.loans.map(l=>l.propertyId===p.id?{...l,propertyId:''}:l);
+        });}}},ico('trash',{style:{fontSize:14}}))
       )
     ));
   });
@@ -784,25 +833,41 @@ function renderExpenses(){
     const prop=data.properties.find(p=>p.id===e.propertyId);
     const card=div({className:'card',style:{padding:'12px 14px',marginBottom:9}});
     // Top row
+    const ded=round2(e.loanDeduction);
     card.appendChild(div({style:{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:5}},
-      div({},
+      div({style:{minWidth:0}},
         div({style:{fontWeight:600,fontSize:15}},`${catEmoji[e.category]||'📦'} ${e.description}`),
-        div({style:{fontSize:12,color:'var(--muted)',marginTop:3}},`${prop?.name||'—'} · ${fmtDate(e.date)} · ${e.category}`)
+        div({style:{fontSize:12,color:'var(--muted)',marginTop:3}},
+          `${prop?.name||'—'} · ${fmtDate(e.date)} · ${e.category}${e.staffId?' · '+staffName(e.staffId):''}`)
       ),
-      div({style:{textAlign:'right'}},
+      div({style:{textAlign:'right',flexShrink:0}},
         div({style:{fontWeight:700,color:'var(--danger)',fontSize:15,marginBottom:5}},fmtCur(e.amount)),
         expPaidBadge(e.paid)
       )
     ));
+    if(e.loanId&&ded>0){
+      card.appendChild(div({style:{display:'flex',justifyContent:'space-between',alignItems:'center',gap:8,background:e.paid?'var(--accent-light)':'var(--warn-light)',border:`1px solid ${e.paid?'#cfe6db':'#f5cba0'}`,borderRadius:9,padding:'7px 10px',fontSize:12,marginTop:2,marginBottom:2,color:e.paid?'var(--accent)':'var(--warn)'}},
+        div({style:{display:'flex',alignItems:'center',gap:6,minWidth:0}},ico('wallet',{style:{fontSize:14}}),
+          `Payout ${fmtCur(e.grossAmount||round2(e.amount)+ded)} − loan ${fmtCur(ded)}`),
+        span({style:{fontWeight:600,flexShrink:0}},e.paid?'credited to loan':'pending')
+      ));
+    }
     // Action row
     const acts=div({style:{display:'flex',gap:6,marginTop:8,flexWrap:'wrap'}});
     // Toggle paid/unpaid button
     acts.appendChild(btn({
       style:{background:e.paid?'var(--cream)':'var(--accent-light)',color:e.paid?'var(--muted)':'var(--accent)',border:`1.5px solid ${e.paid?'var(--border)':'var(--accent)'}`,borderRadius:'var(--radius-sm)',padding:'5px 11px',fontSize:12,fontWeight:600,cursor:'pointer',display:'flex',alignItems:'center',gap:4},
-      onClick:()=>mutateData(d=>d.expenses=d.expenses.map(x=>x.id===e.id?{...x,paid:!x.paid}:x))
+      onClick:()=>mutateData(d=>{
+        const upd={...e,paid:!e.paid};
+        d.expenses=d.expenses.map(x=>x.id===e.id?upd:x);
+        syncExpenseLoan(d,upd); // marking a staff payout paid is what credits the loan
+      })
     },ico(e.paid?'circle-check':'circle',{style:{fontSize:13}}),e.paid?'Mark Unpaid':'Mark as Paid'));
     acts.appendChild(btn({className:'btn-ghost btn-sm',style:{padding:'5px 10px'},onClick:()=>setState({modal:'addExpense',editItem:e})},ico('edit',{style:{fontSize:14}})));
-    acts.appendChild(btn({className:'btn-danger btn-sm',style:{padding:'5px 10px'},onClick:()=>{if(confirm('Delete this expense?'))mutateData(d=>d.expenses=d.expenses.filter(x=>x.id!==e.id));}},ico('trash',{style:{fontSize:14}})));
+    acts.appendChild(btn({className:'btn-danger btn-sm',style:{padding:'5px 10px'},onClick:()=>{
+      if(!confirm(e.loanId&&ded>0?`Delete this payout? The ${fmtCur(ded)} credited against ${staffName(e.staffId)}'s loan will be reversed.`:'Delete this expense?'))return;
+      mutateData(d=>{d.expenses=d.expenses.filter(x=>x.id!==e.id);unlinkExpenseLoan(d,e.id);});
+    }},ico('trash',{style:{fontSize:14}})));
     card.appendChild(acts);
     wrap.appendChild(card);
   });
@@ -904,15 +969,620 @@ function downloadReport(bookings,expenses,periodLabel){
     const nights=diffDays(b.checkIn,b.checkOut),due=Number(b.totalAmount||0)-Number(b.paid||0);
     csv+=[esc(b.checkIn),esc(b.guestName),esc(propName(b.propertyId)),esc(fmtDate(b.checkIn)),esc(fmtDate(b.checkOut)),nights,b.guests||1,esc(b.source||'Direct'),Number(b.totalAmount||0),Number(b.paid||0),due,esc(b.status)].join(',')+'\n';
   });
-  csv+='\nEXPENDITURE DETAILS\nDate,Description,Property,Category,Amount,Status,Notes\n';
+  csv+='\nEXPENDITURE DETAILS\nDate,Description,Property,Category,Paid To,Gross Payout,Loan Deduction,Net Amount,Status,Notes\n';
   [...expenses].sort((a,b)=>new Date(a.date)-new Date(b.date)).forEach(e=>{
-    csv+=[esc(e.date),esc(e.description),esc(propName(e.propertyId)),esc(e.category),Number(e.amount||0),esc(e.paid?'Paid':'Unpaid'),esc(e.notes||'')].join(',')+'\n';
+    const ded=round2(e.loanDeduction),gross=Number(e.grossAmount||0)||round2(Number(e.amount||0)+ded);
+    csv+=[esc(e.date),esc(e.description),esc(propName(e.propertyId)),esc(e.category),esc(e.staffId?staffName(e.staffId):''),gross,ded,Number(e.amount||0),esc(e.paid?'Paid':'Unpaid'),esc(e.notes||'')].join(',')+'\n';
   });
+  // Loan position — always the full picture, since a loan spans months
+  if(data.loans.length>0){
+    const disbursed=round2(data.loans.reduce((s,l)=>s+Number(l.principal||0),0));
+    const recovered=round2(data.loans.reduce((s,l)=>s+loanRepaid(l),0));
+    const outstanding=round2(data.loans.filter(l=>l.status!=='writtenoff').reduce((s,l)=>s+Math.max(0,loanBalance(l)),0));
+    csv+=`\nSTAFF LOANS — POSITION AS ON ${esc(fmtDate(today()))}\nTotal Disbursed,${disbursed}\nTotal Recovered,${recovered}\nOutstanding,${outstanding}\n`;
+    csv+='\nStaff,Role,Loan Amount,Given On,Monthly Instalment,Recovered,Outstanding,Overdue,Status,Next Due,Expected Close\n';
+    data.loans.forEach(l=>{
+      const rows=loanSchedule(l),next=loanNextDue(l);
+      csv+=[esc(staffName(l.staffId)),esc(staffById(l.staffId)?.role||''),Number(l.principal||0),esc(l.disbursedOn),
+        Number(l.installmentAmount||0),loanRepaid(l),Math.max(0,loanBalance(l)),loanOverdue(l),
+        esc(l.status==='writtenoff'?'Written off':loanIsSettled(l)?'Closed':'Active'),
+        esc(next?next.dueDate:''),esc(rows.length?rows[rows.length-1].dueDate:'')].join(',')+'\n';
+    });
+    const mf=state.reportMonth;
+    const reps=[];
+    data.loans.forEach(l=>(l.repayments||[]).forEach(r=>reps.push({...r,staffId:l.staffId})));
+    const inPeriod=mf?reps.filter(r=>{const d=new Date(r.date+'T00:00:00');return d.getFullYear()===mf.year&&d.getMonth()===mf.month;}):reps;
+    if(inPeriod.length>0){
+      csv+=`\nLOAN REPAYMENTS — ${esc(periodLabel)}\nDate,Staff,Amount,Mode,Note\n`;
+      inPeriod.sort((a,b)=>String(a.date).localeCompare(String(b.date))).forEach(r=>{
+        csv+=[esc(r.date),esc(staffName(r.staffId)),Number(r.amount||0),esc(r.mode==='payout'?'Payout deduction':'Direct'),esc(r.note||'')].join(',')+'\n';
+      });
+    }
+  }
   const blob=new Blob([csv],{type:'text/csv;charset=utf-8;'});
   const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=`staylog-report-${periodLabel}.csv`;a.click();
 }
 
+// ═══ STAFF & LOANS ════════════════════════════════════════════════════════════
+
+const round2 = n => Math.round((Number(n)||0)*100)/100;
+const staffById  = id => state.data.staff.find(s=>s.id===id);
+const staffName  = id => staffById(id)?.name || 'Unknown staff';
+const loanById   = id => state.data.loans.find(l=>l.id===id);
+
+// Add n months to an ISO date, clamping to the last valid day of the target month
+function addMonthsISO(iso,n){
+  if(!iso)return iso;
+  const [y,m,d]=iso.split('-').map(Number);
+  const t=new Date(y,m-1+n,1);
+  const lastDay=new Date(t.getFullYear(),t.getMonth()+1,0).getDate();
+  return `${t.getFullYear()}-${String(t.getMonth()+1).padStart(2,'0')}-${String(Math.min(d,lastDay)).padStart(2,'0')}`;
+}
+
+function loanRepaid(loan){return round2((loan.repayments||[]).reduce((s,r)=>s+Number(r.amount||0),0));}
+function loanBalance(loan){return round2(Number(loan.principal||0)-loanRepaid(loan));}
+function loanIsSettled(loan){return loan.status==='writtenoff'||loanBalance(loan)<=0.5;}
+
+// Equal instalments until the principal is exhausted; the last one is the remainder
+function loanSchedule(loan){
+  const principal=Number(loan.principal||0), inst=Number(loan.installmentAmount||0);
+  const start=loan.firstDueDate||loan.disbursedOn;
+  if(!(principal>0)||!(inst>0)||!start)return[];
+  const rows=[]; let rem=principal, i=0;
+  while(rem>0.5 && i<240){
+    const amt=round2(Math.min(inst,rem));
+    rows.push({no:i+1,dueDate:addMonthsISO(start,i),amount:amt});
+    rem=round2(rem-amt); i++;
+  }
+  return rows;
+}
+
+// Applies everything repaid against the schedule, oldest instalment first
+function loanScheduleStatus(loan){
+  const rows=loanSchedule(loan);
+  let pool=loanRepaid(loan); const t=today();
+  rows.forEach(r=>{
+    const applied=Math.min(pool,r.amount); pool=round2(pool-applied);
+    r.paid=round2(applied);
+    if(applied>=r.amount-0.5)      r.status='paid';
+    else if(applied>0)             r.status='partial';
+    else                           r.status=r.dueDate<=t?'overdue':'upcoming';
+  });
+  return {rows,advance:round2(pool)};
+}
+function loanNextDue(loan){return loanScheduleStatus(loan).rows.find(r=>r.status!=='paid')||null;}
+// Only instalments whose due date has passed count as arrears
+function loanOverdue(loan){
+  if(loan.status==='writtenoff')return 0;
+  const t=today();
+  return round2(loanScheduleStatus(loan).rows
+    .filter(r=>r.status!=='paid'&&r.dueDate<=t)
+    .reduce((s,r)=>s+(r.amount-r.paid),0));
+}
+function activeLoansForStaff(staffId){
+  return state.data.loans.filter(l=>l.staffId===staffId&&l.status!=='writtenoff'&&loanBalance(l)>0.5);
+}
+
+// Keeps loan.status in step with the balance (never overrides a manual write-off)
+function refreshLoanStatuses(d){
+  d.loans.forEach(l=>{ if(l.status!=='writtenoff') l.status = loanBalance(l)<=0.5?'closed':'active'; });
+}
+// One expense owns at most one repayment row; rebuild it from the expense every time.
+// The recovery only hits the loan once the payout is actually marked Paid.
+function syncExpenseLoan(d,exp){
+  d.loans.forEach(l=>{l.repayments=(l.repayments||[]).filter(r=>r.expenseId!==exp.id);});
+  const amt=round2(exp.loanDeduction);
+  if(exp.loanId&&amt>0&&exp.paid){
+    const l=d.loans.find(x=>x.id===exp.loanId);
+    if(l){
+      (l.repayments=l.repayments||[]).push({
+        id:uid(),date:exp.date,amount:amt,mode:'payout',expenseId:exp.id,
+        note:`Deducted from ${exp.description||'staff payout'}`
+      });
+    }
+  }
+  refreshLoanStatuses(d);
+}
+function unlinkExpenseLoan(d,expenseId){
+  d.loans.forEach(l=>{l.repayments=(l.repayments||[]).filter(r=>r.expenseId!==expenseId);});
+  refreshLoanStatuses(d);
+}
+
+const LOAN_ROW_META={
+  paid    :{label:'Paid',    bg:'#e8f4ef',color:'#1b5e38'},
+  partial :{label:'Partial', bg:'#fdf1e8',color:'#c05010'},
+  overdue :{label:'Overdue', bg:'#fdeaea',color:'#c62828'},
+  upcoming:{label:'Upcoming',bg:'#f0f0ee',color:'#5a5a58'},
+};
+function progressBar(pct,color='var(--accent)'){
+  return div({style:{height:6,background:'var(--border)',borderRadius:10,overflow:'hidden'}},
+    div({style:{height:'100%',width:Math.max(0,Math.min(100,pct))+'%',background:color,borderRadius:10,transition:'width .4s'}}));
+}
+
+// ─── Loans Tab ────────────────────────────────────────────────────────────────
+function renderLoans(){
+  const{data,loanFilter,expandedLoan,showStaffPanel}=state;
+  const wrap=div({style:{padding:'14px 12px 100px'}});
+
+  wrap.appendChild(div({style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}},
+    h('div',{style:{fontFamily:'Playfair Display',fontSize:20}},'Staff Loans'),
+    div({style:{display:'flex',gap:8}},
+      btn({style:{background:showStaffPanel?'var(--accent-light)':'var(--white)',color:showStaffPanel?'var(--accent)':'var(--muted)',border:`1.5px solid ${showStaffPanel?'var(--accent)':'var(--border)'}`,borderRadius:'var(--radius-sm)',padding:'7px 12px',fontSize:13,fontWeight:600,cursor:'pointer',display:'flex',alignItems:'center',gap:5},
+        onClick:()=>setState({showStaffPanel:!showStaffPanel})},ico('users',{style:{fontSize:15}}),'Staff'),
+      btn({className:'btn-primary btn-sm',onClick:()=>{
+        if(data.staff.length===0){alert('Add a staff member first — a loan has to belong to someone.');setState({modal:'addStaff',editItem:null});return;}
+        setState({modal:'addLoan',editItem:null});
+      }},ico('plus',{style:{marginRight:4}}),'Loan')
+    )
+  ));
+
+  if(showStaffPanel)wrap.appendChild(staffPanel());
+
+  const loans=data.loans;
+  const disbursed=round2(loans.reduce((s,l)=>s+Number(l.principal||0),0));
+  const recovered=round2(loans.reduce((s,l)=>s+loanRepaid(l),0));
+  const writtenOff=round2(loans.filter(l=>l.status==='writtenoff').reduce((s,l)=>s+loanBalance(l),0));
+  const outstanding=round2(loans.filter(l=>l.status!=='writtenoff').reduce((s,l)=>s+Math.max(0,loanBalance(l)),0));
+  const overdueTotal=round2(loans.reduce((s,l)=>s+loanOverdue(l),0));
+
+  if(loans.length===0&&data.staff.length===0){
+    wrap.appendChild(div({style:{textAlign:'center',padding:'56px 20px'}},
+      ico('wallet',{style:{fontSize:48,color:'var(--light)',display:'block',marginBottom:14}}),
+      h('div',{style:{fontFamily:'Playfair Display',fontSize:20,marginBottom:8}},'No staff yet'),
+      h('div',{style:{color:'var(--muted)',fontSize:14,marginBottom:20,lineHeight:1.6}},'Add your staff first, then record any loan or advance you give them.'),
+      btn({className:'btn-primary',onClick:()=>setState({modal:'addStaff',editItem:null})},ico('plus',{style:{marginRight:6}}),'Add Staff Member')
+    ));
+    return wrap;
+  }
+
+  // Summary
+  const sg=div({style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:14}});
+  [{label:'Disbursed',val:fmtCur(disbursed),icon:'cash',bg:'var(--info-light)',col:'var(--info)'},
+   {label:'Recovered',val:fmtCur(recovered),icon:'circle-check',bg:'var(--accent-light)',col:'var(--accent)'},
+   {label:'Outstanding',val:fmtCur(outstanding),icon:'hourglass',bg:'var(--gold-light)',col:'var(--gold)'},
+   {label:'Overdue',val:fmtCur(overdueTotal),icon:'alert-triangle',bg:overdueTotal>0?'var(--danger-light)':'var(--cream)',col:overdueTotal>0?'var(--danger)':'var(--muted)'}
+  ].forEach(s=>{
+    sg.appendChild(div({className:'card',style:{padding:'13px 14px'}},
+      div({style:{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:7}},
+        div({style:{fontSize:10,color:'var(--muted)',fontWeight:600,textTransform:'uppercase',letterSpacing:'0.06em'}},s.label),
+        div({style:{background:s.bg,borderRadius:8,padding:'4px 6px'}},ico(s.icon,{style:{fontSize:15,color:s.col}}))),
+      div({style:{fontSize:19,fontWeight:700,letterSpacing:'-0.02em'}},s.val)
+    ));
+  });
+  wrap.appendChild(sg);
+
+  // Overdue alert
+  const overdueLoans=loans.filter(l=>loanOverdue(l)>0);
+  if(overdueLoans.length>0){
+    const al=div({style:{background:'var(--danger-light)',border:'1.5px solid #f5c6c6',borderRadius:'var(--radius)',padding:'12px 14px',marginBottom:14}});
+    al.appendChild(div({style:{fontWeight:600,fontSize:13,color:'var(--danger)',marginBottom:8,display:'flex',alignItems:'center',gap:6}},
+      ico('alert-triangle',{style:{fontSize:16}}),`${overdueLoans.length} loan${overdueLoans.length>1?'s':''} behind schedule`));
+    overdueLoans.forEach(l=>al.appendChild(div({style:{fontSize:13,marginBottom:4,display:'flex',justifyContent:'space-between'}},
+      span({},staffName(l.staffId)),span({style:{fontWeight:600,color:'var(--danger)'}},fmtCur(loanOverdue(l))))));
+    wrap.appendChild(al);
+  }
+
+  // Filter chips
+  const counts={active:loans.filter(l=>!loanIsSettled(l)).length,closed:loans.filter(l=>loanIsSettled(l)).length,all:loans.length};
+  const chips=div({style:{display:'flex',gap:6,marginBottom:14,overflowX:'auto',paddingBottom:2,scrollbarWidth:'none'}});
+  [['active','Active'],['closed','Closed'],['all','All']].forEach(([v,l])=>{
+    const on=loanFilter===v;
+    chips.appendChild(btn({style:{padding:'5px 13px',borderRadius:20,whiteSpace:'nowrap',border:`1.5px solid ${on?'var(--accent)':'var(--border)'}`,background:on?'var(--accent-light)':'var(--white)',color:on?'var(--accent)':'var(--muted)',fontSize:13,fontWeight:on?600:400},
+      onClick:()=>setState({loanFilter:v})},`${l} (${counts[v]})`));
+  });
+  wrap.appendChild(chips);
+
+  const shown=loans.filter(l=>loanFilter==='all'?true:loanFilter==='closed'?loanIsSettled(l):!loanIsSettled(l))
+    .sort((a,b)=>String(b.disbursedOn||'').localeCompare(String(a.disbursedOn||'')));
+  if(shown.length===0)wrap.appendChild(div({style:{textAlign:'center',padding:'34px 20px',color:'var(--muted)',fontSize:14}},
+    loanFilter==='active'?'No active loans':'Nothing here'));
+  else shown.forEach(l=>wrap.appendChild(loanCard(l,expandedLoan===l.id)));
+
+  if(loans.length>0)wrap.appendChild(loanAnalysis(loans,{disbursed,recovered,outstanding,overdueTotal,writtenOff}));
+  return wrap;
+}
+
+// ─── Staff panel ──────────────────────────────────────────────────────────────
+function staffPanel(){
+  const{data}=state;
+  const card=div({className:'card',style:{padding:'14px',marginBottom:14}});
+  card.appendChild(div({style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:data.staff.length?12:0}},
+    div({style:{fontWeight:600,fontSize:14}},`Staff (${data.staff.length})`),
+    btn({className:'btn-ghost btn-sm',style:{padding:'5px 11px'},onClick:()=>setState({modal:'addStaff',editItem:null})},ico('plus',{style:{marginRight:4,fontSize:13}}),'Add')
+  ));
+  if(data.staff.length===0){
+    card.appendChild(div({style:{fontSize:13,color:'var(--muted)',marginTop:8}},'No staff added yet.'));
+    return card;
+  }
+  data.staff.forEach((s,i)=>{
+    const bal=round2(data.loans.filter(l=>l.staffId===s.id&&l.status!=='writtenoff').reduce((t,l)=>t+Math.max(0,loanBalance(l)),0));
+    const row=div({style:{display:'flex',justifyContent:'space-between',alignItems:'center',gap:8,paddingBottom:i<data.staff.length-1?11:0,marginBottom:i<data.staff.length-1?11:0,borderBottom:i<data.staff.length-1?'1px solid var(--border-soft)':'none'}});
+    row.appendChild(div({style:{minWidth:0}},
+      div({style:{fontWeight:600,fontSize:14}},s.name,s.active===false?span({style:{fontSize:11,color:'var(--muted)',fontWeight:400,marginLeft:6}},'· inactive'):null),
+      div({style:{fontSize:12,color:'var(--muted)',marginTop:2}},
+        [s.role,s.monthlySalary?`${fmtCur(s.monthlySalary)}/mo`:null,s.phone].filter(Boolean).join(' · ')||'—'),
+      bal>0?div({style:{fontSize:12,color:'var(--gold)',fontWeight:600,marginTop:3}},`Loan outstanding: ${fmtCur(bal)}`):null
+    ));
+    row.appendChild(div({style:{display:'flex',gap:6,flexShrink:0}},
+      btn({className:'btn-ghost btn-sm',style:{padding:'5px 9px'},onClick:()=>setState({modal:'addStaff',editItem:s})},ico('edit',{style:{fontSize:14}})),
+      btn({className:'btn-danger btn-sm',style:{padding:'5px 9px'},onClick:()=>{
+        const nLoans=state.data.loans.filter(l=>l.staffId===s.id).length;
+        if(nLoans>0){alert(`${s.name} has ${nLoans} loan record${nLoans>1?'s':''}. Delete or write off the loans first.`);return;}
+        if(confirm(`Remove ${s.name} from the staff list?`))mutateData(d=>d.staff=d.staff.filter(x=>x.id!==s.id));
+      }},ico('trash',{style:{fontSize:14}}))
+    ));
+    card.appendChild(row);
+  });
+  return card;
+}
+
+// ─── Loan card ────────────────────────────────────────────────────────────────
+function loanCard(l,expanded){
+  const principal=Number(l.principal||0);
+  const repaid=loanRepaid(l), bal=Math.max(0,loanBalance(l));
+  const pct=principal>0?Math.round(repaid/principal*100):0;
+  const overdue=loanOverdue(l), next=loanNextDue(l);
+  const settled=loanIsSettled(l), wo=l.status==='writtenoff';
+  const prop=state.data.properties.find(p=>p.id===l.propertyId);
+
+  const card=div({className:'card',style:{marginBottom:10,borderColor:overdue>0?'#f0c4c4':'var(--border)'}});
+  const head=div({style:{padding:'13px 14px',cursor:'pointer'},onClick:()=>setState({expandedLoan:expanded?null:l.id})});
+  head.appendChild(div({style:{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:9}},
+    div({style:{minWidth:0}},
+      div({style:{fontWeight:600,fontSize:15}},staffName(l.staffId)),
+      div({style:{fontSize:12,color:'var(--muted)',marginTop:3}},
+        `${fmtCur(principal)} on ${fmtDate(l.disbursedOn)}${prop?' · '+prop.name:''}`)
+    ),
+    div({style:{textAlign:'right',flexShrink:0}},
+      span({style:{background:wo?'#f0f0ee':settled?'var(--accent-light)':overdue>0?'var(--danger-light)':'var(--gold-light)',
+        color:wo?'#5a5a58':settled?'#1b5e38':overdue>0?'var(--danger)':'var(--gold)',borderRadius:20,padding:'4px 11px',fontSize:12,fontWeight:600}},
+        wo?'Written off':settled?'Closed':overdue>0?'Overdue':'Active'),
+      div({style:{fontSize:16,fontWeight:700,color:settled?'var(--muted)':'var(--gold)',marginTop:5}},fmtCur(bal)),
+      div({style:{fontSize:10.5,color:overdue>0?'var(--danger)':'var(--muted)',marginTop:1}},
+        overdue>0?`${fmtCur(overdue)} in arrears`:settled?'settled':'outstanding')
+    )
+  ));
+  head.appendChild(progressBar(pct,settled&&!wo?'var(--accent)':overdue>0?'var(--danger)':'var(--accent-mid)'));
+  head.appendChild(div({style:{display:'flex',justifyContent:'space-between',fontSize:11.5,color:'var(--muted)',marginTop:6}},
+    span({},`${fmtCur(repaid)} recovered · ${pct}%`),
+    span({},settled?(wo?'Written off':'Fully recovered'):next?`Next ${fmtCur(next.amount-next.paid)} due ${fmtDate(next.dueDate)}`:'—')
+  ));
+  card.appendChild(head);
+
+  if(!expanded)return card;
+
+  const body=div({style:{borderTop:'1px solid var(--border-soft)',padding:'12px 14px 14px',background:'#fafaf8',borderRadius:'0 0 var(--radius) var(--radius)'}});
+  if(l.notes)body.appendChild(div({style:{fontSize:13,color:'var(--muted)',fontStyle:'italic',marginBottom:10,background:'var(--white)',padding:'8px 10px',borderRadius:8,border:'1px solid var(--border)'}},`"${l.notes}"`));
+
+  // Key figures
+  const kv=div({style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'7px 12px',marginBottom:12}});
+  const {rows,advance}=loanScheduleStatus(l);
+  const remainingRows=rows.filter(r=>r.status!=='paid').length;
+  [['Instalment',fmtCur(l.installmentAmount)+' / month'],
+   ['Total instalments',String(rows.length)],
+   ['Paid so far',fmtCur(repaid)],
+   ['Instalments left',settled?'0':String(remainingRows)],
+   ['First due',fmtDate(l.firstDueDate||l.disbursedOn)],
+   ['Expected close',rows.length?fmtDate(rows[rows.length-1].dueDate):'—']
+  ].forEach(([k,v])=>kv.appendChild(div({},
+    div({style:{fontSize:10.5,color:'var(--muted)',fontWeight:600,textTransform:'uppercase',letterSpacing:'0.05em'}},k),
+    div({style:{fontSize:13.5,fontWeight:600,marginTop:2}},v))));
+  body.appendChild(kv);
+  if(advance>0.5)body.appendChild(div({style:{fontSize:12.5,color:'var(--accent)',fontWeight:600,marginBottom:10}},`Paid ${fmtCur(advance)} ahead of schedule`));
+
+  // Schedule
+  body.appendChild(div({style:{fontSize:12,fontWeight:600,color:'var(--muted)',textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:8}},'Repayment Schedule'));
+  const table=div({style:{background:'var(--white)',border:'1px solid var(--border)',borderRadius:10,overflow:'hidden',marginBottom:12,maxHeight:250,overflowY:'auto'}});
+  rows.forEach((r,i)=>{
+    const m=LOAN_ROW_META[r.status];
+    table.appendChild(div({style:{display:'flex',alignItems:'center',justifyContent:'space-between',gap:8,padding:'8px 11px',borderBottom:i<rows.length-1?'1px solid var(--border-soft)':'none',background:r.status==='overdue'?'#fff7f7':'var(--white)'}},
+      div({style:{display:'flex',alignItems:'center',gap:9,minWidth:0}},
+        span({style:{fontSize:11,color:'var(--light)',fontWeight:600,width:18}},String(r.no)),
+        div({},
+          div({style:{fontSize:13,fontWeight:600}},fmtCur(r.amount)),
+          div({style:{fontSize:11,color:'var(--muted)',marginTop:1}},fmtDate(r.dueDate)+(r.status==='partial'?` · ${fmtCur(r.paid)} received`:''))
+        )
+      ),
+      span({style:{background:m.bg,color:m.color,borderRadius:20,padding:'3px 10px',fontSize:11,fontWeight:600,flexShrink:0}},m.label)
+    ));
+  });
+  body.appendChild(table);
+
+  // Repayment history
+  const reps=[...(l.repayments||[])].sort((a,b)=>String(b.date).localeCompare(String(a.date)));
+  body.appendChild(div({style:{fontSize:12,fontWeight:600,color:'var(--muted)',textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:8}},`Repayments (${reps.length})`));
+  if(reps.length===0)body.appendChild(div({style:{fontSize:13,color:'var(--muted)',marginBottom:12}},'Nothing recovered yet.'));
+  else{
+    const hist=div({style:{marginBottom:12}});
+    reps.forEach(r=>{
+      hist.appendChild(div({style:{display:'flex',justifyContent:'space-between',alignItems:'center',gap:8,background:'var(--white)',border:'1px solid var(--border)',borderRadius:9,padding:'8px 11px',marginBottom:6}},
+        div({style:{minWidth:0}},
+          div({style:{fontSize:13,fontWeight:600}},fmtCur(r.amount),
+            span({style:{fontSize:11,fontWeight:600,marginLeft:7,padding:'2px 8px',borderRadius:20,background:r.mode==='payout'?'var(--info-light)':'var(--accent-light)',color:r.mode==='payout'?'var(--info)':'var(--accent)'}},
+              r.mode==='payout'?'Payout deduction':'Direct')),
+          div({style:{fontSize:11,color:'var(--muted)',marginTop:2}},fmtDate(r.date)+(r.note?` · ${r.note}`:''))
+        ),
+        r.mode==='payout'
+          ? span({title:'Edit the linked expense to change this',style:{fontSize:11,color:'var(--light)',flexShrink:0}},ico('link',{style:{fontSize:14}}))
+          : btn({className:'btn-danger btn-sm',style:{padding:'4px 8px',flexShrink:0},onClick:()=>{
+              if(confirm(`Remove this ${fmtCur(r.amount)} repayment?`))mutateData(d=>{
+                const loan=d.loans.find(x=>x.id===l.id);
+                loan.repayments=loan.repayments.filter(x=>x.id!==r.id);refreshLoanStatuses(d);
+              });
+            }},ico('trash',{style:{fontSize:13}}))
+      ));
+    });
+    body.appendChild(hist);
+  }
+
+  // Actions
+  const acts=div({style:{display:'flex',gap:7,flexWrap:'wrap'}});
+  if(!settled)acts.appendChild(btn({className:'btn-primary btn-sm',onClick:()=>setState({modal:'addRepayment',editItem:l})},ico('cash',{style:{marginRight:5}}),'Record Repayment'));
+  acts.appendChild(btn({className:'btn-ghost btn-sm',onClick:()=>setState({modal:'addLoan',editItem:l})},ico('edit',{style:{marginRight:4}}),'Edit'));
+  if(!settled)acts.appendChild(btn({className:'btn-ghost btn-sm',onClick:()=>{
+    if(confirm(`Write off the remaining ${fmtCur(bal)}? The loan will be marked as written off and stop appearing as recoverable.`))
+      mutateData(d=>{d.loans=d.loans.map(x=>x.id===l.id?{...x,status:'writtenoff',writtenOffOn:today()}:x);});
+  }},'Write Off'));
+  if(wo)acts.appendChild(btn({className:'btn-ghost btn-sm',onClick:()=>mutateData(d=>{d.loans=d.loans.map(x=>x.id===l.id?{...x,status:'active',writtenOffOn:''}:x);refreshLoanStatuses(d);})},'Reopen'));
+  acts.appendChild(btn({className:'btn-danger btn-sm',onClick:()=>{
+    const linked=(l.repayments||[]).filter(r=>r.expenseId).length;
+    if(!confirm(`Delete this loan?${linked?`\n\n${linked} payout deduction${linked>1?'s':''} are linked to it — those expenses will stay, but the amounts deducted will no longer be tracked against any loan.`:''}`))return;
+    mutateData(d=>{
+      d.loans=d.loans.filter(x=>x.id!==l.id);
+      d.expenses=d.expenses.map(e=>e.loanId===l.id?{...e,loanId:'',loanDeduction:0}:e);
+    });
+    setState({expandedLoan:null});
+  }},ico('trash',{style:{marginRight:4}}),'Delete'));
+  body.appendChild(acts);
+  card.appendChild(body);
+  return card;
+}
+
+// ─── Loan analysis ────────────────────────────────────────────────────────────
+function loanAnalysis(loans,t){
+  const wrap=div({});
+  const active=loans.filter(l=>!loanIsSettled(l));
+  const recoveryPct=t.disbursed>0?Math.round(t.recovered/t.disbursed*100):0;
+
+  const card=div({className:'card',style:{padding:'16px',marginTop:4,marginBottom:14}});
+  card.appendChild(div({style:{fontWeight:600,fontSize:14,marginBottom:14}},'Loan Analysis'));
+
+  // Recovery progress
+  card.appendChild(div({style:{marginBottom:16}},
+    div({style:{display:'flex',justifyContent:'space-between',fontSize:13,marginBottom:6}},
+      span({style:{color:'var(--text-mid)',fontWeight:500}},'Overall recovery'),
+      span({style:{fontWeight:600}},`${fmtCur(t.recovered)} of ${fmtCur(t.disbursed)} · ${recoveryPct}%`)),
+    progressBar(recoveryPct)
+  ));
+
+  // Key ratios
+  const totalInst=round2(active.reduce((s,l)=>s+Number(l.installmentAmount||0),0));
+  const monthsToClear=totalInst>0?Math.ceil(t.outstanding/totalInst):0;
+  const payoutRecovered=round2(loans.reduce((s,l)=>s+(l.repayments||[]).filter(r=>r.mode==='payout').reduce((a,r)=>a+Number(r.amount||0),0),0));
+  const cashRecovered=round2(t.recovered-payoutRecovered);
+  const grid=div({style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'12px 14px',marginBottom:16}});
+  [['Active loans',String(active.length)],
+   ['Staff with a loan',String(new Set(active.map(l=>l.staffId)).size)],
+   ['Monthly recovery run-rate',fmtCur(totalInst)],
+   ['Months to clear',monthsToClear?`${monthsToClear} month${monthsToClear>1?'s':''}`:'—'],
+   ['Avg loan size',loans.length?fmtCur(round2(t.disbursed/loans.length)):'—'],
+   ['Written off',fmtCur(t.writtenOff)]
+  ].forEach(([k,v])=>grid.appendChild(div({},
+    div({style:{fontSize:10.5,color:'var(--muted)',fontWeight:600,textTransform:'uppercase',letterSpacing:'0.05em'}},k),
+    div({style:{fontSize:15,fontWeight:700,marginTop:3}},v))));
+  card.appendChild(grid);
+
+  // Recovery route split
+  if(t.recovered>0){
+    const pPct=Math.round(payoutRecovered/t.recovered*100);
+    card.appendChild(div({style:{marginBottom:16}},
+      div({style:{fontSize:12,fontWeight:600,color:'var(--muted)',textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:8}},'How it came back'),
+      div({style:{display:'flex',justifyContent:'space-between',fontSize:13,marginBottom:5}},
+        span({style:{color:'var(--text-mid)'}},'Deducted from payouts'),span({style:{fontWeight:600}},`${fmtCur(payoutRecovered)} (${pPct}%)`)),
+      progressBar(pPct,'var(--info)'),
+      div({style:{display:'flex',justifyContent:'space-between',fontSize:13,margin:'9px 0 5px'}},
+        span({style:{color:'var(--text-mid)'}},'Paid directly'),span({style:{fontWeight:600}},`${fmtCur(cashRecovered)} (${100-pPct}%)`)),
+      progressBar(100-pPct,'var(--accent)')
+    ));
+  }
+
+  // Exposure per staff
+  const byStaff={};
+  loans.filter(l=>l.status!=='writtenoff').forEach(l=>{
+    const b=Math.max(0,loanBalance(l)); if(b<=0.5)return;
+    byStaff[l.staffId]=round2((byStaff[l.staffId]||0)+b);
+  });
+  const entries=Object.entries(byStaff).sort((a,b)=>b[1]-a[1]);
+  if(entries.length>0){
+    const max=entries[0][1];
+    card.appendChild(div({style:{fontSize:12,fontWeight:600,color:'var(--muted)',textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:9}},'Outstanding by staff'));
+    entries.forEach(([sid,v])=>{
+      const s=staffById(sid);
+      const salary=Number(s?.monthlySalary||0);
+      const inst=round2(activeLoansForStaff(sid).reduce((a,l)=>a+Number(l.installmentAmount||0),0));
+      const burden=salary>0?Math.round(inst/salary*100):0;
+      card.appendChild(div({style:{marginBottom:11}},
+        div({style:{display:'flex',justifyContent:'space-between',fontSize:13,marginBottom:5}},
+          span({style:{color:'var(--text-mid)',fontWeight:500}},staffName(sid)),
+          span({style:{fontWeight:600,color:'var(--gold)'}},fmtCur(v))),
+        progressBar(Math.round(v/max*100),'var(--gold)'),
+        salary>0?div({style:{fontSize:11,color:burden>40?'var(--danger)':'var(--muted)',marginTop:4}},
+          `${fmtCur(inst)}/mo instalment · ${burden}% of ${fmtCur(salary)} salary${burden>40?' — heavy deduction':''}`):null
+      ));
+    });
+  }
+  wrap.appendChild(card);
+
+  // Recovery history — last 6 months
+  const now=new Date(); const buckets=[];
+  for(let i=5;i>=0;i--){const d=new Date(now.getFullYear(),now.getMonth()-i,1);buckets.push({y:d.getFullYear(),m:d.getMonth(),v:0});}
+  loans.forEach(l=>(l.repayments||[]).forEach(r=>{
+    if(!r.date)return;
+    const d=new Date(r.date+'T00:00:00');
+    const b=buckets.find(x=>x.y===d.getFullYear()&&x.m===d.getMonth());
+    if(b)b.v=round2(b.v+Number(r.amount||0));
+  }));
+  if(buckets.some(b=>b.v>0)){
+    const maxV=Math.max(...buckets.map(b=>b.v),1);
+    const chart=div({className:'card',style:{padding:'16px',marginBottom:14}});
+    chart.appendChild(div({style:{fontWeight:600,fontSize:14,marginBottom:14}},'Recovered · last 6 months'));
+    const bars=div({style:{display:'flex',alignItems:'flex-end',gap:8,height:96}});
+    buckets.forEach(b=>{
+      bars.appendChild(div({style:{flex:1,display:'flex',flexDirection:'column',alignItems:'center',gap:3}},
+        div({style:{fontSize:9.5,color:'var(--muted)',fontWeight:600,height:12}},b.v>0?'₹'+Math.round(b.v/1000)+'k':''),
+        div({style:{width:'100%',display:'flex',alignItems:'flex-end',height:60}},
+          div({style:{width:'64%',margin:'0 auto',background:'var(--accent)',opacity:0.85,borderRadius:'3px 3px 0 0',height:Math.max(2,(b.v/maxV)*58)+'px'}})),
+        div({style:{fontSize:9.5,color:'var(--muted)'}},MONTH_SHORT[b.m])
+      ));
+    });
+    chart.appendChild(bars);
+    wrap.appendChild(chart);
+  }
+  return wrap;
+}
+
 // ─── Modals ───────────────────────────────────────────────────────────────────
+function renderStaffModal(){
+  const{editItem}=state; const isEdit=!!editItem;
+  const f=isEdit?{...editItem}:{name:'',role:'',phone:'',monthlySalary:'',active:true,joinedOn:today()};
+  const content=()=>{
+    const wrap=div({style:{display:'flex',flexDirection:'column',gap:11}});
+    [['name','Staff name *','text'],['role','Role (caretaker, cook…)','text'],['phone','Phone number','tel'],['monthlySalary','Monthly salary (₹)','number']].forEach(([k,ph,t])=>{
+      const inp=h('input',{type:t,placeholder:ph,value:f[k]??''});inp.addEventListener('input',e=>f[k]=e.target.value);wrap.appendChild(inp);
+    });
+    const joinWrap=div({},div({className:'label'},'Joined on'));
+    const joinInp=h('input',{type:'date',value:f.joinedOn||today()});joinInp.addEventListener('change',e=>f.joinedOn=e.target.value);joinWrap.appendChild(joinInp);wrap.appendChild(joinWrap);
+    if(isEdit){
+      const actRow=div({style:{display:'flex',alignItems:'center',justifyContent:'space-between',background:'var(--cream)',borderRadius:'var(--radius-sm)',padding:'10px 14px',border:'1.5px solid var(--border)'}});
+      actRow.appendChild(div({style:{fontSize:14,fontWeight:500}},'Currently employed'));
+      const tog=div({style:{display:'flex',gap:8}});
+      [['Yes',true],['No',false]].forEach(([lbl,val])=>{
+        tog.appendChild(btn({style:{padding:'5px 14px',borderRadius:20,border:`1.5px solid ${(f.active!==false)===val?'var(--accent)':'var(--border)'}`,background:(f.active!==false)===val?'var(--accent-light)':'var(--white)',color:(f.active!==false)===val?'var(--accent)':'var(--muted)',fontSize:13,fontWeight:(f.active!==false)===val?600:400},
+          onClick:()=>{f.active=val;tog.querySelectorAll('button').forEach((b2,i)=>{const on=(f.active!==false)===(i===0);b2.style.borderColor=on?'var(--accent)':'var(--border)';b2.style.background=on?'var(--accent-light)':'var(--white)';b2.style.color=on?'var(--accent)':'var(--muted)';b2.style.fontWeight=on?600:400;});}},lbl));
+      });
+      actRow.appendChild(tog);wrap.appendChild(actRow);
+    }
+    wrap.appendChild(btn({className:'btn-primary',style:{marginTop:4,width:'100%'},onClick:()=>{
+      if(!f.name)return;
+      mutateData(d=>{if(isEdit)d.staff=d.staff.map(s=>s.id===f.id?f:s);else d.staff.push({...f,id:uid()});});
+      closeModal();
+    }},isEdit?'Update Staff':'Add Staff'));
+    return wrap;
+  };
+  return modal(isEdit?'Edit Staff':'Add Staff',content);
+}
+
+function renderLoanModal(){
+  const{data,editItem}=state; const isEdit=!!editItem;
+  const f=isEdit?{...editItem}:{staffId:data.staff[0]?.id||'',propertyId:data.properties[0]?.id||'',principal:'',
+    disbursedOn:today(),firstDueDate:addMonthsISO(today(),1),installmentAmount:'',notes:'',status:'active',repayments:[]};
+  const content=()=>{
+    const wrap=div({style:{display:'flex',flexDirection:'column',gap:11}});
+
+    wrap.appendChild(div({className:'label'},'Staff member'));
+    const stSel=h('select');
+    data.staff.filter(s=>s.active!==false||s.id===f.staffId).forEach(s=>stSel.appendChild(h('option',{value:s.id,selected:f.staffId===s.id},s.name+(s.role?` — ${s.role}`:''))));
+    stSel.addEventListener('change',e=>{f.staffId=e.target.value;refreshHint();});wrap.appendChild(stSel);
+
+    if(data.properties.length>0){
+      wrap.appendChild(div({className:'label'},'Charge to property'));
+      const pSel=h('select');
+      pSel.appendChild(h('option',{value:'',selected:!f.propertyId},'Not property-specific'));
+      data.properties.forEach(p=>pSel.appendChild(h('option',{value:p.id,selected:f.propertyId===p.id},p.name)));
+      pSel.addEventListener('change',e=>f.propertyId=e.target.value);wrap.appendChild(pSel);
+    }
+
+    const amtInp=h('input',{type:'number',placeholder:'Loan amount (₹) *',value:f.principal||''});
+    amtInp.addEventListener('input',e=>{f.principal=e.target.value;refreshHint();});wrap.appendChild(amtInp);
+
+    const instInp=h('input',{type:'number',placeholder:'Monthly instalment (₹) *',value:f.installmentAmount||''});
+    instInp.addEventListener('input',e=>{f.installmentAmount=e.target.value;refreshHint();});wrap.appendChild(instInp);
+
+    const dates=div({style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}});
+    const dWrap=div({},div({className:'label'},'Given on'));
+    const dInp=h('input',{type:'date',value:f.disbursedOn||today()});
+    dInp.addEventListener('change',e=>{f.disbursedOn=e.target.value;if(!isEdit){f.firstDueDate=addMonthsISO(e.target.value,1);fdInp.value=f.firstDueDate;}refreshHint();});
+    dWrap.appendChild(dInp);
+    const fdWrap=div({},div({className:'label'},'First instalment due'));
+    const fdInp=h('input',{type:'date',value:f.firstDueDate||addMonthsISO(today(),1)});
+    fdInp.addEventListener('change',e=>{f.firstDueDate=e.target.value;refreshHint();});
+    fdWrap.appendChild(fdInp);
+    dates.appendChild(dWrap);dates.appendChild(fdWrap);wrap.appendChild(dates);
+
+    const hint=div({style:{background:'var(--accent-light)',border:'1px solid #cfe6db',borderRadius:'var(--radius-sm)',padding:'11px 13px',fontSize:13,color:'var(--accent)',lineHeight:1.55,minHeight:20}});
+    wrap.appendChild(hint);
+    function refreshHint(){
+      hint.innerHTML='';
+      const p=Number(f.principal||0),i=Number(f.installmentAmount||0);
+      if(!(p>0)||!(i>0)){hint.appendChild(document.createTextNode('Enter the amount and instalment to preview the schedule.'));return;}
+      const rows=loanSchedule({principal:p,installmentAmount:i,firstDueDate:f.firstDueDate||f.disbursedOn,disbursedOn:f.disbursedOn});
+      const last=rows[rows.length-1];
+      hint.appendChild(div({style:{fontWeight:600,marginBottom:3}},`${rows.length} instalment${rows.length>1?'s':''} of ${fmtCur(i)}`));
+      hint.appendChild(div({},`${fmtDate(rows[0].dueDate)} → ${fmtDate(last.dueDate)}${last.amount!==i?` (last one ${fmtCur(last.amount)})`:''}`));
+      const s=staffById(f.staffId);
+      if(s?.monthlySalary){
+        const b=Math.round(i/Number(s.monthlySalary)*100);
+        hint.appendChild(div({style:{marginTop:3,color:b>40?'var(--danger)':'var(--accent)'}},`${b}% of ${s.name}'s ${fmtCur(s.monthlySalary)} monthly salary`));
+      }
+    }
+    refreshHint();
+
+    const notesTA=h('textarea',{placeholder:'Purpose / notes (optional)',rows:2,style:{resize:'none'}});
+    notesTA.textContent=f.notes||'';notesTA.addEventListener('input',e=>f.notes=e.target.value);wrap.appendChild(notesTA);
+
+    if(isEdit&&loanRepaid(editItem)>0)
+      wrap.appendChild(div({style:{fontSize:12.5,color:'var(--warn)',background:'var(--warn-light)',border:'1px solid #f5cba0',borderRadius:'var(--radius-sm)',padding:'9px 12px',lineHeight:1.5}},
+        `${fmtCur(loanRepaid(editItem))} already recovered on this loan. Changing the amount or instalment re-draws the schedule; recorded repayments stay untouched.`));
+
+    wrap.appendChild(btn({className:'btn-primary',style:{marginTop:4,width:'100%'},onClick:()=>{
+      if(!f.staffId||!(Number(f.principal)>0)||!(Number(f.installmentAmount)>0)){alert('Staff, loan amount and monthly instalment are all required.');return;}
+      if(Number(f.installmentAmount)>Number(f.principal)){alert('The instalment cannot be larger than the loan amount.');return;}
+      f.principal=Number(f.principal);f.installmentAmount=Number(f.installmentAmount);
+      mutateData(d=>{
+        if(isEdit)d.loans=d.loans.map(l=>l.id===f.id?{...f,repayments:l.repayments||[]}:l);
+        else d.loans.push({...f,id:uid(),repayments:[]});
+        refreshLoanStatuses(d);
+      });
+      closeModal();
+    }},isEdit?'Update Loan':'Add Loan'));
+    return wrap;
+  };
+  return modal(isEdit?'Edit Loan':'New Staff Loan',content);
+}
+
+function renderRepaymentModal(){
+  const loan=state.editItem; if(!loan)return modal('Record Repayment',()=>div({}));
+  const next=loanNextDue(loan), bal=Math.max(0,loanBalance(loan));
+  const f={date:today(),amount:next?round2(Math.min(next.amount-next.paid,bal)):bal,note:''};
+  const content=()=>{
+    const wrap=div({style:{display:'flex',flexDirection:'column',gap:11}});
+    wrap.appendChild(div({style:{background:'var(--cream)',borderRadius:'var(--radius-sm)',padding:'11px 13px',fontSize:13,lineHeight:1.6,border:'1px solid var(--border)'}},
+      div({style:{fontWeight:600,marginBottom:2}},staffName(loan.staffId)),
+      div({style:{color:'var(--muted)'}},`Outstanding ${fmtCur(bal)}${next?` · instalment ${fmtCur(next.amount-next.paid)} due ${fmtDate(next.dueDate)}`:''}`)
+    ));
+    wrap.appendChild(div({style:{fontSize:12.5,color:'var(--muted)',lineHeight:1.5}},
+      'Use this for cash or transfer repaid directly. Instalments cut from a salary payout are recorded from the expense entry instead.'));
+    const amtInp=h('input',{type:'number',placeholder:'Amount received (₹) *',value:f.amount||''});
+    amtInp.addEventListener('input',e=>f.amount=e.target.value);wrap.appendChild(amtInp);
+    const dWrap=div({},div({className:'label'},'Received on'));
+    const dInp=h('input',{type:'date',value:f.date});dInp.addEventListener('change',e=>f.date=e.target.value);dWrap.appendChild(dInp);wrap.appendChild(dWrap);
+    const nInp=h('input',{type:'text',placeholder:'Note (optional)'});nInp.addEventListener('input',e=>f.note=e.target.value);wrap.appendChild(nInp);
+    wrap.appendChild(btn({className:'btn-primary',style:{marginTop:4,width:'100%'},onClick:()=>{
+      const amt=round2(f.amount);
+      if(!(amt>0))return;
+      if(amt>bal+0.5&&!confirm(`${fmtCur(amt)} is more than the ${fmtCur(bal)} outstanding. Record it anyway?`))return;
+      mutateData(d=>{
+        const l=d.loans.find(x=>x.id===loan.id);
+        (l.repayments=l.repayments||[]).push({id:uid(),date:f.date,amount:amt,mode:'direct',note:f.note||''});
+        refreshLoanStatuses(d);
+      });
+      closeModal();
+    }},'Record Repayment'));
+    return wrap;
+  };
+  return modal('Record Repayment',content);
+}
+
 function renderPropertyModal(){
   const f={name:'',location:'',rooms:'',pricePerNight:'',description:''};
   const content=()=>{
@@ -1029,19 +1699,123 @@ function renderBookingModal(){
 function renderExpenseModal(){
   const{data,editItem}=state;
   const isEdit=!!editItem;
-  const f=isEdit?{...editItem}:{propertyId:data.properties[0]?.id||'',description:'',amount:'',date:today(),category:'maintenance',paid:false,notes:''};
+  const f=isEdit?{...editItem}:{propertyId:data.properties[0]?.id||'',description:'',amount:'',date:today(),category:'maintenance',paid:false,notes:'',staffId:'',loanId:'',loanDeduction:0};
+  if(!f.staffId)f.staffId='';
+  if(!f.loanId){f.loanId='';f.loanDeduction=0;}
+  // "gross" is what you owe the staff before any loan cut; f.amount is the cash actually paid
+  const g={val:isEdit?Number(f.grossAmount||f.amount||0)||'':''};
   const content=()=>{
     const wrap=div({style:{display:'flex',flexDirection:'column',gap:11}});
     const propSel=h('select');
     data.properties.forEach(p=>propSel.appendChild(h('option',{value:p.id,selected:f.propertyId===p.id},p.name)));
     propSel.addEventListener('change',e=>f.propertyId=e.target.value);wrap.appendChild(propSel);
     const descInp=h('input',{type:'text',placeholder:'Description *',value:f.description||''});descInp.addEventListener('input',e=>f.description=e.target.value);wrap.appendChild(descInp);
-    const amtInp=h('input',{type:'number',placeholder:'Amount (₹) *',value:f.amount||''});amtInp.addEventListener('input',e=>f.amount=e.target.value);wrap.appendChild(amtInp);
+    const amtInp=h('input',{type:'number',placeholder:'Amount (₹) *',value:g.val||''});
+    amtInp.addEventListener('input',e=>{g.val=e.target.value;updateNet();});wrap.appendChild(amtInp);
     const dateWrap=div({},div({className:'label'},'Date'));
     const dateInp=h('input',{type:'date',value:f.date||today()});dateInp.addEventListener('change',e=>f.date=e.target.value);dateWrap.appendChild(dateInp);wrap.appendChild(dateWrap);
     const catSel=h('select');
     [['maintenance','🔧 Maintenance'],['utilities','💡 Utilities'],['supplies','🛒 Supplies'],['staff','👤 Staff'],['marketing','📣 Marketing'],['other','📦 Other']].forEach(([v,l])=>catSel.appendChild(h('option',{value:v,selected:f.category===v},l)));
-    catSel.addEventListener('change',e=>f.category=e.target.value);wrap.appendChild(catSel);
+    catSel.addEventListener('change',e=>{f.category=e.target.value;buildStaffBlock();});wrap.appendChild(catSel);
+
+    // ── Staff payout + loan recovery ─────────────────────────────────────────
+    const staffBlock=div({style:{display:'flex',flexDirection:'column',gap:11}});
+    wrap.appendChild(staffBlock);
+    const netLine=div({style:{display:'none'}});
+    wrap.appendChild(netLine);
+
+    function updateNet(){
+      const gross=round2(g.val), ded=round2(f.loanDeduction);
+      const showPending=!!f.loanId&&ded>0&&!f.paid;
+      pendingNote.style.display=showPending?'block':'none';
+      pendingNote.textContent=showPending?`This payout is marked Unpaid, so the ${fmtCur(ded)} is not credited to the loan yet. It posts against the loan the moment you mark it Paid.`:'';
+      if(!(f.loanId&&ded>0)){netLine.style.display='none';netLine.innerHTML='';return;}
+      const net=round2(gross-ded);
+      netLine.innerHTML='';
+      netLine.style.display='block';
+      Object.assign(netLine.style,{background:'var(--accent-light)',border:'1px solid #cfe6db',borderRadius:'var(--radius-sm)',padding:'11px 13px',fontSize:13,lineHeight:1.6,color:'var(--accent)'});
+      netLine.appendChild(div({style:{display:'flex',justifyContent:'space-between'}},span({},'Payout due'),span({style:{fontWeight:600}},fmtCur(gross))));
+      netLine.appendChild(div({style:{display:'flex',justifyContent:'space-between'}},span({},'Less loan instalment'),span({style:{fontWeight:600}},'− '+fmtCur(ded))));
+      netLine.appendChild(div({style:{display:'flex',justifyContent:'space-between',borderTop:'1px solid #cfe6db',marginTop:5,paddingTop:5,fontWeight:700,color:net<0?'var(--danger)':'var(--accent)'}},
+        span({},'Cash paid (booked as expense)'),span({},fmtCur(net))));
+      if(net<0)netLine.appendChild(div({style:{color:'var(--danger)',marginTop:4}},'The deduction is larger than the payout.'));
+    }
+
+    function buildStaffBlock(){
+      staffBlock.innerHTML='';
+      if(f.category!=='staff'){f.staffId='';f.loanId='';f.loanDeduction=0;updateNet();return;}
+      if(data.staff.length===0){
+        staffBlock.appendChild(div({style:{background:'var(--cream)',border:'1px solid var(--border)',borderRadius:'var(--radius-sm)',padding:'11px 13px',fontSize:12.5,color:'var(--muted)',lineHeight:1.5}},
+          'No staff on record yet. Add staff in the Loans tab to link payouts and deduct loan instalments here.'));
+        updateNet();return;
+      }
+      staffBlock.appendChild(div({className:'label'},'Paid to'));
+      const sSel=h('select');
+      sSel.appendChild(h('option',{value:'',selected:!f.staffId},'Not a specific person'));
+      data.staff.filter(s=>s.active!==false||s.id===f.staffId).forEach(s=>sSel.appendChild(h('option',{value:s.id,selected:f.staffId===s.id},s.name+(s.role?` — ${s.role}`:''))));
+      sSel.addEventListener('change',e=>{f.staffId=e.target.value;f.loanId='';f.loanDeduction=0;buildStaffBlock();});
+      staffBlock.appendChild(sSel);
+
+      if(!f.staffId){f.loanId='';f.loanDeduction=0;updateNet();return;}
+      const s=staffById(f.staffId);
+      if(s?.monthlySalary&&!g.val&&!isEdit){g.val=Number(s.monthlySalary);amtInp.value=g.val;}
+
+      const loans=activeLoansForStaff(f.staffId);
+      // keep an already-linked loan selectable even if it just went to zero
+      if(f.loanId&&!loans.some(l=>l.id===f.loanId)){const cur=loanById(f.loanId);if(cur)loans.push(cur);}
+      if(loans.length===0){
+        staffBlock.appendChild(div({style:{fontSize:12.5,color:'var(--muted)'}},`No running loan for ${s.name}.`));
+        f.loanId='';f.loanDeduction=0;updateNet();return;
+      }
+
+      const on=!!f.loanId;
+      const togRow=div({style:{display:'flex',alignItems:'center',justifyContent:'space-between',gap:10,background:on?'var(--gold-light)':'var(--cream)',borderRadius:'var(--radius-sm)',padding:'11px 13px',border:`1.5px solid ${on?'#e8d9a8':'var(--border)'}`,cursor:'pointer'}});
+      togRow.appendChild(div({style:{minWidth:0}},
+        div({style:{fontSize:14,fontWeight:600}},'Deduct loan instalment'),
+        div({style:{fontSize:12,color:'var(--muted)',marginTop:2}},`${s.name} owes ${fmtCur(round2(loans.reduce((a,l)=>a+Math.max(0,loanBalance(l)),0)))}`)
+      ));
+      const knob=div({style:{width:44,height:26,borderRadius:20,background:on?'var(--accent)':'var(--border)',flexShrink:0,position:'relative',transition:'background .15s'}},
+        div({style:{width:20,height:20,borderRadius:'50%',background:'#fff',position:'absolute',top:3,left:on?21:3,transition:'left .15s',boxShadow:'0 1px 3px rgba(0,0,0,0.2)'}}));
+      togRow.appendChild(knob);
+      togRow.addEventListener('click',()=>{
+        if(f.loanId){f.loanId='';f.loanDeduction=0;}
+        else{
+          const l=loans[0];
+          f.loanId=l.id;
+          const nd=loanNextDue(l);
+          f.loanDeduction=round2(Math.min(nd?nd.amount-nd.paid:Number(l.installmentAmount||0),Math.max(0,loanBalance(l))));
+          f.paid=true;
+        }
+        buildStaffBlock();syncPaidToggle();
+      });
+      staffBlock.appendChild(togRow);
+
+      if(f.loanId){
+        const l=loanById(f.loanId);
+        if(loans.length>1){
+          staffBlock.appendChild(div({className:'label'},'Against which loan'));
+          const lSel=h('select');
+          loans.forEach(x=>lSel.appendChild(h('option',{value:x.id,selected:f.loanId===x.id},
+            `${fmtCur(x.principal)} of ${fmtDate(x.disbursedOn)} · ${fmtCur(Math.max(0,loanBalance(x)))} left`)));
+          lSel.addEventListener('change',e=>{
+            f.loanId=e.target.value;
+            const nl=loanById(f.loanId),nd=loanNextDue(nl);
+            f.loanDeduction=round2(Math.min(nd?nd.amount-nd.paid:Number(nl.installmentAmount||0),Math.max(0,loanBalance(nl))));
+            buildStaffBlock();
+          });
+          staffBlock.appendChild(lSel);
+        }
+        staffBlock.appendChild(div({className:'label'},'Instalment to deduct (₹)'));
+        const dInp=h('input',{type:'number',value:f.loanDeduction||''});
+        dInp.addEventListener('input',e=>{f.loanDeduction=e.target.value;updateNet();});
+        staffBlock.appendChild(dInp);
+        const bal=Math.max(0,loanBalance(l)),nd=loanNextDue(l);
+        staffBlock.appendChild(div({style:{fontSize:12,color:'var(--muted)',lineHeight:1.5}},
+          `Scheduled instalment ${fmtCur(l.installmentAmount)}${nd?` · due ${fmtDate(nd.dueDate)}`:''} · balance ${fmtCur(bal)}. The loan is credited once this payout is marked Paid.`));
+      }
+      updateNet();
+    }
+
     // Paid toggle
     const paidRow=div({style:{display:'flex',alignItems:'center',justifyContent:'space-between',background:'var(--cream)',borderRadius:'var(--radius-sm)',padding:'10px 14px',border:'1.5px solid var(--border)'}});
     paidRow.appendChild(div({style:{fontSize:14,fontWeight:500}},'Payment Status'));
@@ -1050,26 +1824,49 @@ function renderExpenseModal(){
       const isPaid=lbl==='Paid';
       const b=btn({
         style:{padding:'5px 14px',borderRadius:20,border:`1.5px solid ${f.paid===isPaid?'var(--accent)':'var(--border)'}`,background:f.paid===isPaid?'var(--accent-light)':'var(--white)',color:f.paid===isPaid?'var(--accent)':'var(--muted)',fontSize:13,fontWeight:f.paid===isPaid?600:400,cursor:'pointer'},
-        onClick:()=>{
-          f.paid=isPaid;
-          toggle.querySelectorAll('button').forEach((b2,i)=>{
-            const ip2=i===0;
-            b2.style.borderColor=f.paid===ip2?'var(--accent)':'var(--border)';
-            b2.style.background=f.paid===ip2?'var(--accent-light)':'var(--white)';
-            b2.style.color=f.paid===ip2?'var(--accent)':'var(--muted)';
-            b2.style.fontWeight=f.paid===ip2?600:400;
-          });
-        }
+        onClick:()=>{f.paid=isPaid;syncPaidToggle();buildStaffBlock();}
       },lbl);
       toggle.appendChild(b);
     });
+    function syncPaidToggle(){
+      toggle.querySelectorAll('button').forEach((b2,i)=>{
+        const ip2=i===0;
+        b2.style.borderColor=f.paid===ip2?'var(--accent)':'var(--border)';
+        b2.style.background=f.paid===ip2?'var(--accent-light)':'var(--white)';
+        b2.style.color=f.paid===ip2?'var(--accent)':'var(--muted)';
+        b2.style.fontWeight=f.paid===ip2?600:400;
+      });
+    }
     paidRow.appendChild(toggle);wrap.appendChild(paidRow);
+    const pendingNote=div({style:{display:'none',fontSize:12.5,color:'var(--warn)',background:'var(--warn-light)',border:'1px solid #f5cba0',borderRadius:'var(--radius-sm)',padding:'9px 12px',lineHeight:1.5}});
+    wrap.appendChild(pendingNote);
     const notesTA=h('textarea',{placeholder:'Notes (optional)',rows:2,style:{resize:'none'}});notesTA.textContent=f.notes||'';notesTA.addEventListener('input',e=>f.notes=e.target.value);wrap.appendChild(notesTA);
     wrap.appendChild(btn({className:'btn-primary',style:{marginTop:4,width:'100%'},onClick:()=>{
-      if(!f.description||!f.amount||!f.propertyId)return;
-      mutateData(d=>{if(isEdit)d.expenses=d.expenses.map(e=>e.id===f.id?f:e);else d.expenses.push({...f,id:uid()});});
+      const gross=round2(g.val);
+      if(!f.description||!(gross>0)||!f.propertyId){alert('Description, amount and property are required.');return;}
+      const ded=f.loanId?round2(f.loanDeduction):0;
+      if(f.loanId&&!(ded>0)){alert('Enter the instalment amount to deduct, or switch the deduction off.');return;}
+      if(ded>gross){alert(`The ${fmtCur(ded)} deduction is more than the ${fmtCur(gross)} payout.`);return;}
+      if(f.loanId){
+        const l=loanById(f.loanId);
+        const already=isEdit?round2((l.repayments||[]).filter(r=>r.expenseId===f.id).reduce((a,r)=>a+Number(r.amount||0),0)):0;
+        const bal=round2(Math.max(0,loanBalance(l))+already);
+        if(ded>bal+0.5&&!confirm(`${fmtCur(ded)} is more than the ${fmtCur(bal)} still outstanding on this loan. Continue?`))return;
+      }
+      f.loanDeduction=ded;
+      f.grossAmount=gross;
+      f.amount=round2(gross-ded);
+      if(!f.id)f.id=uid();
+      mutateData(d=>{
+        if(isEdit)d.expenses=d.expenses.map(e=>e.id===f.id?{...f}:e);
+        else d.expenses.push({...f});
+        syncExpenseLoan(d,f);
+      });
       closeModal();
     }},isEdit?'Update Expense':'Add Expense'));
+    // initial paint of the conditional staff/loan section
+    syncPaidToggle();
+    buildStaffBlock();
     return wrap;
   };
   return modal(isEdit?'Edit Expense':'New Expense',content);
@@ -1098,6 +1895,7 @@ function render(){
   else if(state.tab==='bookings') main.appendChild(renderBookings());
   else if(state.tab==='calendar') main.appendChild(renderCalendar());
   else if(state.tab==='expenses') main.appendChild(renderExpenses());
+  else if(state.tab==='loans')    main.appendChild(renderLoans());
   else if(state.tab==='reports')  main.appendChild(renderReports());
   app.appendChild(main);
   app.appendChild(renderNav());
@@ -1107,6 +1905,9 @@ function render(){
   else if(state.modal==='addBooking'){currentModal=renderBookingModal(); document.body.appendChild(currentModal);}
   else if(state.modal==='addExpense'){currentModal=renderExpenseModal(); document.body.appendChild(currentModal);}
   else if(state.modal==='calDay')   {currentModal=renderCalDayModal();  document.body.appendChild(currentModal);}
+  else if(state.modal==='addStaff') {currentModal=renderStaffModal();   document.body.appendChild(currentModal);}
+  else if(state.modal==='addLoan')  {currentModal=renderLoanModal();    document.body.appendChild(currentModal);}
+  else if(state.modal==='addRepayment'){currentModal=renderRepaymentModal();document.body.appendChild(currentModal);}
 }
 
 // ─── Boot ─────────────────────────────────────────────────────────────────────

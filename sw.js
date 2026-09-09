@@ -1,5 +1,5 @@
 /* StayLog Service Worker — Offline support */
-const CACHE_NAME = 'staylog-v2';
+const CACHE_NAME = 'staylog-v3';
 const ASSETS = [
   './',
   './index.html',
