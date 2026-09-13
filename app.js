@@ -4,7 +4,7 @@
 'use strict';
 
 // ─── Build ────────────────────────────────────────────────────────────────────
-const APP_VERSION='v12', APP_BUILT='13 Sept 2026';
+const APP_VERSION='v13', APP_BUILT='13 Sept 2026';
 
 // ─── Auth ─────────────────────────────────────────────────────────────────────
 const AUTH_KEY   = 'staylog_auth';
@@ -380,6 +380,8 @@ function renderMenuModal(){
     menuRow('plus','Add property','Rooms, base tariff and location',()=>setState({modal:'addProp',editItem:null})),
     menuRow('download','Back up data',`${data.bookings.length} bookings · ${data.expenses.length} expenses · ${data.loans.length} loans`,()=>{downloadBackup();closeModal();}),
     menuRow('upload','Restore from backup','Replaces everything on this device',()=>{closeModal();restoreBackup();}),
+    menuRow('notes','House notes PDF','The instructions guests get after check-in',()=>{
+      downloadHouseNotes(data.properties.find(p=>p.id===state.filterProp)||data.properties[0]);closeModal();}),
     menuRow('lock','Lock app','Ask for the PIN again',()=>{state.modal=null;state.loggedIn=false;render();},true),
     div({style:{textAlign:'center',fontSize:11.5,color:'var(--muted)',padding:'14px 0 2px',
       borderTop:'1px solid var(--border-soft)',marginTop:6}},
@@ -941,6 +943,82 @@ async function shareConfirmation(b){
   }
 }
 
+
+// ─── House notes — the document guests get once they are in ───────────────────
+const HOUSE_NOTES=[
+  ['Hot Water','We rely on solar heating, so on sunny days you\u2019ll have hot water in all bathrooms. As a backup, geysers are installed in the living room bathroom and the 1st floor bedroom bathroom. Their switches (marked 16A) are located just outside the respective bedrooms \u2014 please switch them on about 20\u201330 minutes before use if the solar water isn\u2019t warm enough.'],
+  ['Water Supply','If the water flow stops, it likely means the overhead tank has run dry. Simply switch on the motor, located above the washing machine in the kitchen area. If water still doesn\u2019t resume, please also check the corresponding switch on the MCB board.'],
+  ['Vessels & Utensils','As mentioned in the house rules, please clean vessels after use. If you\u2019d prefer, our househelp can do this for you at a nominal charge of Rs. 100, payable directly to her.'],
+  ['Housekeeping','Our househelp comes daily to clean the house. Please let us know your convenient time \u2014 we\u2019d suggest either 7:30\u20138:00 AM or after 2:00 PM.'],
+  ['Main Gate','Please keep the main gate closed, especially through the night. It keeps the house secure and keeps stray animals out of the compound.'],
+  ['Footwear','Please leave shoes and chappals in the shoe rack rather than outside the door \u2014 stray dogs in the area are known to carry footwear away.'],
+];
+
+async function buildHouseNotesPDF(prop){
+  const jsPDF=await loadJsPDF();
+  const doc=new jsPDF({unit:'pt',format:'a4'});
+  const W=doc.internal.pageSize.getWidth(), H=doc.internal.pageSize.getHeight();
+  const M=52, CW=W-M*2;
+  const GREEN=[47,107,79], INK=[31,36,32], GREY=[124,120,105], LINE=[231,223,206], CREAM=[250,246,238];
+  let y=0;
+  const ensure=need=>{ if(y+need>H-58){doc.addPage();y=M;} };
+  const text=(t,x,size,{font='helvetica',style='normal',color=INK,align='left',width=CW,lead=1.42}={})=>{
+    doc.setFont(font,style); doc.setFontSize(size); doc.setTextColor(...color);
+    doc.splitTextToSize(String(t),width).forEach(ln=>{ ensure(size*lead); doc.text(ln,x,y,{align}); y+=size*lead; });
+  };
+
+  y=M+10;
+  doc.setFont('times','normal'); doc.setFontSize(25); doc.setTextColor(...GREEN);
+  doc.text(prop?.name||'Raaya Vasyam',W/2,y,{align:'center'}); y+=16;
+  doc.setFont('helvetica','normal'); doc.setFontSize(8.5); doc.setTextColor(...GREY);
+  doc.text('GUEST INSTRUCTIONS & HOUSE NOTES',W/2,y,{align:'center',charSpace:1.5}); y+=16;
+  doc.setDrawColor(...LINE); doc.setLineWidth(.7); doc.line(M,y,W-M,y); y+=24;
+
+  text(`Welcome to ${prop?.name||'Raaya Vasyam'}! We\u2019re so glad to have you here. A few quick notes to help make your stay smooth and comfortable:`,
+    M,11,{color:[78,84,73],lead:1.55}); y+=14;
+
+  HOUSE_NOTES.forEach(([title,body],i)=>{
+    ensure(70);
+    doc.setFillColor(...CREAM); doc.circle(M+8,y-3.5,9,'F');
+    doc.setFont('helvetica','bold'); doc.setFontSize(10); doc.setTextColor(...GREEN);
+    doc.text(String(i+1),M+8,y,{align:'center'});
+    doc.setFontSize(12.5); doc.setTextColor(...INK);
+    doc.text(title,M+26,y); y+=17;
+    text(body,M+26,10.5,{color:[78,84,73],width:CW-26,lead:1.5}); y+=16;
+  });
+
+  ensure(80); y+=6;
+  doc.setDrawColor(...LINE); doc.line(M,y,W-M,y); y+=20;
+  text('For anything else during your stay, please feel free to reach out to us \u2014 happy to help!',
+    W/2,10.5,{align:'center',color:INK});
+  y+=8;
+  text('With warm hospitality,',W/2,10,{align:'center',color:GREY});
+  text(prop?.name||'Raaya Vasyam',W/2,12,{align:'center',font:'times',color:GREEN});
+  return doc;
+}
+
+function houseNotesFileName(prop){
+  return `${(prop?.name||'Raaya-Vasyam').replace(/[^\w]+/g,'-')}-House-Notes.pdf`;
+}
+async function downloadHouseNotes(prop){
+  try{ (await buildHouseNotesPDF(prop)).save(houseNotesFileName(prop)); }
+  catch(err){ pdfError(err); }
+}
+async function shareHouseNotes(prop){
+  let blob;
+  try{ blob=(await buildHouseNotesPDF(prop)).output('blob'); }catch(err){ pdfError(err); return; }
+  const file=new File([blob],houseNotesFileName(prop),{type:'application/pdf'});
+  if(navigator.canShare&&navigator.canShare({files:[file]})){
+    try{ await navigator.share({files:[file],title:`House notes \u2014 ${prop?.name||'Raaya Vasyam'}`}); }
+    catch(err){ if(err&&err.name!=='AbortError')pdfError(err); }
+  } else {
+    const a=document.createElement('a');
+    a.href=URL.createObjectURL(blob); a.download=houseNotesFileName(prop); a.click();
+    setTimeout(()=>URL.revokeObjectURL(a.href),4000);
+    alert('Your browser cannot open the share sheet, so the notes have been saved to Files. Attach them from there in WhatsApp.');
+  }
+}
+
 // ─── Guest message sheet ──────────────────────────────────────────────────────
 function hintLine(t){
   return div({style:{fontSize:11.5,color:'var(--muted)',lineHeight:1.45,padding:'0 4px',marginTop:-4}},t);
@@ -990,14 +1068,16 @@ function renderSendModal(){
         wrap.appendChild(hintLine('No Wi-Fi details on this property — the welcome message skips that line.'));
     });
 
+    wrap.appendChild(div({className:'kicker',style:{marginTop:8,marginBottom:-2}},'Attachments'));
     wrap.appendChild(btn({className:'btn-gold',style:{width:'100%',justifyContent:'center',display:'flex',
-      alignItems:'center',gap:7,minHeight:46,marginTop:2},onClick:()=>shareConfirmation(b)},
-      ico('file-text',{style:{fontSize:16}}),'Attach confirmation PDF'));
+      alignItems:'center',gap:7,minHeight:46},onClick:()=>shareConfirmation(b)},
+      ico('file-text',{style:{fontSize:16}}),'Booking confirmation PDF'));
+    wrap.appendChild(btn({className:'btn-gold',style:{width:'100%',justifyContent:'center',display:'flex',
+      alignItems:'center',gap:7,minHeight:46},onClick:()=>shareHouseNotes(prop)},
+      ico('notes',{style:{fontSize:16}}),'House notes PDF'));
     wrap.appendChild(div({style:{fontSize:12,color:'var(--muted)',lineHeight:1.55,background:'var(--warn-light)',
       border:'1px solid var(--warn-line)',borderRadius:'var(--radius-sm)',padding:'10px 12px'}},
-      'WhatsApp links cannot carry a file. Send a message first, then use ',
-      span({style:{fontWeight:700}},'Attach confirmation PDF'),
-      ' and pick the same chat from the share sheet.'));
+      'WhatsApp links cannot carry a file. Send a message first, then tap an attachment above and pick the same chat from the share sheet. The house notes are the ones to send once they have checked in.'));
     wrap.appendChild(btn({className:'btn-ghost',style:{width:'100%'},onClick:closeModal},'Close'));
     return wrap;
   };
