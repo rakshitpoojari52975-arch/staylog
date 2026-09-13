@@ -4,7 +4,7 @@
 'use strict';
 
 // ─── Build ────────────────────────────────────────────────────────────────────
-const APP_VERSION='v11', APP_BUILT='9 Sept 2026';
+const APP_VERSION='v12', APP_BUILT='13 Sept 2026';
 
 // ─── Auth ─────────────────────────────────────────────────────────────────────
 const AUTH_KEY   = 'staylog_auth';
@@ -866,12 +866,14 @@ function arrivalText(b){
   const prop=state.data.properties.find(p=>p.id===b.propertyId);
   const when=b.checkIn===today()?'today':b.checkIn===addDaysISO(today(),1)?'tomorrow':`on ${fmtDate(b.checkIn)}`;
   const L=[];
-  L.push(`*Seeing you ${when} — ${prop?.name||'our homestay'}*`,'');
+  L.push(`*Seeing you ${when} \u2014 ${prop?.name||'our homestay'}*`,'');
   L.push(`Namaste ${firstNameOf(b)}, everything is ready for your arrival ${when}, any time after ${CHECKIN_TIME}.`,'');
   if(prop?.mapsLink)L.push(`*Getting here:* ${prop.mapsLink}`);
   else if(prop?.location)L.push(`*Address:* ${prop.location}`);
-  if(prop?.arrivalNotes)L.push('',prop.arrivalNotes);
-  L.push('','Do message us when you set off, and again if you are running late, so someone is here to meet you.');
+  L.push('','It\u2019s a self checkin property. You can find the key behind the pot beside the door, the key need to be put in the slot in the lock handle.');
+  L.push('','Just for Identification of the house while you reach the destination via Map:');
+  L.push('- House name Vrudhi is written on compound wall');
+  L.push('- House is in the left side just 2 house before the end of the road.');
   L.push('','Safe travels.');
   return L.join('\n');
 }
@@ -903,7 +905,7 @@ function departureText(b){
   L.push('• Switch off the lights, fans, AC and geyser');
   L.push('• Wash up anything used in the kitchen');
   L.push('• Pull the main door shut behind you');
-  if(prop?.departureNotes)L.push('',prop.departureNotes);
+  L.push('','Leave the keys where you found it.');
   if(isDirect&&due>0)L.push('',`A balance of ${fmtCur(due)} is pending — you can settle it before you leave.`);
   L.push('','It has been lovely having you. If the stay was good to you, a review would mean a great deal — and do come back.');
   return L.join('\n');
@@ -975,7 +977,7 @@ function renderSendModal(){
         div({style:{fontSize:11.5,color:'var(--muted)',marginTop:1}},
           sent?`Opened ${fmtDate(sent)}`:isDue?'Due now':when)
       ));
-      row.appendChild(btn({disabled:!num,style:{flexShrink:0,minHeight:36,padding:'7px 13px',fontSize:12.5,
+      row.appendChild(btn({disabled:!num,'data-send':kind,style:{flexShrink:0,minHeight:36,padding:'7px 13px',fontSize:12.5,
         fontWeight:700,borderRadius:20,border:`1.5px solid ${num?'var(--accent)':'var(--border)'}`,
         background:isDue&&!sent?'var(--accent)':'transparent',
         color:isDue&&!sent?'var(--on-accent)':num?'var(--accent)':'var(--light)'},
@@ -1133,35 +1135,6 @@ function renderDashboard(){
     };
     todayOut.forEach(b=>card.appendChild(line(b,'out')));
     todayIn.forEach(b=>card.appendChild(line(b,'in')));
-    wrap.appendChild(card);
-  }
-
-  // ── Messages waiting to go out ─────────────────────────────────────────────
-  const pending=dueMessages(allB);
-  if(pending.length>0){
-    const card=div({className:'card',style:{overflow:'hidden',borderColor:'var(--accent-line)'}});
-    card.appendChild(div({style:{display:'flex',justifyContent:'space-between',alignItems:'center',
-      padding:'10px 13px 8px'}},
-      div({style:{fontSize:12.5,fontWeight:700,display:'flex',alignItems:'center',gap:7}},
-        ico('brand-whatsapp',{style:{fontSize:16,color:'var(--accent)'}}),'Messages to send'),
-      div({style:{fontSize:11,color:'var(--muted)',fontWeight:600}},String(pending.length))));
-    pending.slice(0,5).forEach(({b,kind})=>{
-      const m=MSG_META[kind];
-      card.appendChild(div({style:{display:'flex',alignItems:'center',gap:11,padding:'9px 13px',
-        borderTop:'1px solid var(--border-soft)'}},
-        div({style:{width:32,height:32,borderRadius:9,flexShrink:0,background:'var(--accent-light)',
-          display:'flex',alignItems:'center',justifyContent:'center'}},
-          ico(m.icon,{style:{fontSize:15,color:'var(--accent)'}})),
-        div({style:{flex:1,minWidth:0}},
-          div({style:{fontSize:13,fontWeight:700,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}},b.guestName),
-          div({style:{fontSize:11.5,color:'var(--muted)',marginTop:1,whiteSpace:'nowrap',overflow:'hidden',
-            textOverflow:'ellipsis'}},m.label)),
-        btn({style:{flexShrink:0,minHeight:36,padding:'7px 13px',fontSize:12,fontWeight:700,borderRadius:20,
-          border:'1.5px solid var(--accent)',background:'var(--accent)',color:'var(--on-accent)'},
-          onClick:()=>sendMessage(b,kind)},'Send')));
-    });
-    if(pending.length>5)card.appendChild(div({style:{padding:'8px 13px',fontSize:11.5,color:'var(--muted)',
-      borderTop:'1px solid var(--border-soft)'}},`+${pending.length-5} more on the bookings tab`));
     wrap.appendChild(card);
   }
 
@@ -2066,7 +2039,7 @@ function renderRepaymentModal(){
 function renderPropertyModal(){
   const{editItem}=state; const isEdit=!!editItem;
   const f=isEdit?{...editItem}:{name:'',location:'',rooms:'',pricePerNight:'',description:'',
-    mapsLink:'',wifiName:'',wifiPassword:'',arrivalNotes:'',departureNotes:''};
+    mapsLink:'',wifiName:'',wifiPassword:''};
   const content=()=>{
     const wrap=div({style:{display:'flex',flexDirection:'column',gap:11}});
     const field=(k,ph,t)=>{const inp=h('input',{type:t||'text',placeholder:ph,value:f[k]||''});
@@ -2086,8 +2059,6 @@ function renderPropertyModal(){
     wifi.appendChild(field('wifiName','Wi-Fi name'));
     wifi.appendChild(field('wifiPassword','Wi-Fi password'));
     wrap.appendChild(wifi);
-    wrap.appendChild(area('arrivalNotes','Arrival notes — gate, parking, landmark…',2));
-    wrap.appendChild(area('departureNotes','Departure notes — where to leave the keys…',2));
 
     wrap.appendChild(btn({className:'btn-primary',style:{marginTop:4,width:'100%'},onClick:()=>{
       if(!f.name)return;
