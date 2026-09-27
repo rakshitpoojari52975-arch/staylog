@@ -1,0 +1,290 @@
+/* StayLog · cloud sync
+   ────────────────────────────────────────────────────────────────────────────
+   Your phone stays the master copy. IndexedDB is written first and the app
+   works exactly as it always has with no signal; the cloud is caught up
+   afterwards, whenever there is a connection.
+
+   Sync is a whole-state push rather than a queue of operations. With one
+   person writing, a queue buys nothing and can drift out of step with the data
+   it describes; re-stating the truth is idempotent and cannot half-apply. The
+   volumes here are a few hundred rows, so the cost is a rounding error.
+
+   Deletes are reconciled rather than tracked: after pushing what exists, any
+   row the server still has and this phone does not is tombstoned. That means
+   no delete path in the app has to remember to tell the cloud anything.
+
+   What is deliberately NOT sent: guest ID photographs. They are in the local
+   record and in no mapper below, so they cannot leave the device by accident.
+   ──────────────────────────────────────────────────────────────────────────── */
+(function () {
+  'use strict';
+
+  const CFG = window.STAYLOG_CLOUD || {};
+  const SDK = './vendor/supabase.umd.js';
+  const LAST_SYNC = 'staylog_last_sync';
+
+  let sb = null;          // supabase client, once the SDK is loaded
+  let session = null;     // current auth session, if signed in
+  let dirty = false;      // local changes not yet pushed
+  let pushing = false;
+  let timer = null;
+  let lastError = '';
+
+  const num = v => (v === '' || v == null ? null : Number(v));
+  const str = v => (v == null || v === '' ? null : String(v));
+  const dat = v => (v ? String(v).slice(0, 10) : null);
+  const ID_OK = /^[A-Za-z0-9_-]{1,64}$/;   // ids the app generates; anything else is not ours
+
+  // ── Field mapping ──────────────────────────────────────────────────────────
+  // Written out by hand in both directions. It is longer than a clever
+  // converter and it is the file you read to answer "what of mine is up there".
+  const MAP = {
+    properties: {
+      up: (p, owner) => ({
+        id: p.id, owner_id: owner, name: p.name, location: str(p.location),
+        rooms: num(p.rooms), price_per_night: num(p.pricePerNight),
+        description: str(p.description), maps_link: str(p.mapsLink),
+        wifi_name: str(p.wifiName), wifi_password: str(p.wifiPassword),
+      }),
+      down: r => ({
+        id: r.id, name: r.name, location: r.location || '', rooms: r.rooms ?? '',
+        pricePerNight: r.price_per_night ?? '', description: r.description || '',
+        mapsLink: r.maps_link || '', wifiName: r.wifi_name || '', wifiPassword: r.wifi_password || '',
+      }),
+    },
+    staff: {
+      up: (s, owner) => ({
+        id: s.id, owner_id: owner, name: s.name, role: str(s.role), phone: str(s.phone),
+        monthly_salary: num(s.monthlySalary), active: s.active !== false, joined_on: dat(s.joinedOn),
+      }),
+      down: r => ({
+        id: r.id, name: r.name, role: r.role || '', phone: r.phone || '',
+        monthlySalary: r.monthly_salary ?? '', active: r.active, joinedOn: r.joined_on || '',
+      }),
+    },
+    bookings: {
+      up: (b, owner) => ({
+        id: b.id, owner_id: owner, property_id: str(b.propertyId), guest_name: b.guestName,
+        phone: str(b.phone), check_in: dat(b.checkIn), check_out: dat(b.checkOut),
+        guests: num(b.guests) || 1, total_amount: num(b.totalAmount) || 0, paid: num(b.paid) || 0,
+        source: str(b.source) || 'Direct', status: b.status || 'confirmed', notes: str(b.notes),
+        id_proof_type: str(b.idProofType), id_proof_number: str(b.idProofNumber),
+        // b.idProofImage is intentionally absent — see the header
+        msg_sent: b.msgSent || (b.confirmSentOn ? { confirm: b.confirmSentOn } : {}),
+      }),
+      down: r => ({
+        id: r.id, propertyId: r.property_id || '', guestName: r.guest_name, phone: r.phone || '',
+        checkIn: r.check_in, checkOut: r.check_out, guests: r.guests ?? 1,
+        totalAmount: r.total_amount ?? '', paid: r.paid ?? '', source: r.source || 'Direct',
+        status: r.status, notes: r.notes || '',
+        idProofType: r.id_proof_type || '', idProofNumber: r.id_proof_number || '',
+        idProofImage: '',                       // refilled from the local copy on restore
+        msgSent: r.msg_sent || {},
+      }),
+    },
+    loans: {
+      up: (l, owner) => ({
+        id: l.id, owner_id: owner, staff_id: l.staffId, property_id: str(l.propertyId),
+        principal: num(l.principal), installment_amount: num(l.installmentAmount),
+        disbursed_on: dat(l.disbursedOn), first_due_date: dat(l.firstDueDate),
+        status: l.status || 'active', notes: str(l.notes), written_off_on: dat(l.writtenOffOn),
+      }),
+      down: r => ({
+        id: r.id, staffId: r.staff_id, propertyId: r.property_id || '',
+        principal: r.principal, installmentAmount: r.installment_amount,
+        disbursedOn: r.disbursed_on, firstDueDate: r.first_due_date || '',
+        status: r.status, notes: r.notes || '', writtenOffOn: r.written_off_on || '',
+        repayments: [],                         // filled from loan_repayments
+      }),
+    },
+    loan_repayments: {
+      up: (r, owner) => ({
+        id: r.id, owner_id: owner, loan_id: r.loanId, date: dat(r.date),
+        amount: num(r.amount), mode: r.mode || 'direct', expense_id: str(r.expenseId), note: str(r.note),
+      }),
+      down: r => ({
+        id: r.id, loanId: r.loan_id, date: r.date, amount: Number(r.amount),
+        mode: r.mode, expenseId: r.expense_id || undefined, note: r.note || '',
+      }),
+    },
+    expenses: {
+      up: (e, owner) => ({
+        id: e.id, owner_id: owner, property_id: str(e.propertyId), staff_id: str(e.staffId),
+        loan_id: str(e.loanId), description: e.description, date: dat(e.date),
+        category: e.category || 'other', amount: num(e.amount) || 0,
+        gross_amount: num(e.grossAmount), loan_deduction: num(e.loanDeduction) || 0,
+        paid: !!e.paid, notes: str(e.notes),
+      }),
+      down: r => ({
+        id: r.id, propertyId: r.property_id || '', staffId: r.staff_id || '', loanId: r.loan_id || '',
+        description: r.description, date: r.date, category: r.category,
+        amount: Number(r.amount), grossAmount: r.gross_amount ?? undefined,
+        loanDeduction: Number(r.loan_deduction || 0), paid: r.paid, notes: r.notes || '',
+      }),
+    },
+  };
+
+  // Parents before children: loans need staff, repayments need loans.
+  const ORDER = ['properties', 'staff', 'loans', 'loan_repayments', 'expenses', 'bookings'];
+
+  // ── SDK, loaded only when it is actually needed ────────────────────────────
+  let sdkPromise = null;
+  function loadSDK() {
+    if (window.supabase?.createClient) return Promise.resolve(window.supabase);
+    if (sdkPromise) return sdkPromise;
+    sdkPromise = new Promise((res, rej) => {
+      const s = document.createElement('script');
+      s.src = SDK;
+      s.onload = () => window.supabase?.createClient ? res(window.supabase) : rej(new Error('sdk'));
+      s.onerror = () => { sdkPromise = null; rej(new Error('sdk')); };
+      document.head.appendChild(s);
+    });
+    return sdkPromise;
+  }
+
+  async function client() {
+    if (sb) return sb;
+    if (!CFG.url || !CFG.publishableKey) throw new Error('cloud-config.js is missing its values');
+    const lib = await loadSDK();
+    sb = lib.createClient(CFG.url, CFG.publishableKey, {
+      auth: { persistSession: true, autoRefreshToken: true },
+    });
+    return sb;
+  }
+
+  // ── Auth ───────────────────────────────────────────────────────────────────
+  async function restoreSession() {
+    try {
+      const c = await client();
+      const { data } = await c.auth.getSession();
+      session = data.session || null;
+      return session;
+    } catch { return null; }
+  }
+
+  async function signIn(email, password) {
+    const c = await client();
+    const { data, error } = await c.auth.signInWithPassword({ email: email.trim(), password });
+    if (error) throw error;
+    session = data.session;
+    lastError = '';
+    return session;
+  }
+
+  async function signOut() {
+    try { const c = await client(); await c.auth.signOut(); } catch {}
+    session = null;
+  }
+
+  // ── Push ───────────────────────────────────────────────────────────────────
+  function collect(data) {
+    const reps = [];
+    (data.loans || []).forEach(l => (l.repayments || []).forEach(r =>
+      reps.push({ ...r, loanId: l.id })));
+    return {
+      properties: data.properties || [],
+      staff: data.staff || [],
+      bookings: data.bookings || [],
+      loans: data.loans || [],
+      loan_repayments: reps,
+      expenses: data.expenses || [],
+    };
+  }
+
+  async function push(data) {
+    if (!session) throw new Error('not signed in');
+    if (pushing) return;
+    pushing = true;
+    const owner = session.user.id;
+    const c = await client();
+    try {
+      const sets = collect(data);
+      for (const table of ORDER) {
+        const rows = (sets[table] || []).filter(x => ID_OK.test(String(x.id || '')))
+          .map(x => MAP[table].up(x, owner));
+        if (rows.length) {
+          const { error } = await c.from(table).upsert(rows, { onConflict: 'id' });
+          if (error) throw error;
+        }
+        // Anything the server still holds that this phone no longer has is gone.
+        let q = c.from(table).update({ deleted_at: new Date().toISOString() })
+          .eq('owner_id', owner).is('deleted_at', null);
+        if (rows.length) q = q.not('id', 'in', '(' + rows.map(r => `"${r.id}"`).join(',') + ')');
+        const { error: delErr } = await q;
+        if (delErr) throw delErr;
+      }
+      dirty = false;
+      lastError = '';
+      try { localStorage.setItem(LAST_SYNC, new Date().toISOString()); } catch {}
+    } catch (err) {
+      lastError = err.message || String(err);
+      throw err;
+    } finally {
+      pushing = false;
+      notify();
+    }
+  }
+
+  // ── Pull ───────────────────────────────────────────────────────────────────
+  // Used to bring a new device up to date, not to merge concurrent edits.
+  async function pull() {
+    if (!session) throw new Error('not signed in');
+    const c = await client();
+    const out = {};
+    for (const table of ORDER) {
+      const { data, error } = await c.from(table).select('*').is('deleted_at', null);
+      if (error) throw error;
+      out[table] = data.map(MAP[table].down);
+    }
+    const byLoan = {};
+    out.loan_repayments.forEach(r => (byLoan[r.loanId] = byLoan[r.loanId] || []).push(r));
+    out.loans.forEach(l => { l.repayments = byLoan[l.id] || []; });
+    return {
+      properties: out.properties, bookings: out.bookings, expenses: out.expenses,
+      staff: out.staff, loans: out.loans,
+    };
+  }
+
+  // ── Scheduling ─────────────────────────────────────────────────────────────
+  const listeners = [];
+  function notify() { listeners.forEach(fn => { try { fn(status()); } catch {} }); }
+
+  function status() {
+    let last = null;
+    try { last = localStorage.getItem(LAST_SYNC); } catch {}
+    return {
+      configured: !!(CFG.url && CFG.publishableKey),
+      signedIn: !!session,
+      email: session?.user?.email || '',
+      userId: session?.user?.id || '',
+      online: navigator.onLine,
+      dirty, pushing, lastSync: last, lastError,
+    };
+  }
+
+  // Called by the app whenever local data changes.
+  function markDirty(getData) {
+    dirty = true;
+    notify();
+    if (!session || !navigator.onLine) return;
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      // Conditions can change in four seconds. Staying dirty is correct —
+      // the 'online' handler picks it up rather than failing a doomed request.
+      if (!session || !navigator.onLine) return;
+      push(getData()).catch(() => {});
+    }, 4000);
+  }
+
+  window.addEventListener('online', () => {
+    notify();
+    if (session && dirty && window.STAYLOG_GET_DATA) push(window.STAYLOG_GET_DATA()).catch(() => {});
+  });
+  window.addEventListener('offline', notify);
+
+  window.StayLogCloud = {
+    restoreSession, signIn, signOut, push, pull, status, markDirty,
+    onChange: fn => listeners.push(fn),
+    staffEmail: u => `${String(u || '').trim().toLowerCase()}@${CFG.staffEmailDomain}`,
+  };
+})();

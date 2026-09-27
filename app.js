@@ -4,7 +4,7 @@
 'use strict';
 
 // ─── Build ────────────────────────────────────────────────────────────────────
-const APP_VERSION='v13', APP_BUILT='13 Sept 2026';
+const APP_VERSION='v14', APP_BUILT='27 Sept 2026';
 
 // ─── Auth ─────────────────────────────────────────────────────────────────────
 const AUTH_KEY   = 'staylog_auth';
@@ -42,7 +42,10 @@ function idbSet(k,v){return openDB().then(db=>new Promise((res,rej)=>{const r=db
 function saveData(d){
   try{localStorage.setItem(LS_KEY,JSON.stringify(d));}catch{}
   idbSet(DATA_KEY,JSON.parse(JSON.stringify(d))).catch(()=>{});
+  // The phone is written first and always; the cloud catches up afterwards.
+  try{window.StayLogCloud&&window.StayLogCloud.markDirty(()=>state.data);}catch{}
 }
+window.STAYLOG_GET_DATA=()=>state.data;
 async function loadDataFromIDB(){
   try{const d=await idbGet(DATA_KEY);if(d&&d.properties)return normalizeData(d);}catch{}
   try{const ls=JSON.parse(localStorage.getItem(LS_KEY));if(ls&&ls.properties){const n=normalizeData(ls);saveData(n);return n;}}catch{}
@@ -380,6 +383,7 @@ function renderMenuModal(){
     menuRow('plus','Add property','Rooms, base tariff and location',()=>setState({modal:'addProp',editItem:null})),
     menuRow('download','Back up data',`${data.bookings.length} bookings · ${data.expenses.length} expenses · ${data.loans.length} loans`,()=>{downloadBackup();closeModal();}),
     menuRow('upload','Restore from backup','Replaces everything on this device',()=>{closeModal();restoreBackup();}),
+    menuRow('cloud','Cloud sync',cloudMenuSub(),()=>setState({modal:'cloud'})),
     menuRow('notes','House notes PDF','The instructions guests get after check-in',()=>{
       downloadHouseNotes(data.properties.find(p=>p.id===state.filterProp)||data.properties[0]);closeModal();}),
     menuRow('lock','Lock app','Ask for the PIN again',()=>{state.modal=null;state.loggedIn=false;render();},true),
@@ -1017,6 +1021,122 @@ async function shareHouseNotes(prop){
     setTimeout(()=>URL.revokeObjectURL(a.href),4000);
     alert('Your browser cannot open the share sheet, so the notes have been saved to Files. Attach them from there in WhatsApp.');
   }
+}
+
+
+// ─── Cloud sync ───────────────────────────────────────────────────────────────
+function cloudStatus(){
+  return (window.StayLogCloud&&window.StayLogCloud.status())||{configured:false,signedIn:false};
+}
+function fmtAgo(iso){
+  if(!iso)return 'never';
+  const mins=Math.round((Date.now()-new Date(iso).getTime())/60000);
+  if(mins<1)return 'just now';
+  if(mins<60)return `${mins} min ago`;
+  const hrs=Math.round(mins/60);
+  if(hrs<24)return `${hrs} hour${hrs>1?'s':''} ago`;
+  return fmtDate(iso.slice(0,10));
+}
+function cloudMenuSub(){
+  const s=cloudStatus();
+  if(!s.configured)return 'Not configured';
+  if(!s.signedIn)  return 'Not signed in — this phone only';
+  if(!s.online)    return s.dirty?'Offline · changes waiting':'Offline';
+  if(s.pushing)    return 'Syncing…';
+  if(s.lastError)  return 'Last sync failed';
+  if(s.dirty)      return 'Changes waiting to sync';
+  return `Synced ${fmtAgo(s.lastSync)}`;
+}
+
+function renderCloudModal(){
+  const content=()=>{
+    const wrap=div({style:{display:'flex',flexDirection:'column',gap:11}});
+    const s=cloudStatus();
+
+    const tone = !s.signedIn ? 'var(--muted)'
+               : s.lastError ? 'var(--danger)'
+               : s.dirty     ? 'var(--warn)' : 'var(--accent)';
+    wrap.appendChild(div({style:{background:'var(--surface-2)',border:'1px solid var(--border)',
+      borderRadius:'var(--radius-sm)',padding:'12px 13px'}},
+      div({style:{fontSize:13.5,fontWeight:700,color:tone}},cloudMenuSub()),
+      s.signedIn?div({style:{fontSize:12,color:'var(--muted)',marginTop:3}},s.email):null,
+      s.lastError?div({style:{fontSize:12,color:'var(--danger)',marginTop:5,lineHeight:1.45}},s.lastError):null
+    ));
+
+    if(!s.configured){
+      wrap.appendChild(div({style:{fontSize:13,color:'var(--muted)',lineHeight:1.5}},
+        'cloud-config.js has no project URL or key in it.'));
+      wrap.appendChild(btn({className:'btn-ghost',style:{width:'100%'},onClick:closeModal},'Close'));
+      return wrap;
+    }
+
+    if(!s.signedIn){
+      wrap.appendChild(div({style:{fontSize:12.5,color:'var(--muted)',lineHeight:1.5}},
+        'Sign in to keep a copy in the cloud and to give your house help her own view. StayLog works the same either way — this phone stays the master copy.'));
+      const em=h('input',{type:'email',placeholder:'Email',autocomplete:'username'});
+      const pw=h('input',{type:'password',placeholder:'Password',autocomplete:'current-password'});
+      wrap.appendChild(em);wrap.appendChild(pw);
+      const go=btn({className:'btn-primary',style:{width:'100%'}},'Sign in');
+      go.addEventListener('click',async()=>{
+        if(!em.value||!pw.value)return;
+        go.disabled=true;go.textContent='Signing in…';
+        try{
+          await window.StayLogCloud.signIn(em.value,pw.value);
+          render();
+        }catch(err){
+          go.disabled=false;go.textContent='Sign in';
+          alert('Could not sign in: '+(err.message||err));
+        }
+      });
+      wrap.appendChild(go);
+      wrap.appendChild(btn({className:'btn-ghost',style:{width:'100%'},onClick:closeModal},'Not now'));
+      return wrap;
+    }
+
+    const sync=btn({className:'btn-primary',style:{width:'100%'}},
+      ico('cloud-upload',{style:{marginRight:7,fontSize:17}}),'Sync now');
+    sync.addEventListener('click',async()=>{
+      sync.disabled=true;sync.textContent='Syncing…';
+      try{ await window.StayLogCloud.push(state.data); render(); }
+      catch(err){ sync.disabled=false; sync.textContent='Sync now'; alert('Sync failed: '+(err.message||err)); }
+    });
+    wrap.appendChild(sync);
+
+    wrap.appendChild(div({style:{fontSize:12,color:'var(--muted)',lineHeight:1.5}},
+      'Syncs on its own a few seconds after any change, and again when you come back online. Guest ID photographs are never uploaded.'));
+
+    const restore=btn({className:'btn-ghost',style:{width:'100%'}},
+      ico('cloud-download',{style:{marginRight:7,fontSize:16}}),'Replace this phone from the cloud');
+    restore.addEventListener('click',async()=>{
+      const st=cloudStatus();
+      const warn=st.dirty
+        ? 'This phone has changes that have NOT been synced. Replacing now throws them away.\n\nContinue?'
+        : 'Replace everything on this phone with the cloud copy?\n\nUse this on a new device, not to undo a mistake.';
+      if(!confirm(warn))return;
+      restore.disabled=true;restore.textContent='Fetching…';
+      try{
+        const fresh=await window.StayLogCloud.pull();
+        // ID photographs never left this phone, so carry them across by id
+        const imgs={};state.data.bookings.forEach(b=>{if(b.idProofImage)imgs[b.id]=b.idProofImage;});
+        fresh.bookings.forEach(b=>{if(imgs[b.id])b.idProofImage=imgs[b.id];});
+        state.data=normalizeData(fresh);saveData(state.data);
+        closeModal();
+        alert(`Restored ${fresh.bookings.length} bookings, ${fresh.expenses.length} expenses and ${fresh.loans.length} loans.`);
+      }catch(err){
+        restore.disabled=false;restore.textContent='Replace this phone from the cloud';
+        alert('Could not fetch: '+(err.message||err));
+      }
+    });
+    wrap.appendChild(restore);
+
+    wrap.appendChild(btn({className:'btn-danger',style:{width:'100%'},onClick:async()=>{
+      if(!confirm('Sign out of the cloud? Your data stays on this phone.'))return;
+      await window.StayLogCloud.signOut();render();
+    }},'Sign out'));
+    wrap.appendChild(btn({className:'btn-ghost',style:{width:'100%'},onClick:closeModal},'Close'));
+    return wrap;
+  };
+  return modal('Cloud sync',content);
 }
 
 // ─── Guest message sheet ──────────────────────────────────────────────────────
@@ -2470,6 +2590,7 @@ function render(){
   else if(state.modal==='addRepayment'){currentModal=renderRepaymentModal();document.body.appendChild(currentModal);}
   else if(state.modal==='menu')     {currentModal=renderMenuModal();      document.body.appendChild(currentModal);}
   else if(state.modal==='propPicker'){currentModal=renderPropPickerModal();document.body.appendChild(currentModal);}
+  else if(state.modal==='cloud')    {currentModal=renderCloudModal();     document.body.appendChild(currentModal);}
   else if(state.modal==='sendConfirm'){currentModal=renderSendModal();     document.body.appendChild(currentModal);}
 }
 
@@ -2477,4 +2598,8 @@ function render(){
 render();
 Promise.all([loadDataFromIDB(),loadAuth()]).then(([data,auth])=>{
   state.data=data;state.auth=auth;state.loggedIn=false;state._loading=false;render();
+  if(window.StayLogCloud){
+    window.StayLogCloud.onChange(()=>{if(state.modal==='cloud'||state.modal==='menu')render();});
+    window.StayLogCloud.restoreSession().catch(()=>{});
+  }
 });
