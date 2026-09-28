@@ -12,8 +12,8 @@
 const CFG = window.STAYLOG_CLOUD || {};
 const CHECKIN_TIME = '1:00 PM', CHECKOUT_TIME = '11:00 AM';
 const CACHE_KEY = 'rv_staff_cache';
+const PAGE_VERSION = 'v3 · 28 Sept 2026';
 
-const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
 const MONTH_SHORT = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 const DAYS = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
 
@@ -48,7 +48,7 @@ const h = (tag, attrs = {}, ...kids) => {
 const div = (a,...c) => h('div',a,...c);
 const span = (a,...c) => h('span',a,...c);
 
-let sb = null, session = null, view = null, calMonth = null, busy = false;
+let sb = null, session = null, view = null, busy = false;
 
 function client() {
   if (!sb) sb = window.supabase.createClient(CFG.url, CFG.publishableKey,
@@ -129,7 +129,8 @@ function renderLogin(msg) {
 
 // ── Pieces ───────────────────────────────────────────────────────────────────
 function wageCard(st) {
-  const pend = st.pending || {}, month = st.this_month || {}, all = st.overall || {};
+  if (!st.pending || !st.overall) return staleCard();
+  const pend = st.pending, month = st.this_month || {}, all = st.overall;
   const owed = Number(pend.amount || 0);
   const settled = owed <= 0;
 
@@ -162,6 +163,17 @@ function wageCard(st) {
     `${fmtCur(cut)} of this month's wage went towards your loan. The figures above are what you receive in hand.`));
 
   return card;
+}
+
+// The database is answering in an older shape than this page understands.
+// Saying so is the only honest option — rendering zeroes would read as
+// "you are owed nothing", which is a serious thing to get wrong.
+function staleCard() {
+  return div({className:'card',style:{padding:'16px',borderColor:'var(--gold-line)',
+    background:'var(--gold-light)'}},
+    div({className:'kicker',style:{color:'var(--gold)'}},'Wages unavailable'),
+    div({style:{fontSize:13.5,color:'var(--text-mid)',marginTop:6,lineHeight:1.55}},
+      'This page could not read your wage figures. Nothing is wrong with your money — please ask Rakshit to finish the update.'));
 }
 
 function loanCard(loan) {
@@ -199,55 +211,42 @@ function loanCard(loan) {
 }
 
 function calendarCard() {
-  const stays = (view.calendar || []).map(s => ({
-    from: s.check_in, to: s.check_out, guests: s.guests || 1, property: s.property || '',
-  }));
-  const { year, month } = calMonth;
-  const first = new Date(year, month, 1).getDay();
-  const count = new Date(year, month+1, 0).getDate();
+  const stays = view.calendar || [];
+  const start = new Date(); start.setHours(0,0,0,0);
 
-  // which days are occupied, and by how many people
-  const byDay = {};
-  stays.forEach(s => {
-    for (let d = 1; d <= count; d++) {
-      const iso = `${year}-${String(month+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
-      if (s.from <= iso && s.to > iso) byDay[iso] = (byDay[iso]||0) + s.guests;
-    }
-  });
-
-  const card = div({className:'card',style:{overflow:'hidden'}});
-  card.appendChild(div({style:{display:'flex',alignItems:'center',justifyContent:'space-between',
-    padding:'12px 14px 10px'}},
-    h('button',{className:'btn-quiet',style:{minHeight:36,padding:'6px 12px',fontSize:16},
-      'aria-label':'Previous month',
-      onClick:()=>{let y=year,m=month-1;if(m<0){m=11;y--;}calMonth={year:y,month:m};render();}},'‹'),
-    div({style:{fontSize:14,fontWeight:700}}, `${MONTHS[month]} ${year}`),
-    h('button',{className:'btn-quiet',style:{minHeight:36,padding:'6px 12px',fontSize:16},
-      'aria-label':'Next month',
-      onClick:()=>{let y=year,m=month+1;if(m>11){m=0;y++;}calMonth={year:y,month:m};render();}},'›')));
-
-  const head = div({style:{display:'grid',gridTemplateColumns:'repeat(7,1fr)',
-    borderBottom:'1px solid var(--border-soft)'}});
-  DAYS.forEach(d => head.appendChild(div({style:{textAlign:'center',padding:'6px 0',fontSize:10,
-    fontWeight:700,color:'var(--muted)',letterSpacing:'.05em'}}, d)));
-  card.appendChild(head);
-
-  const grid = div({style:{display:'grid',gridTemplateColumns:'repeat(7,1fr)'}});
-  for (let i = 0; i < first; i++) grid.appendChild(div({style:{minHeight:46}}));
-  for (let d = 1; d <= count; d++) {
-    const iso = `${year}-${String(month+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
-    const g = byDay[iso];
-    const isToday = iso === today();
-    grid.appendChild(div({style:{minHeight:46,padding:'4px 2px',textAlign:'center',
-      borderTop:'1px solid var(--border-soft)',
-      background: g ? 'var(--accent-light)' : 'transparent'}},
-      div({className:'num',style:{fontSize:13,fontWeight:isToday?700:500,width:22,height:22,
-        margin:'0 auto',display:'flex',alignItems:'center',justifyContent:'center',
-        borderRadius:'50%',background:isToday?'var(--accent)':'transparent',
-        color:isToday?'var(--on-accent)':(g?'var(--accent)':'var(--text)')}}, String(d)),
-      g ? div({style:{fontSize:9.5,color:'var(--accent)',fontWeight:700,marginTop:2}},
-        `${g} guest${g>1?'s':''}`) : null));
+  const days = [];
+  for (let i = 0; i < 15; i++) {
+    const d = new Date(start); d.setDate(d.getDate() + i);
+    const iso = isoOf(d);
+    let guests = 0;
+    stays.forEach(s => { if (s.check_in <= iso && s.check_out > iso) guests += (s.guests || 1); });
+    days.push({ d, iso, guests,
+      arriving: stays.some(s => s.check_in === iso),
+      leaving:  stays.some(s => s.check_out === iso) });
   }
+
+  const card = div({className:'card',style:{padding:'12px 10px 14px'}});
+  const grid = div({style:{display:'grid',gridTemplateColumns:'repeat(5,1fr)',gap:5}});
+  days.forEach(x => {
+    const busy = x.guests > 0;
+    const isToday = x.iso === today();
+    grid.appendChild(div({style:{borderRadius:'var(--radius-sm)',padding:'7px 2px 6px',
+      textAlign:'center', minHeight:62,
+      background: busy ? 'var(--accent-light)' : 'var(--surface-2)',
+      border: isToday ? '1.5px solid var(--accent)' : '1.5px solid transparent'}},
+      div({style:{fontSize:9.5,color:'var(--muted)',fontWeight:700,textTransform:'uppercase'}},
+        DAYS[x.d.getDay()]),
+      div({className:'num',style:{fontSize:16,fontWeight:700,lineHeight:1.2,
+        color: busy ? 'var(--accent)' : 'var(--text)'}}, String(x.d.getDate())),
+      busy
+        ? div({style:{fontSize:9.5,color:'var(--accent)',fontWeight:700,marginTop:1}},
+            `${x.guests} guest${x.guests>1?'s':''}`)
+        : div({style:{fontSize:9.5,color:'var(--light)',marginTop:1}},'free'),
+      (x.arriving || x.leaving)
+        ? div({style:{fontSize:8.5,color:'var(--gold)',fontWeight:700,marginTop:1}},
+            x.arriving && x.leaving ? 'in · out' : x.arriving ? 'arrives' : 'leaves')
+        : null));
+  });
   card.appendChild(grid);
   return card;
 }
@@ -322,7 +321,7 @@ function render() {
   }
 
   if (view) {
-    wrap.appendChild(div({className:'display',style:{fontSize:17,margin:'12px 2px 2px'}},'House calendar'));
+    wrap.appendChild(div({className:'display',style:{fontSize:17,margin:'12px 2px 2px'}},'Next 15 days'));
     wrap.appendChild(div({style:{fontSize:12,color:'var(--muted)',margin:'0 2px 8px',lineHeight:1.5}},
       `Guests arrive from ${CHECKIN_TIME} and leave by ${CHECKOUT_TIME}.`));
     wrap.appendChild(calendarCard());
@@ -335,6 +334,7 @@ function render() {
   foot.appendChild(btn);
   if (view && view.at) foot.appendChild(div({style:{fontSize:11,color:'var(--light)',marginTop:8}},
     'Updated ' + new Date(view.at).toLocaleString('en-IN',{day:'numeric',month:'short',hour:'numeric',minute:'2-digit'})));
+  foot.appendChild(div({style:{fontSize:10,color:'var(--light)',marginTop:4}}, PAGE_VERSION));
   wrap.appendChild(foot);
 
   app.appendChild(wrap);
@@ -342,8 +342,6 @@ function render() {
 
 // ── Boot ─────────────────────────────────────────────────────────────────────
 (async function () {
-  const now = new Date();
-  calMonth = { year: now.getFullYear(), month: now.getMonth() };
   view = cacheGet();
   try {
     const { data } = await client().auth.getSession();
