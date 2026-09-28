@@ -23,12 +23,16 @@ const fmtDate = s => s ? new Date(s+'T00:00:00').toLocaleDateString('en-IN',{day
 const fmtCur = n => '₹' + Number(n||0).toLocaleString('en-IN');
 const nights = (a,b) => Math.max(0, Math.round((new Date(b) - new Date(a))/86400000));
 
+// Properties that take a bare number. Everything else gets px, otherwise
+// numeric values are dropped — and lineHeight:1.5 would become 1.5px.
+const UNITLESS_CSS = new Set(['opacity','zIndex','fontWeight','lineHeight','flex','flexGrow',
+  'flexShrink','order','zoom','columnCount','tabSize','gridRow','gridColumn','aspectRatio']);
 const h = (tag, attrs = {}, ...kids) => {
   const el = document.createElement(tag);
   for (const [k,v] of Object.entries(attrs)) {
     if (k === 'style' && typeof v === 'object') {
       for (const [p,val] of Object.entries(v))
-        el.style[p] = typeof val === 'number' ? val+'px' : val;
+        el.style[p] = (typeof val === 'number' && !UNITLESS_CSS.has(p)) ? val+'px' : val;
     }
     else if (k.startsWith('on') && typeof v === 'function') el.addEventListener(k.slice(2).toLowerCase(), v);
     else if (k === 'className') el.className = v;
@@ -125,23 +129,38 @@ function renderLogin(msg) {
 
 // ── Pieces ───────────────────────────────────────────────────────────────────
 function wageCard(st) {
+  const pend = st.pending || {}, month = st.this_month || {}, all = st.overall || {};
+  const owed = Number(pend.amount || 0);
+  const settled = owed <= 0;
+
   const card = div({className:'card',style:{padding:'15px 16px'}});
-  card.appendChild(div({className:'kicker'},'Your wages'));
-  card.appendChild(div({className:'display num',style:{fontSize:30,marginTop:4}},
-    st.monthly_salary ? fmtCur(st.monthly_salary) : '—'));
-  card.appendChild(div({style:{fontSize:12.5,color:'var(--muted)',marginTop:2}},'per month'));
+  card.appendChild(div({className:'kicker'}, settled ? 'Your wages' : 'Waiting to be paid'));
+  card.appendChild(div({className:'display num',style:{fontSize:settled?26:30,marginTop:4,
+    color: settled ? 'var(--accent)' : 'var(--gold)'}},
+    settled ? 'All settled' : fmtCur(owed)));
+
+  card.appendChild(div({style:{fontSize:12.5,color:'var(--muted)',marginTop:2}},
+    settled
+      ? (st.last_payout ? `Last paid ${fmtDate(st.last_payout.date)}` : 'Nothing recorded yet')
+      : `${pend.count} payment${pend.count===1?'':'s'}${pend.oldest?` · oldest ${fmtDate(pend.oldest)}`:''}`));
 
   const rows = div({style:{display:'flex',gap:14,borderTop:'1px solid var(--border-soft)',
     marginTop:13,paddingTop:12}});
-  const cell = (label, value, sub) => div({style:{flex:1,minWidth:0}},
+  const cell = (label, value) => div({style:{flex:1,minWidth:0}},
     div({className:'kicker'}, label),
-    div({className:'num',style:{fontSize:15,fontWeight:700,marginTop:3}}, value),
-    sub ? div({style:{fontSize:11,color:'var(--muted)',marginTop:1}}, sub) : null);
-  rows.appendChild(cell('Last paid',
-    st.last_payout ? fmtCur(st.last_payout.amount) : '—',
-    st.last_payout ? fmtDate(st.last_payout.date) : 'nothing recorded'));
-  rows.appendChild(cell('Paid this year', fmtCur(st.paid_this_year)));
+    div({className:'num',style:{fontSize:16,fontWeight:700,marginTop:3}}, value));
+  rows.appendChild(cell('This month', fmtCur(month.amount)));
+  rows.appendChild(cell('Received so far', fmtCur(all.paid)));
   card.appendChild(rows);
+
+  // Her payout is what is left after an instalment comes off, so say so rather
+  // than leaving her to work out why the figure is short.
+  const cut = Number(month.deducted || 0);
+  if (cut > 0) card.appendChild(div({style:{fontSize:12,color:'var(--text-mid)',marginTop:11,
+    background:'var(--gold-light)',border:'1px solid var(--gold-line)',
+    borderRadius:'var(--radius-sm)',padding:'9px 11px',lineHeight:1.5}},
+    `${fmtCur(cut)} of this month's wage went towards your loan. The figures above are what you receive in hand.`));
+
   return card;
 }
 
