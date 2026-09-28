@@ -12,7 +12,7 @@
 const CFG = window.STAYLOG_CLOUD || {};
 const CHECKIN_TIME = '1:00 PM', CHECKOUT_TIME = '11:00 AM';
 const CACHE_KEY = 'rv_staff_cache';
-const PAGE_VERSION = 'v3 · 28 Sept 2026';
+const PAGE_VERSION = 'v4 · 28 Sept 2026';
 
 const MONTH_SHORT = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 const DAYS = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
@@ -128,6 +128,70 @@ function renderLogin(msg) {
 }
 
 // ── Pieces ───────────────────────────────────────────────────────────────────
+// ── Attendance ───────────────────────────────────────────────────────────────
+// One tap, for today. Deliberately says nothing about money: the amount it
+// becomes is the owner's business, and the wage card below already carries
+// the totals she is entitled to see.
+let marking = false;
+
+async function markToday(on) {
+  if (marking) return;
+  marking = true; render();
+  try {
+    const { data, error } = await client().rpc(on ? 'staff_mark_today' : 'staff_unmark_today');
+    if (error) throw error;
+    if (data && data.ok === false) {
+      alert(data.reason === 'already_counted'
+        ? 'Today has already been counted. Ask Rakshit if it needs changing.'
+        : 'Your access is not active. Please check with Rakshit.');
+    }
+  } catch (err) {
+    alert('Could not save that — check your internet and try again.');
+  } finally {
+    marking = false;
+    await refresh(true);        // re-read rather than guess at the new state
+  }
+}
+
+function attendanceCard(st) {
+  const a = (st && st.attendance) || {};
+  const marked = !!a.marked;
+  const card = div({className:'card',style:{padding:'15px 15px 14px'}});
+
+  card.appendChild(div({className:'kicker'}, 'Today · ' + fmtDate(a.today || today())));
+
+  if (!marked) {
+    card.appendChild(h('button',{className:'btn',disabled:marking,style:{marginTop:11},
+      onClick:()=>markToday(true)}, marking ? 'Saving…' : 'I came in today'));
+    if (a.this_month)
+      card.appendChild(div({style:{fontSize:12,color:'var(--muted)',marginTop:9,textAlign:'center'}},
+        `${a.this_month} ${a.this_month === 1 ? 'day' : 'days'} marked this month`));
+    return card;
+  }
+
+  const at = a.marked_at ? new Date(a.marked_at) : null;
+  card.appendChild(div({style:{display:'flex',alignItems:'center',gap:10,marginTop:10}},
+    div({style:{width:34,height:34,borderRadius:99,background:'var(--accent-light)',
+      display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,
+      color:'var(--accent)',fontSize:18,fontWeight:700}}, '✓'),
+    div({style:{minWidth:0}},
+      div({style:{fontWeight:700,fontSize:15}}, 'Marked present'),
+      div({style:{fontSize:12,color:'var(--muted)',marginTop:1}},
+        at ? 'at ' + at.toLocaleTimeString('en-IN',{hour:'numeric',minute:'2-digit'}) : 'today'))));
+
+  card.appendChild(div({style:{display:'flex',alignItems:'center',justifyContent:'space-between',
+    gap:10,marginTop:12,paddingTop:11,borderTop:'1px solid var(--border-soft)'}},
+    div({style:{fontSize:12,color:'var(--muted)'}},
+      `${a.this_month || 1} ${(a.this_month || 1) === 1 ? 'day' : 'days'} this month`),
+    a.locked
+      ? div({style:{fontSize:12,color:'var(--light)'}}, 'Counted')
+      : h('button',{className:'btn-quiet',disabled:marking,
+          style:{width:'auto',minHeight:36,padding:'8px 14px',fontSize:12.5},
+          onClick:()=>{ if(confirm('Remove today\u2019s mark?')) markToday(false); }},
+          marking ? '…' : 'Undo')));
+  return card;
+}
+
 function wageCard(st) {
   if (!st.pending || !st.overall) return staleCard();
   const pend = st.pending, month = st.this_month || {}, all = st.overall;
@@ -316,6 +380,7 @@ function render() {
       'Nothing is shared with this account yet. Ask Rakshit to check your access.'));
 
   if (st) {
+    wrap.appendChild(attendanceCard(st));
     wrap.appendChild(wageCard(st));
     (st.loans || []).forEach(l => wrap.appendChild(loanCard(l)));
   }

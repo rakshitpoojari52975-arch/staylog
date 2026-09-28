@@ -29,6 +29,8 @@
   let pushing = false;
   let timer = null;
   let lastError = '';
+  let held = 0;           // marks waiting on a daily wage being set
+  let attError = '';      // attendance trouble, kept apart from sync trouble
 
   const num = v => (v === '' || v == null ? null : Number(v));
   const str = v => (v == null || v === '' ? null : String(v));
@@ -55,11 +57,13 @@
     staff: {
       up: (s, owner) => ({
         id: s.id, owner_id: owner, name: s.name, role: str(s.role), phone: str(s.phone),
-        monthly_salary: num(s.monthlySalary), active: s.active !== false, joined_on: dat(s.joinedOn),
+        monthly_salary: num(s.monthlySalary), daily_wage: num(s.dailyWage),
+        active: s.active !== false, joined_on: dat(s.joinedOn),
       }),
       down: r => ({
         id: r.id, name: r.name, role: r.role || '', phone: r.phone || '',
-        monthlySalary: r.monthly_salary ?? '', active: r.active, joinedOn: r.joined_on || '',
+        monthlySalary: r.monthly_salary ?? '', dailyWage: r.daily_wage ?? '',
+        active: r.active, joinedOn: r.joined_on || '',
       }),
     },
     bookings: {
@@ -191,6 +195,94 @@
     };
   }
 
+  // ── Attendance ─────────────────────────────────────────────────────────────
+  // The one table she writes and this phone does not own. It is deliberately
+  // absent from ORDER and MAP above, which is what keeps the tombstone pass in
+  // push() from deleting the marks she made while this phone was not looking.
+  //
+  // Draining is one-way: a mark becomes an unpaid wage expense here, the
+  // server row is stamped with that expense's id, and a stamped row is never
+  // looked at again. Delete the expense afterwards and it stays deleted.
+  //
+  // The expense id is derived from the mark id rather than generated, so
+  // re-running this after a half-finished drain rewrites the same expense
+  // instead of making a second one.
+  const expenseIdFor = markId => 'wag_' + String(markId).replace(/^att_/, '');
+  const prettyDate = iso => {
+    const d = new Date(iso + 'T00:00:00');
+    return isNaN(d) ? iso : d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
+  };
+
+  // Nothing in here may break the push. Attendance is an addition; if the
+  // table is not there yet, or the request fails, or the app is an older build
+  // than the database, the rest of the sync has to carry on exactly as before.
+  async function drainAttendance(c, owner, data) {
+    try {
+      return await drainAttendanceInner(c, owner, data);
+    } catch (err) {
+      attError = (err && err.message) || String(err);
+      return false;
+    }
+  }
+
+  async function drainAttendanceInner(c, owner, data) {
+    held = 0; attError = '';
+    const { data: marks, error } = await c.from('attendance')
+      .select('id,staff_id,date').eq('owner_id', owner)
+      .is('deleted_at', null).is('expense_id', null).order('date', { ascending: true });
+    if (error) throw error;
+    if (!marks || !marks.length) return false;
+
+    const known = new Map((data.attendance || []).map(a => [a.id, a]));
+    const make = [];
+    const stamp = [];
+
+    for (const m of marks) {
+      if (known.has(m.id)) {            // already spent here; the stamp is what failed
+        stamp.push(m.id);
+        continue;
+      }
+      const st = (data.staff || []).find(x => x.id === m.staff_id);
+      const rate = Number(st && st.dailyWage);
+      // No rate yet is not a reason to invent a figure, and not a reason to
+      // drop the mark. It waits, and the cloud panel says how many are waiting.
+      if (!st || !(rate > 0)) { held++; continue; }
+      make.push({ mark: m, staff: st, rate });
+    }
+
+    if (make.length && window.STAYLOG_APPLY) {
+      const ok = window.STAYLOG_APPLY(d => {
+        d.attendance = d.attendance || [];
+        for (const { mark, staff, rate } of make) {
+          const eid = expenseIdFor(mark.id);
+          if (!d.expenses.some(e => e.id === eid)) {
+            d.expenses.push({
+              id: eid,
+              propertyId: (d.properties[0] || {}).id || '',
+              description: `Wage — ${staff.name} · ${prettyDate(mark.date)}`,
+              date: mark.date, category: 'staff', staffId: staff.id,
+              amount: rate, grossAmount: rate,
+              loanId: '', loanDeduction: 0, paid: false,
+              notes: 'From her attendance mark', fromAttendance: mark.id,
+            });
+          }
+          if (!d.attendance.some(a => a.id === mark.id))
+            d.attendance.push({ id: mark.id, staffId: staff.id, date: mark.date, expenseId: eid });
+        }
+      });
+      if (ok) make.forEach(({ mark }) => stamp.push(mark.id));
+    }
+
+    // Stamp last. If this fails the local side is already correct, and the
+    // next drain finds the mark in data.attendance and only retries the stamp.
+    for (const id of stamp) {
+      const { error: sErr } = await c.from('attendance')
+        .update({ expense_id: expenseIdFor(id) }).eq('id', id).eq('owner_id', owner);
+      if (sErr) break;
+    }
+    return stamp.length > 0;
+  }
+
   async function push(data) {
     if (!session) throw new Error('not signed in');
     if (pushing) return;
@@ -198,6 +290,11 @@
     const owner = session.user.id;
     const c = await client();
     try {
+      // Before pushing, not after: expenses born from her marks have to go up
+      // in this same cycle, or the tombstone pass below would see rows the
+      // server has and this phone does not.
+      const drained = await drainAttendance(c, owner, data).catch(() => false);
+      if (drained) data = (window.STAYLOG_GET_DATA && window.STAYLOG_GET_DATA()) || data;
       const sets = collect(data);
       for (const table of ORDER) {
         const rows = (sets[table] || []).filter(x => ID_OK.test(String(x.id || '')))
@@ -258,7 +355,7 @@
       email: session?.user?.email || '',
       userId: session?.user?.id || '',
       online: navigator.onLine,
-      dirty, pushing, lastSync: last, lastError,
+      dirty, pushing, lastSync: last, lastError, heldMarks: held, attError,
     };
   }
 

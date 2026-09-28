@@ -4,7 +4,7 @@
 'use strict';
 
 // ─── Build ────────────────────────────────────────────────────────────────────
-const APP_VERSION='v16', APP_BUILT='28 Sept 2026';
+const APP_VERSION='v18', APP_BUILT='28 Sept 2026';
 
 // ─── Auth ─────────────────────────────────────────────────────────────────────
 const AUTH_KEY   = 'staylog_auth';
@@ -13,7 +13,7 @@ const PIN_LENGTH = 4;
 // ─── Storage ──────────────────────────────────────────────────────────────────
 const DB_NAME='staylog_db', DB_VERSION=1, STORE_NAME='appdata';
 const DATA_KEY='staylog_main', LS_KEY='staylog_v2';
-const defaultData={ properties:[], bookings:[], expenses:[], staff:[], loans:[] };
+const defaultData={ properties:[], bookings:[], expenses:[], staff:[], loans:[], attendance:[] };
 
 // Ensures older saved data (pre-loan-module) gains the new collections
 function normalizeData(d){
@@ -23,6 +23,9 @@ function normalizeData(d){
   if(!Array.isArray(d.expenses))d.expenses=[];
   if(!Array.isArray(d.staff))d.staff=[];
   if(!Array.isArray(d.loans))d.loans=[];
+  // Marks already turned into expenses. Kept so a mark can never be spent
+  // twice, even if stamping the server failed after the expense was made.
+  if(!Array.isArray(d.attendance))d.attendance=[];
   d.loans.forEach(l=>{if(!Array.isArray(l.repayments))l.repayments=[];});
   return d;
 }
@@ -46,6 +49,10 @@ function saveData(d){
   try{window.StayLogCloud&&window.StayLogCloud.markDirty(()=>state.data);}catch{}
 }
 window.STAYLOG_GET_DATA=()=>state.data;
+// cloud.js turns her attendance marks into unpaid wage expenses through this.
+// It goes through mutateData so the write is saved and the screen repaints
+// exactly as it would for an expense typed by hand.
+window.STAYLOG_APPLY=fn=>{try{mutateData(fn);return true;}catch(e){return false;}};
 async function loadDataFromIDB(){
   try{const d=await idbGet(DATA_KEY);if(d&&d.properties)return normalizeData(d);}catch{}
   try{const ls=JSON.parse(localStorage.getItem(LS_KEY));if(ls&&ls.properties){const n=normalizeData(ls);saveData(n);return n;}}catch{}
@@ -377,6 +384,32 @@ function menuRow(icon,label,sub,onClick,danger){
       sub?div({style:{fontSize:12,fontWeight:400,color:'var(--muted)',marginTop:1}},sub):null)
   );
 }
+// ─── Appearance ───────────────────────────────────────────────────────────────
+// index.html owns getTheme/applyTheme/setTheme because they have to run before
+// the first paint; this is only the control that calls them.
+const THEMES=[['system','device-mobile','Phone'],['light','sun','Light'],['dark','moon','Dark']];
+function themeRow(){
+  const cur=(window.getTheme?window.getTheme():'system');
+  const pill=(value,icon,label)=>{
+    const on=cur===value;
+    return btn({style:{flex:'1',display:'flex',alignItems:'center',justifyContent:'center',gap:6,
+      minHeight:40,borderRadius:8,fontSize:13,fontWeight:on?700:600,
+      background:on?'var(--white)':'transparent',
+      color:on?'var(--text)':'var(--muted)',
+      boxShadow:on?'var(--shadow)':'none',
+      border:on?'1px solid var(--border)':'1px solid transparent'},
+      onClick:()=>{ if(window.setTheme)window.setTheme(value); render(); }},
+      ico(icon,{style:{fontSize:15,color:on?'var(--accent)':'var(--light)'}}),
+      label);
+  };
+  return div({style:{padding:'10px 12px 4px'}},
+    div({className:'kicker',style:{marginBottom:8}},'Appearance'),
+    div({style:{display:'flex',gap:4,padding:4,background:'var(--surface-2)',
+      border:'1px solid var(--border-soft)',borderRadius:10}},
+      ...THEMES.map(t=>pill(t[0],t[1],t[2])))
+  );
+}
+
 function renderMenuModal(){
   const{data}=state;
   const content=()=>div({style:{display:'flex',flexDirection:'column',gap:2}},
@@ -386,6 +419,8 @@ function renderMenuModal(){
     menuRow('cloud','Cloud sync',cloudMenuSub(),()=>setState({modal:'cloud'})),
     menuRow('notes','House notes PDF','The instructions guests get after check-in',()=>{
       downloadHouseNotes(data.properties.find(p=>p.id===state.filterProp)||data.properties[0]);closeModal();}),
+    themeRow(),
+    div({style:{height:6}}),
     menuRow('lock','Lock app','Ask for the PIN again',()=>{state.modal=null;state.loggedIn=false;render();},true),
     div({style:{textAlign:'center',fontSize:11.5,color:'var(--muted)',padding:'14px 0 2px',
       borderTop:'1px solid var(--border-soft)',marginTop:6}},
@@ -1062,6 +1097,17 @@ function renderCloudModal(){
       s.signedIn?div({style:{fontSize:12,color:'var(--muted)',marginTop:3}},s.email):null,
       s.lastError?div({style:{fontSize:12,color:'var(--danger)',marginTop:5,lineHeight:1.45}},s.lastError):null
     ));
+
+    // Marks that arrived for someone with no daily wage set. They are not
+    // lost and not guessed at — they convert the moment a rate exists.
+    if(s.heldMarks>0){
+      const who=state.data.staff.filter(x=>!(Number(x.dailyWage)>0)).map(x=>x.name).join(', ');
+      wrap.appendChild(div({style:{background:'var(--gold-light)',border:'1px solid var(--gold-line)',
+        borderRadius:'var(--radius-sm)',padding:'11px 13px',fontSize:12.5,color:'var(--text-mid)',lineHeight:1.5}},
+        div({style:{fontWeight:700,color:'var(--gold)',marginBottom:2}},
+          `${s.heldMarks} attendance ${s.heldMarks===1?'mark is':'marks are'} waiting`),
+        `No daily wage is set${who?` for ${who}`:''}, so nothing has been added to expenses. Set it in the staff screen and they will appear at the next sync.`));
+    }
 
     if(!s.configured){
       wrap.appendChild(div({style:{fontSize:13,color:'var(--muted)',lineHeight:1.5}},
@@ -1847,7 +1893,8 @@ function staffPanel(){
     row.appendChild(div({style:{minWidth:0}},
       div({style:{fontWeight:600,fontSize:14}},s.name,s.active===false?span({style:{fontSize:11,color:'var(--muted)',fontWeight:400,marginLeft:6}},'· inactive'):null),
       div({style:{fontSize:12,color:'var(--muted)',marginTop:2}},
-        [s.role,s.monthlySalary?`${fmtCur(s.monthlySalary)}/mo`:null,s.phone].filter(Boolean).join(' · ')||'—'),
+        [s.role,s.monthlySalary?`${fmtCur(s.monthlySalary)}/mo`:null,
+         s.dailyWage?`${fmtCur(s.dailyWage)}/day`:null,s.phone].filter(Boolean).join(' · ')||'—'),
       bal>0?div({style:{fontSize:12,color:'var(--gold)',fontWeight:600,marginTop:3}},`Loan outstanding: ${fmtCur(bal)}`):null
     ));
     row.appendChild(div({style:{display:'flex',gap:6,flexShrink:0}},
@@ -2097,12 +2144,14 @@ function loanAnalysis(loans,t){
 // ─── Modals ───────────────────────────────────────────────────────────────────
 function renderStaffModal(){
   const{editItem}=state; const isEdit=!!editItem;
-  const f=isEdit?{...editItem}:{name:'',role:'',phone:'',monthlySalary:'',active:true,joinedOn:today()};
+  const f=isEdit?{...editItem}:{name:'',role:'',phone:'',monthlySalary:'',dailyWage:'',active:true,joinedOn:today()};
   const content=()=>{
     const wrap=div({style:{display:'flex',flexDirection:'column',gap:11}});
-    [['name','Staff name *','text'],['role','Role (caretaker, cook…)','text'],['phone','Phone number','tel'],['monthlySalary','Monthly salary (₹)','number']].forEach(([k,ph,t])=>{
+    [['name','Staff name *','text'],['role','Role (caretaker, cook…)','text'],['phone','Phone number','tel'],['monthlySalary','Monthly salary (₹)','number'],['dailyWage','Daily wage (₹)','number']].forEach(([k,ph,t])=>{
       const inp=h('input',{type:t,placeholder:ph,value:f[k]??''});inp.addEventListener('input',e=>f[k]=e.target.value);wrap.appendChild(inp);
     });
+    wrap.appendChild(div({style:{fontSize:12,color:'var(--muted)',marginTop:-4,lineHeight:'16px'}},
+      'The daily wage is what one attendance mark becomes. Leave it blank and her marks are held until you set it.'));
     const joinWrap=div({},div({className:'label'},'Joined on'));
     const joinInp=h('input',{type:'date',value:f.joinedOn||today()});joinInp.addEventListener('change',e=>f.joinedOn=e.target.value);joinWrap.appendChild(joinInp);wrap.appendChild(joinWrap);
     if(isEdit){
