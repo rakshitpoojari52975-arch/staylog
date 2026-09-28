@@ -6,8 +6,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes"/>
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
   <meta name="apple-mobile-web-app-title" content="Raaya Vasyam"/>
-  <meta name="theme-color" content="#F5F1E8" media="(prefers-color-scheme: light)"/>
-  <meta name="theme-color" content="#16180F" media="(prefers-color-scheme: dark)"/>
+  <meta name="theme-color" content="#F5F1E8"/>
   <meta name="robots" content="noindex"/>
   <link rel="apple-touch-icon" href="icons/icon-192.png"/>
   <title>Raaya Vasyam — Staff</title>
@@ -16,6 +15,9 @@
   <link href="https://fonts.googleapis.com/css2?family=Prata&family=Manrope:wght@400;500;600;700&display=swap" rel="stylesheet"/>
   <style>
     *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
+    /* Light only. This page is read in daylight, on one phone, by someone who
+       has no menu to change it back from — so it does not follow the device.
+       color-scheme:light also keeps the browser from darkening the inputs. */
     :root{
       color-scheme:light;
       --cream:#F5F1E8; --white:#FFFDF8; --surface-2:#FBF6EB;
@@ -27,18 +29,6 @@
       --display:'Prata',Georgia,serif; --body:'Manrope',-apple-system,'Segoe UI',sans-serif;
       --radius:12px; --radius-sm:8px;
       --shadow:0 1px 2px rgba(31,36,32,.05);
-    }
-    @media (prefers-color-scheme:dark){
-      :root{
-        color-scheme:dark;
-        --cream:#16180F; --white:#1E2118; --surface-2:#23261B;
-        --border:#2F3324; --border-soft:#262A1E;
-        --text:#F0ECDF; --text-mid:#CFCBBB; --muted:#948F7C; --light:#7C7768;
-        --accent:#7CC49A; --accent-light:#20301F; --accent-line:#2C4430; --on-accent:#14170F;
-        --gold:#D8AC5B; --gold-light:#2E2718; --gold-line:#45391F;
-        --danger:#E58479; --danger-light:#33201D;
-        --shadow:0 1px 2px rgba(0,0,0,.35);
-      }
     }
     html{font-size:16px;-webkit-text-size-adjust:100%;}
     body{
