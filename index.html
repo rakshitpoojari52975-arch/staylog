@@ -8,6 +8,42 @@
   <meta name="apple-mobile-web-app-title" content="StayLog"/>
   <meta name="theme-color" content="#F5F1E8" media="(prefers-color-scheme: light)"/>
   <meta name="theme-color" content="#16180F" media="(prefers-color-scheme: dark)"/>
+  <script>
+    /* Appearance. Runs in <head>, before the first paint, so a phone set to
+       light and an app set to dark never flash cream for a frame. The three
+       states are 'system' (no attribute, the media query decides), 'light'
+       and 'dark'. app.js reuses these two functions for the menu control. */
+    (function () {
+      var KEY = 'staylog_theme';
+      window.getTheme = function () {
+        try { return localStorage.getItem(KEY) || 'system'; } catch (e) { return 'system'; }
+      };
+      window.applyTheme = function (t) {
+        var root = document.documentElement;
+        if (t === 'light' || t === 'dark') root.setAttribute('data-theme', t);
+        else root.removeAttribute('data-theme');
+        // The status bar is painted from a meta tag, not from CSS, so an
+        // override has to move it by hand or iOS keeps the system colour.
+        var metas = document.querySelectorAll('meta[name="theme-color"]');
+        for (var i = 0; i < metas.length; i++) {
+          var m = metas[i], light = i === 0;
+          if (t === 'system') {
+            // Hand it back to the phone so it keeps following sunset.
+            m.setAttribute('media', '(prefers-color-scheme: ' + (light ? 'light' : 'dark') + ')');
+            m.setAttribute('content', light ? '#F5F1E8' : '#16180F');
+          } else {
+            m.removeAttribute('media');
+            m.setAttribute('content', t === 'dark' ? '#16180F' : '#F5F1E8');
+          }
+        }
+      };
+      window.setTheme = function (t) {
+        try { localStorage.setItem(KEY, t); } catch (e) {}
+        window.applyTheme(t);
+      };
+      window.applyTheme(window.getTheme());
+    })();
+  </script>
   <meta name="description" content="Homestay management app — track bookings, guests, expenses, staff loans & revenue"/>
   <link rel="manifest" href="manifest.json"/>
   <link rel="apple-touch-icon" href="icons/icon-192.png"/>
@@ -67,9 +103,11 @@
       --scrim: rgba(31,36,32,.38);
     }
 
-    /* ─── Tokens · dark ──────────────────────────────────────────────── */
+    /* ─── Tokens · dark ──────────────────────────────────────────────────
+       Three states, not two: no data-theme means follow the phone, and an
+       explicit choice has to beat the phone in both directions. */
     @media (prefers-color-scheme: dark) {
-      :root {
+      :root:not([data-theme="light"]) {
         color-scheme: dark;
         --cream:       #16180F;
         --white:       #1E2118;
@@ -109,6 +147,46 @@
         --shadow-lift: 0 -6px 30px rgba(0,0,0,.5);
         --scrim: rgba(0,0,0,.55);
       }
+    }
+    :root[data-theme="dark"] {
+        color-scheme: dark;
+        --cream:       #16180F;
+        --white:       #1E2118;
+        --surface-2:   #23261B;
+        --border:      #2F3324;
+        --border-soft: #262A1E;
+
+        --text:        #F0ECDF;
+        --text-mid:    #CFCBBB;
+        --muted:       #948F7C;
+        --light:       #7C7768;
+
+        --accent:      #7CC49A;
+        --accent-hov:  #94D3AD;
+        --accent-light:#20301F;
+        --accent-line: #2C4430;
+        --accent-mid:  #5FA97F;
+        --on-accent:   #14170F;
+
+        --gold:        #D8AC5B;
+        --gold-light:  #2E2718;
+        --gold-line:   #45391F;
+
+        --danger:      #E58479;
+        --danger-light:#33201D;
+        --danger-line: #4A2E29;
+
+        --warn:        #E0A45C;
+        --warn-light:  #2F2718;
+        --warn-line:   #46381F;
+
+        --info:        #86C9AE;
+        --info-light:  #1D2E28;
+
+        --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 26px rgba(0,0,0,.32);
+        --shadow-sm: 0 1px 2px rgba(0,0,0,.35);
+        --shadow-lift: 0 -6px 30px rgba(0,0,0,.5);
+        --scrim: rgba(0,0,0,.55);
     }
 
     html { font-size: 16px; -webkit-text-size-adjust: 100%; }

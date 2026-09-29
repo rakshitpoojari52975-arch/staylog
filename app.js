@@ -4,7 +4,7 @@
 'use strict';
 
 // ─── Build ────────────────────────────────────────────────────────────────────
-const APP_VERSION='v19', APP_BUILT='28 Sept 2026';
+const APP_VERSION='v20', APP_BUILT='28 Sept 2026';
 
 // ─── Auth ─────────────────────────────────────────────────────────────────────
 const AUTH_KEY   = 'staylog_auth';
@@ -385,11 +385,59 @@ function menuRow(icon,label,sub,onClick,danger){
   );
 }
 // ─── Appearance ───────────────────────────────────────────────────────────────
-// index.html owns getTheme/applyTheme/setTheme because they have to run before
-// the first paint; this is only the control that calls them.
+// index.html sets the attribute before the first paint so the app never flashes
+// the wrong colour. The working copy lives HERE, though, and does not depend on
+// that script existing: index.html and app.js are uploaded separately, and a
+// control that silently does nothing because the other file is a version behind
+// is worse than no control at all.
+const THEME_KEY='staylog_theme';
+function getTheme(){
+  if(window.getTheme&&window.getTheme!==getTheme){try{return window.getTheme();}catch(e){}}
+  try{return localStorage.getItem(THEME_KEY)||'system';}catch(e){return 'system';}
+}
+function applyTheme(t){
+  ensureDarkTokens();
+  const root=document.documentElement;
+  if(t==='light'||t==='dark')root.setAttribute('data-theme',t);
+  else root.removeAttribute('data-theme');
+  const dark=t==='dark'||(t==='system'&&window.matchMedia('(prefers-color-scheme: dark)').matches);
+  document.querySelectorAll('meta[name="theme-color"]').forEach((m,i)=>{
+    if(t==='system'){
+      m.setAttribute('media','(prefers-color-scheme: '+(i===0?'light':'dark')+')');
+      m.setAttribute('content',i===0?'#F5F1E8':'#16180F');
+    }else{
+      m.removeAttribute('media');
+      m.setAttribute('content',dark?'#16180F':'#F5F1E8');
+    }
+  });
+}
+function setTheme(t){
+  try{localStorage.setItem(THEME_KEY,t);}catch(e){}
+  applyTheme(t);
+}
+// If the stylesheet in index.html predates the toggle, :root[data-theme="dark"]
+// matches nothing and setting the attribute changes no colour. Rather than
+// leave a dead button, test for it once and supply the rule if it is missing.
+let _darkChecked=false;
+function ensureDarkTokens(){
+  if(_darkChecked)return; _darkChecked=true;
+  const root=document.documentElement, had=root.getAttribute('data-theme');
+  const read=()=>getComputedStyle(root).getPropertyValue('--cream').trim().toLowerCase();
+  try{
+    const light=read();
+    root.setAttribute('data-theme','dark');
+    const dark=read();
+    if(had===null)root.removeAttribute('data-theme'); else root.setAttribute('data-theme',had);
+    if(dark&&dark!==light)return;                 // the stylesheet already handles it
+  }catch(e){ return; }
+  const st=document.createElement('style');
+  st.id='staylog-dark-fallback';
+  st.textContent=':root[data-theme="dark"]{color-scheme: dark;--cream:       #16180F;--white:       #1E2118;--surface-2:   #23261B;--border:      #2F3324;--border-soft: #262A1E;--text:        #F0ECDF;--text-mid:    #CFCBBB;--muted:       #948F7C;--light:       #7C7768;--accent:      #7CC49A;--accent-hov:  #94D3AD;--accent-light:#20301F;--accent-line: #2C4430;--accent-mid:  #5FA97F;--on-accent:   #14170F;--gold:        #D8AC5B;--gold-light:  #2E2718;--gold-line:   #45391F;--danger:      #E58479;--danger-light:#33201D;--danger-line: #4A2E29;--warn:        #E0A45C;--warn-light:  #2F2718;--warn-line:   #46381F;--info:        #86C9AE;--info-light:  #1D2E28;--shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 26px rgba(0,0,0,.32);--shadow-sm: 0 1px 2px rgba(0,0,0,.35);--shadow-lift: 0 -6px 30px rgba(0,0,0,.5);--scrim: rgba(0,0,0,.55);}';
+  document.head.appendChild(st);
+}
 const THEMES=[['system','device-mobile','Phone'],['light','sun','Light'],['dark','moon','Dark']];
 function themeRow(){
-  const cur=(window.getTheme?window.getTheme():'system');
+  const cur=getTheme();
   const pill=(value,icon,label)=>{
     const on=cur===value;
     return btn({style:{flex:'1',display:'flex',alignItems:'center',justifyContent:'center',gap:6,
@@ -398,7 +446,7 @@ function themeRow(){
       color:on?'var(--text)':'var(--muted)',
       boxShadow:on?'var(--shadow)':'none',
       border:on?'1px solid var(--border)':'1px solid transparent'},
-      onClick:()=>{ if(window.setTheme)window.setTheme(value); render(); }},
+      onClick:()=>{ setTheme(value); render(); }},
       ico(icon,{style:{fontSize:15,color:on?'var(--accent)':'var(--light)'}}),
       label);
   };
@@ -2644,6 +2692,7 @@ function render(){
 }
 
 // ─── Boot ─────────────────────────────────────────────────────────────────────
+try{applyTheme(getTheme());}catch(e){}
 render();
 Promise.all([loadDataFromIDB(),loadAuth()]).then(([data,auth])=>{
   state.data=data;state.auth=auth;state.loggedIn=false;state._loading=false;render();
