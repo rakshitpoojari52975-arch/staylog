@@ -12,7 +12,7 @@
 const CFG = window.STAYLOG_CLOUD || {};
 const CHECKIN_TIME = '1:00 PM', CHECKOUT_TIME = '11:00 AM';
 const CACHE_KEY = 'rv_staff_cache';
-const PAGE_VERSION = 'v4 · 28 Sept 2026';
+const PAGE_VERSION = 'v5 · 29 Sept 2026';
 
 const MONTH_SHORT = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 const DAYS = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
@@ -208,6 +208,28 @@ function wageCard(st) {
     settled
       ? (st.last_payout ? `Last paid ${fmtDate(st.last_payout.date)}` : 'Nothing recorded yet')
       : `${pend.count} payment${pend.count===1?'':'s'}${pend.oldest?` · oldest ${fmtDate(pend.oldest)}`:''}`));
+
+  // The arithmetic behind the figure above. She counts her own days; seeing
+  // the same days listed is what settles a disagreement before it starts.
+  const days = Array.isArray(pend.days) ? pend.days : [];
+  if (!settled && days.length) {
+    const list = div({style:{borderTop:'1px solid var(--border-soft)',marginTop:13,paddingTop:4}});
+    days.forEach(d => {
+      const gross = Number(d.gross || 0), cut = Number(d.deducted || 0), net = Number(d.net || 0);
+      const row = div({style:{display:'flex',alignItems:'baseline',justifyContent:'space-between',
+        gap:10,padding:'8px 0',borderBottom:'1px solid var(--border-soft)'}});
+      row.appendChild(div({style:{fontSize:13.5,minWidth:0}}, fmtDate(d.date)));
+      row.appendChild(div({style:{textAlign:'right',flexShrink:0}},
+        div({className:'num',style:{fontSize:14,fontWeight:700}}, fmtCur(net)),
+        cut > 0 ? div({className:'num',style:{fontSize:11.5,color:'var(--muted)',marginTop:1}},
+          `${fmtCur(gross)} − ${fmtCur(cut)} loan`) : null));
+      list.appendChild(row);
+    });
+    const earlier = Number(pend.earlier || 0);
+    if (earlier > 0) list.appendChild(div({style:{fontSize:12,color:'var(--muted)',padding:'9px 0 2px'}},
+      `and ${earlier} earlier ${earlier === 1 ? 'day' : 'days'}`));
+    card.appendChild(list);
+  }
 
   const rows = div({style:{display:'flex',gap:14,borderTop:'1px solid var(--border-soft)',
     marginTop:13,paddingTop:12}});

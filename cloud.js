@@ -27,6 +27,7 @@
   let session = null;     // current auth session, if signed in
   let dirty = false;      // local changes not yet pushed
   let pushing = false;
+  let queued = false;     // a push asked for while one was already running
   let timer = null;
   let lastError = '';
   let held = 0;           // marks waiting on a daily wage being set
@@ -286,7 +287,11 @@
 
   async function push(data) {
     if (!session) throw new Error('not signed in');
-    if (pushing) return;
+    // Two pushes can now overlap — opening the app starts one, and an edit a
+    // moment later starts another. Dropping the second would leave the newer
+    // state unsent until something else happened to trigger a sync, so it is
+    // remembered and run once the first is done.
+    if (pushing) { queued = true; return; }
     pushing = true;
     const owner = session.user.id;
     const c = await client();
@@ -320,6 +325,13 @@
     } finally {
       pushing = false;
       notify();
+      if (queued) {
+        queued = false;
+        setTimeout(() => {
+          const d = window.STAYLOG_GET_DATA && window.STAYLOG_GET_DATA();
+          if (d) push(d).catch(() => {});
+        }, 0);
+      }
     }
   }
 

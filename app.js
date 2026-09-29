@@ -4,7 +4,7 @@
 'use strict';
 
 // ─── Build ────────────────────────────────────────────────────────────────────
-const APP_VERSION='v20', APP_BUILT='28 Sept 2026';
+const APP_VERSION='v21', APP_BUILT='28 Sept 2026';
 
 // ─── Auth ─────────────────────────────────────────────────────────────────────
 const AUTH_KEY   = 'staylog_auth';
@@ -1943,9 +1943,14 @@ function staffPanel(){
       div({style:{fontSize:12,color:'var(--muted)',marginTop:2}},
         [s.role,s.monthlySalary?`${fmtCur(s.monthlySalary)}/mo`:null,
          s.dailyWage?`${fmtCur(s.dailyWage)}/day`:null,s.phone].filter(Boolean).join(' · ')||'—'),
-      bal>0?div({style:{fontSize:12,color:'var(--gold)',fontWeight:600,marginTop:3}},`Loan outstanding: ${fmtCur(bal)}`):null
+      bal>0?div({style:{fontSize:12,color:'var(--gold)',fontWeight:600,marginTop:3}},`Loan outstanding: ${fmtCur(bal)}`):null,
+      (()=>{const due=pendingWageTotal(data,s.id),n=pendingWages(data,s.id).length;
+        return due>0?btn({className:'btn-ghost btn-sm',style:{marginTop:6,padding:'5px 10px',
+          color:'var(--gold)',borderColor:'var(--gold-line)',background:'var(--gold-light)'},
+          onClick:()=>setState({modal:'settleWages',editItem:s})},
+          `Pay ${fmtCur(due)} · ${n} day${n>1?'s':''}`):null;})()
     ));
-    row.appendChild(div({style:{display:'flex',gap:6,flexShrink:0}},
+    row.appendChild(div({style:{display:'flex',gap:6,flexShrink:0,alignSelf:'flex-start'}},
       btn({className:'btn-ghost btn-sm',style:{padding:'5px 9px'},onClick:()=>setState({modal:'addStaff',editItem:s})},ico('edit',{style:{fontSize:14}})),
       btn({className:'btn-danger btn-sm',style:{padding:'5px 9px'},onClick:()=>{
         const nLoans=state.data.loans.filter(l=>l.staffId===s.id).length;
@@ -2190,6 +2195,117 @@ function loanAnalysis(loans,t){
 }
 
 // ─── Modals ───────────────────────────────────────────────────────────────────
+// ─── Settling wages ───────────────────────────────────────────────────────────
+// Payday is one action, not fifteen. Every unpaid staff payout for one person,
+// ticked by default, with the total following what is ticked — so a part
+// payment is a matter of unticking rather than editing amounts.
+function pendingWages(d,staffId){
+  return d.expenses
+    .filter(e=>e.category==='staff'&&e.staffId===staffId&&!e.paid)
+    .sort((a,b)=>String(b.date).localeCompare(String(a.date)));
+}
+function pendingWageTotal(d,staffId){
+  return round2(pendingWages(d,staffId).reduce((t,e)=>t+Number(e.amount||0),0));
+}
+function renderSettleModal(){
+  const{data,editItem:staff}=state;
+  if(!staff)return modal('Pay wages',()=>div({},'No staff member selected.'));
+  const rows=pendingWages(data,staff.id);
+  const picked=new Set(rows.map(e=>e.id));     // everything, until he says otherwise
+
+  const content=()=>{
+    const wrap=div({style:{display:'flex',flexDirection:'column',gap:0}});
+    if(!rows.length){
+      wrap.appendChild(div({style:{textAlign:'center',padding:'34px 8px',color:'var(--muted)',fontSize:14,lineHeight:1.6}},
+        ico('circle-check',{style:{fontSize:38,color:'var(--accent)',display:'block',marginBottom:12}}),
+        `Nothing pending for ${staff.name}.`));
+      return wrap;
+    }
+
+    const totalLine=div({style:{fontSize:13,color:'var(--muted)'}});
+    const payBtn=btn({className:'btn-primary',style:{width:'100%',marginTop:4}});
+
+    function refreshTotals(){
+      const sel=rows.filter(e=>picked.has(e.id));
+      const sum=round2(sel.reduce((t,e)=>t+Number(e.amount||0),0));
+      const cut=round2(sel.reduce((t,e)=>t+(e.loanId?Number(e.loanDeduction||0):0),0));
+      totalLine.textContent=sel.length
+        ? `${sel.length} of ${rows.length} selected${cut>0?` · ${fmtCur(cut)} to loan`:''}`
+        : 'Nothing selected';
+      payBtn.textContent=sel.length?`Mark ${fmtCur(sum)} as paid`:'Mark as paid';
+      payBtn.disabled=!sel.length;
+      payBtn.style.opacity=sel.length?'1':'.5';
+    }
+
+    const head=div({style:{display:'flex',alignItems:'center',justifyContent:'space-between',
+      gap:10,paddingBottom:10,marginBottom:2,borderBottom:'1px solid var(--border-soft)'}});
+    head.appendChild(totalLine);
+    const toggleAll=btn({className:'btn-ghost btn-sm',style:{padding:'5px 10px',flexShrink:0},onClick:()=>{
+      const all=picked.size===rows.length;
+      picked.clear();
+      if(!all)rows.forEach(e=>picked.add(e.id));
+      wrap.querySelectorAll('[data-exp]').forEach(el=>paintRow(el,picked.has(el.getAttribute('data-exp'))));
+      toggleAll.textContent=picked.size===rows.length?'Clear all':'Select all';
+      refreshTotals();
+    }},'Clear all');
+    head.appendChild(toggleAll);
+    wrap.appendChild(head);
+
+    function paintRow(el,on){
+      el.style.background=on?'var(--accent-light)':'transparent';
+      const box=el.querySelector('[data-box]');
+      box.style.background=on?'var(--accent)':'transparent';
+      box.style.borderColor=on?'var(--accent)':'var(--border)';
+      box.querySelector('i').style.opacity=on?'1':'0';
+    }
+
+    rows.forEach(e=>{
+      const ded=e.loanId?round2(e.loanDeduction):0;
+      const gross=Number(e.grossAmount||0)||round2(Number(e.amount||0)+ded);
+      const row=div({'data-exp':e.id,style:{display:'flex',alignItems:'center',gap:11,
+        padding:'11px 10px',borderRadius:'var(--radius-sm)',cursor:'pointer',
+        borderBottom:'1px solid var(--border-soft)'}});
+      const box=div({'data-box':'1',style:{width:22,height:22,borderRadius:6,flexShrink:0,
+        border:'1.5px solid var(--border)',display:'flex',alignItems:'center',justifyContent:'center'}},
+        ico('check',{style:{fontSize:14,color:'var(--on-accent)'}}));
+      row.appendChild(box);
+      row.appendChild(div({style:{minWidth:0,flex:1}},
+        div({style:{fontSize:14,fontWeight:600}},fmtDate(e.date)),
+        div({style:{fontSize:12,color:'var(--muted)',marginTop:2}},
+          ded>0?`${fmtCur(gross)} − ${fmtCur(ded)} loan`:(e.description||'Staff payout'))));
+      row.appendChild(div({className:'num',style:{fontSize:15,fontWeight:700,flexShrink:0}},fmtCur(e.amount)));
+      row.addEventListener('click',()=>{
+        if(picked.has(e.id))picked.delete(e.id); else picked.add(e.id);
+        paintRow(row,picked.has(e.id));
+        toggleAll.textContent=picked.size===rows.length?'Clear all':'Select all';
+        refreshTotals();
+      });
+      wrap.appendChild(row);
+      paintRow(row,true);
+    });
+
+    payBtn.addEventListener('click',()=>{
+      const ids=rows.filter(e=>picked.has(e.id)).map(e=>e.id);
+      if(!ids.length)return;
+      const sum=round2(rows.filter(e=>picked.has(e.id)).reduce((t,e)=>t+Number(e.amount||0),0));
+      if(!confirm(`Mark ${ids.length} wage${ids.length>1?'s':''} totalling ${fmtCur(sum)} as paid to ${staff.name}?`))return;
+      mutateData(d=>{
+        ids.forEach(id=>{
+          const e=d.expenses.find(x=>x.id===id);
+          if(!e||e.paid)return;                 // already settled; never pay twice
+          e.paid=true;
+          syncExpenseLoan(d,e);                 // records the instalment against the loan
+        });
+      });
+      closeModal();
+    });
+    wrap.appendChild(div({style:{marginTop:12}},payBtn));
+    refreshTotals();
+    return wrap;
+  };
+  return modal(`Pay ${staff.name}`,content);
+}
+
 function renderStaffModal(){
   const{editItem}=state; const isEdit=!!editItem;
   const f=isEdit?{...editItem}:{name:'',role:'',phone:'',monthlySalary:'',dailyWage:'',active:true,joinedOn:today()};
@@ -2683,6 +2799,7 @@ function render(){
   else if(state.modal==='addExpense'){currentModal=renderExpenseModal(); document.body.appendChild(currentModal);}
   else if(state.modal==='calDay')   {currentModal=renderCalDayModal();  document.body.appendChild(currentModal);}
   else if(state.modal==='addStaff') {currentModal=renderStaffModal();   document.body.appendChild(currentModal);}
+  else if(state.modal==='settleWages'){currentModal=renderSettleModal(); document.body.appendChild(currentModal);}
   else if(state.modal==='addLoan')  {currentModal=renderLoanModal();    document.body.appendChild(currentModal);}
   else if(state.modal==='addRepayment'){currentModal=renderRepaymentModal();document.body.appendChild(currentModal);}
   else if(state.modal==='menu')     {currentModal=renderMenuModal();      document.body.appendChild(currentModal);}
