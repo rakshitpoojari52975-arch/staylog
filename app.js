@@ -4,7 +4,7 @@
 'use strict';
 
 // ─── Build ────────────────────────────────────────────────────────────────────
-const APP_VERSION='v18', APP_BUILT='28 Sept 2026';
+const APP_VERSION='v19', APP_BUILT='28 Sept 2026';
 
 // ─── Auth ─────────────────────────────────────────────────────────────────────
 const AUTH_KEY   = 'staylog_auth';
@@ -2649,6 +2649,10 @@ Promise.all([loadDataFromIDB(),loadAuth()]).then(([data,auth])=>{
   state.data=data;state.auth=auth;state.loggedIn=false;state._loading=false;render();
   if(window.StayLogCloud){
     window.StayLogCloud.onChange(()=>{if(state.modal==='cloud'||state.modal==='menu')render();});
-    window.StayLogCloud.restoreSession().catch(()=>{});
+    // Opening the app is itself a reason to sync: her attendance marks arrive
+    // while this phone is doing nothing, and they only become expenses here.
+    window.StayLogCloud.restoreSession()
+      .then(()=>window.StayLogCloud.checkIn&&window.StayLogCloud.checkIn(true))
+      .catch(()=>{});
   }
 });

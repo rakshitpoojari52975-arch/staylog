@@ -172,6 +172,7 @@
     if (error) throw error;
     session = data.session;
     lastError = '';
+    checkIn(true);
     return session;
   }
 
@@ -373,14 +374,31 @@
     }, 4000);
   }
 
-  window.addEventListener('online', () => {
-    notify();
-    if (session && dirty && window.STAYLOG_GET_DATA) push(window.STAYLOG_GET_DATA()).catch(() => {});
-  });
+  // ── Checking in ────────────────────────────────────────────────────────────
+  // markDirty only fires when THIS phone changes something, which is the wrong
+  // trigger for attendance: her marks arrive without this phone doing anything,
+  // and waiting for the next expense to be typed could be days. So the app also
+  // syncs when it is opened and when it comes back to the foreground.
+  let lastCheck = 0;
+  async function checkIn(force) {
+    if (!session || !navigator.onLine || pushing) return;
+    const now = Date.now();
+    if (!force && now - lastCheck < 30000) return;   // returning to the app repeatedly is cheap
+    lastCheck = now;
+    const data = window.STAYLOG_GET_DATA && window.STAYLOG_GET_DATA();
+    if (!data) return;
+    try { await push(data); } catch {}
+  }
+
+  window.addEventListener('online', () => { notify(); checkIn(true); });
   window.addEventListener('offline', notify);
+  window.addEventListener('focus', () => checkIn());
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) checkIn();
+  });
 
   window.StayLogCloud = {
-    restoreSession, signIn, signOut, push, pull, status, markDirty,
+    restoreSession, signIn, signOut, push, pull, status, markDirty, checkIn,
     onChange: fn => listeners.push(fn),
     staffEmail: u => `${String(u || '').trim().toLowerCase()}@${CFG.staffEmailDomain}`,
   };
