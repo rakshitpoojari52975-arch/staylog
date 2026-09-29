@@ -12,7 +12,7 @@
 const CFG = window.STAYLOG_CLOUD || {};
 const CHECKIN_TIME = '1:00 PM', CHECKOUT_TIME = '11:00 AM';
 const CACHE_KEY = 'rv_staff_cache';
-const PAGE_VERSION = 'v5 · 29 Sept 2026';
+const PAGE_VERSION = 'v6 · 29 Sept 2026';
 
 const MONTH_SHORT = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 const DAYS = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
@@ -128,6 +128,10 @@ function renderLogin(msg) {
 }
 
 // ── Pieces ───────────────────────────────────────────────────────────────────
+// Folded state for the wage breakdown. Deliberately not remembered between
+// visits: closed is the right thing to see when the page first opens.
+let detailOpen = false;
+
 // ── Attendance ───────────────────────────────────────────────────────────────
 // One tap, for today. Deliberately says nothing about money: the amount it
 // becomes is the owner's business, and the wage card below already carries
@@ -211,9 +215,23 @@ function wageCard(st) {
 
   // The arithmetic behind the figure above. She counts her own days; seeing
   // the same days listed is what settles a disagreement before it starts.
+  // Folded away by default: the total is what she opens the page for, and a
+  // list of dates sitting open every time is noise she has to scroll past.
   const days = Array.isArray(pend.days) ? pend.days : [];
   if (!settled && days.length) {
-    const list = div({style:{borderTop:'1px solid var(--border-soft)',marginTop:13,paddingTop:4}});
+    const toggle = h('button',{
+      style:{display:'flex',alignItems:'center',justifyContent:'space-between',gap:10,width:'100%',
+        marginTop:12,paddingTop:11,borderTop:'1px solid var(--border-soft)',minHeight:40,
+        background:'none',fontSize:13,fontWeight:600,color:'var(--accent)'},
+      'aria-expanded': detailOpen ? 'true' : 'false',
+      onClick:()=>{ detailOpen = !detailOpen; render(); }},
+      div({}, detailOpen ? 'Hide the days' : 'See the days'),
+      div({style:{fontSize:11,color:'var(--muted)',fontWeight:400}},
+        detailOpen ? '▴' : `${days.length}${Number(pend.earlier||0)?'+':''} days  ▾`));
+    card.appendChild(toggle);
+  }
+  if (!settled && days.length && detailOpen) {
+    const list = div({style:{marginTop:2}});
     days.forEach(d => {
       const gross = Number(d.gross || 0), cut = Number(d.deducted || 0), net = Number(d.net || 0);
       const row = div({style:{display:'flex',alignItems:'baseline',justifyContent:'space-between',
