@@ -32,6 +32,10 @@
   let lastError = '';
   let held = 0;           // marks waiting on a daily wage being set
   let attError = '';      // attendance trouble, kept apart from sync trouble
+  // What the last drain actually did. Without this the only way to find out
+  // why a mark did not become an expense is to read the database by hand,
+  // which is not a thing the app should ask of anybody.
+  let attLog = { at: '', found: 0, created: 0, names: [] };
 
   const num = v => (v === '' || v == null ? null : Number(v));
   const str = v => (v == null || v === '' ? null : String(v));
@@ -223,6 +227,7 @@
       return await drainAttendanceInner(c, owner, data);
     } catch (err) {
       attError = (err && err.message) || String(err);
+      attLog = { at: new Date().toISOString(), found: 0, created: 0, names: [] };
       return false;
     }
   }
@@ -233,6 +238,7 @@
       .select('id,staff_id,date').eq('owner_id', owner)
       .is('deleted_at', null).is('expense_id', null).order('date', { ascending: true });
     if (error) throw error;
+    attLog = { at: new Date().toISOString(), found: (marks || []).length, created: 0, names: [] };
     if (!marks || !marks.length) return false;
 
     const known = new Map((data.attendance || []).map(a => [a.id, a]));
@@ -272,7 +278,11 @@
             d.attendance.push({ id: mark.id, staffId: staff.id, date: mark.date, expenseId: eid });
         }
       });
-      if (ok) make.forEach(({ mark }) => stamp.push(mark.id));
+      if (ok) {
+        make.forEach(({ mark }) => stamp.push(mark.id));
+        attLog.created = make.length;
+        attLog.names = make.map(m => `${m.staff.name} · ${prettyDate(m.mark.date)}`);
+      }
     }
 
     // Stamp last. If this fails the local side is already correct, and the
@@ -368,7 +378,7 @@
       email: session?.user?.email || '',
       userId: session?.user?.id || '',
       online: navigator.onLine,
-      dirty, pushing, lastSync: last, lastError, heldMarks: held, attError,
+      dirty, pushing, lastSync: last, lastError, heldMarks: held, attError, attLog,
     };
   }
 

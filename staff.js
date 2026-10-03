@@ -12,7 +12,7 @@
 const CFG = window.STAYLOG_CLOUD || {};
 const CHECKIN_TIME = '1:00 PM', CHECKOUT_TIME = '11:00 AM';
 const CACHE_KEY = 'rv_staff_cache';
-const PAGE_VERSION = 'v6 · 29 Sept 2026';
+const PAGE_VERSION = 'v7 · 3 Oct 2026';
 
 const MONTH_SHORT = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 const DAYS = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
@@ -145,9 +145,13 @@ async function markToday(on) {
     const { data, error } = await client().rpc(on ? 'staff_mark_today' : 'staff_unmark_today');
     if (error) throw error;
     if (data && data.ok === false) {
-      alert(data.reason === 'already_counted'
-        ? 'Today has already been counted. Ask Rakshit if it needs changing.'
-        : 'Your access is not active. Please check with Rakshit.');
+      alert(
+        data.reason === 'too_late'
+          ? 'Today\u2019s mark can only be removed within 15 minutes of making it. '
+            + 'Please tell Rakshit if it needs changing.'
+        : data.reason === 'already_counted'
+          ? 'Today has already been counted. Ask Rakshit if it needs changing.'
+          : 'Your access is not active. Please check with Rakshit.');
     }
   } catch (err) {
     alert('Could not save that — check your internet and try again.');
@@ -165,6 +169,17 @@ function attendanceCard(st) {
   card.appendChild(div({className:'kicker'}, 'Today · ' + fmtDate(a.today || today())));
 
   if (!marked) {
+    // A withdrawn day says so rather than reverting to a blank card, so a tap
+    // she did not mean to make is visible instead of simply vanishing.
+    if (a.undone_at) {
+      const un = new Date(a.undone_at);
+      card.appendChild(div({style:{fontSize:12.5,color:'var(--text-mid)',marginTop:10,
+        background:'var(--gold-light)',border:'1px solid var(--gold-line)',
+        borderRadius:'var(--radius-sm)',padding:'9px 11px',lineHeight:1.5}},
+        'Today\u2019s mark was removed'
+        + (isNaN(un) ? '' : ' at ' + un.toLocaleTimeString('en-IN',{hour:'numeric',minute:'2-digit'}))
+        + '. Mark it again if that was a mistake.'));
+    }
     card.appendChild(h('button',{className:'btn',disabled:marking,style:{marginTop:11},
       onClick:()=>markToday(true)}, marking ? 'Saving…' : 'I came in today'));
     if (a.this_month)
@@ -187,12 +202,17 @@ function attendanceCard(st) {
     gap:10,marginTop:12,paddingTop:11,borderTop:'1px solid var(--border-soft)'}},
     div({style:{fontSize:12,color:'var(--muted)'}},
       `${a.this_month || 1} ${(a.this_month || 1) === 1 ? 'day' : 'days'} this month`),
-    a.locked
-      ? div({style:{fontSize:12,color:'var(--light)'}}, 'Counted')
-      : h('button',{className:'btn-quiet',disabled:marking,
+    // Undo is offered only while the window is open. Older builds of the
+    // database do not send can_undo at all; treating a missing value as open
+    // would quietly restore the behaviour this replaces, so it must be
+    // explicitly true.
+    a.can_undo === true
+      ? h('button',{className:'btn-quiet',disabled:marking,
           style:{width:'auto',minHeight:36,padding:'8px 14px',fontSize:12.5},
-          onClick:()=>{ if(confirm('Remove today\u2019s mark?')) markToday(false); }},
-          marking ? '…' : 'Undo')));
+          onClick:()=>{ if(confirm('Remove today\u2019s mark? You can only do this '
+            + 'within 15 minutes of marking.')) markToday(false); }},
+          marking ? '…' : 'Undo')
+      : div({style:{fontSize:12,color:'var(--light)'}}, a.locked ? 'Counted' : 'Saved')));
   return card;
 }
 

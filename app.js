@@ -4,7 +4,7 @@
 'use strict';
 
 // ─── Build ────────────────────────────────────────────────────────────────────
-const APP_VERSION='v21', APP_BUILT='28 Sept 2026';
+const APP_VERSION='v22', APP_BUILT='28 Sept 2026';
 
 // ─── Auth ─────────────────────────────────────────────────────────────────────
 const AUTH_KEY   = 'staylog_auth';
@@ -1146,15 +1146,36 @@ function renderCloudModal(){
       s.lastError?div({style:{fontSize:12,color:'var(--danger)',marginTop:5,lineHeight:1.45}},s.lastError):null
     ));
 
-    // Marks that arrived for someone with no daily wage set. They are not
-    // lost and not guessed at — they convert the moment a rate exists.
-    if(s.heldMarks>0){
-      const who=state.data.staff.filter(x=>!(Number(x.dailyWage)>0)).map(x=>x.name).join(', ');
-      wrap.appendChild(div({style:{background:'var(--gold-light)',border:'1px solid var(--gold-line)',
-        borderRadius:'var(--radius-sm)',padding:'11px 13px',fontSize:12.5,color:'var(--text-mid)',lineHeight:1.5}},
-        div({style:{fontWeight:700,color:'var(--gold)',marginBottom:2}},
-          `${s.heldMarks} attendance ${s.heldMarks===1?'mark is':'marks are'} waiting`),
-        `No daily wage is set${who?` for ${who}`:''}, so nothing has been added to expenses. Set it in the staff screen and they will appear at the next sync.`));
+    // ── Attendance ───────────────────────────────────────────────────────────
+    // Always shown, never only on trouble. A mark that does not become an
+    // expense used to be silent, which left no way to tell a sync that had
+    // not run from one that had failed.
+    if(s.signedIn){
+      const log=s.attLog||{}, box=div({style:{background:'var(--surface-2)',
+        border:'1px solid var(--border)',borderRadius:'var(--radius-sm)',padding:'11px 13px'}});
+      box.appendChild(div({style:{display:'flex',alignItems:'center',justifyContent:'space-between',gap:10}},
+        div({className:'kicker'},'Attendance'),
+        btn({className:'btn-ghost btn-sm',style:{padding:'4px 10px',fontSize:12},
+          onClick:async()=>{
+            try{ await window.StayLogCloud.push(state.data); }catch(err){}
+            render();
+          }},'Check now')));
+
+      let line, tone='var(--text-mid)';
+      if(s.attError){ line=`Could not read the marks — ${s.attError}`; tone='var(--danger)'; }
+      else if(s.heldMarks>0){
+        const who=state.data.staff.filter(x=>!(Number(x.dailyWage)>0)).map(x=>x.name).join(', ');
+        line=`${s.heldMarks} ${s.heldMarks===1?'mark is':'marks are'} waiting — no daily wage is set${who?` for ${who}`:''}. Set it in the staff screen and ${s.heldMarks===1?'it converts':'they convert'} at the next sync.`;
+        tone='var(--gold)';
+      }
+      else if(log.created>0){ line=`${log.created} wage ${log.created===1?'expense':'expenses'} added: ${(log.names||[]).join(', ')}`; tone='var(--accent)'; }
+      else if(!log.at){ line='Not checked yet on this phone. Tap Check now.'; tone='var(--muted)'; }
+      else { line='Nothing waiting — every mark has become an expense.'; tone='var(--muted)'; }
+
+      box.appendChild(div({style:{fontSize:12.5,color:tone,lineHeight:1.5,marginTop:6}},line));
+      if(log.at)box.appendChild(div({style:{fontSize:11,color:'var(--light)',marginTop:4}},
+        'Last checked '+new Date(log.at).toLocaleString('en-IN',{day:'numeric',month:'short',hour:'numeric',minute:'2-digit'})));
+      wrap.appendChild(box);
     }
 
     if(!s.configured){
