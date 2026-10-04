@@ -4,7 +4,7 @@
 'use strict';
 
 // ─── Build ────────────────────────────────────────────────────────────────────
-const APP_VERSION='v26', APP_BUILT='28 Sept 2026';
+const APP_VERSION='v27', APP_BUILT='28 Sept 2026';
 
 // ─── Auth ─────────────────────────────────────────────────────────────────────
 const AUTH_KEY   = 'staylog_auth';
@@ -713,7 +713,7 @@ function bookingCard(b){   // dense row; expands into the full detail
     actions.appendChild(btn({className:'btn-ghost btn-sm',onClick:()=>setState({modal:'addBooking',editItem:b})},ico('edit',{style:{marginRight:4}}),'Edit'));
     if(waNumber(b.phone))actions.appendChild(btn({className:'btn-ghost btn-sm',style:{color:'var(--accent)',borderColor:'var(--accent-line)'},onClick:()=>setState({modal:'sendConfirm',editItem:b})},ico('brand-whatsapp',{style:{marginRight:4,fontSize:15}}),'Send'));
     actions.appendChild(btn({className:'btn-gold btn-sm',onClick:()=>downloadConfirmation(b)},ico('file-text',{style:{marginRight:4,fontSize:14}}),'PDF'));
-    actions.appendChild(btn({className:'btn-gold btn-sm',onClick:()=>shareReceipt(b)},
+    if(canReceipt(b))actions.appendChild(btn({className:'btn-gold btn-sm',onClick:()=>shareReceipt(b)},
       ico('receipt',{style:{marginRight:4,fontSize:14}}),b.receiptNo?'Receipt again':'Receipt'));
     actions.appendChild(btn({className:'btn-danger btn-sm',onClick:()=>{if(confirm('Delete this booking?')){mutateData(d=>d.bookings=d.bookings.filter(x=>x.id!==b.id));setState({expandedBooking:null});}}},ico('trash',{style:{marginRight:4}}),'Delete'));
     detail.appendChild(actions);card.appendChild(detail);
@@ -958,8 +958,15 @@ function prepareSignature(file){
 // the platform, not us; the receipt acknowledges the stay and points them at
 // the platform's own invoice rather than reading as a demand.
 
-const OTA_SOURCES = new Set(['Airbnb','Booking.com','MakeMyTrip','Goibibo','OYO']);
-const isOTA = b => OTA_SOURCES.has(String(b.source||'').trim());
+// Only these two. The guest pays us directly on both — a Booking.com booking
+// here is pay-at-property, so the money genuinely passes from guest to us and a
+// receipt is the honest document. On the platforms that collect payment
+// themselves the guest never paid us, so we have nothing to receipt and the
+// button does not appear.
+const RECEIPT_SOURCES = new Set(['Direct','Booking.com']);
+const bookingSource = b => String(b.source||'').trim();
+const canReceipt = b => RECEIPT_SOURCES.has(bookingSource(b));
+const bookedVia = b => bookingSource(b)==='Direct' ? '' : bookingSource(b);
 
 // Indian financial year, April to March: 4 Oct 2026 falls in 2026-27.
 function financialYear(iso){
@@ -1011,7 +1018,6 @@ const fmtCurPdf=n=>'Rs. '+Number(n||0).toLocaleString('en-IN',{maximumFractionDi
 const STAMP_INK={green:[47,107,79],deep:[32,74,55],gold:[168,118,44],red:[166,58,52]};
 function receiptStamp(b){
   const total=round2(b.totalAmount), paid=round2(b.paid), due=round2(Math.max(0,total-paid));
-  if(isOTA(b))                return {line:'PAID',      sub:'via '+b.source,          tone:'deep'};
   if(total>0&&paid>=total)    return {line:'PAID',      sub:'with thanks',            tone:'green'};
   if(paid>0)                  return {line:'PART PAID', sub:fmtCurPdf(due)+' due',    tone:'gold'};
   return                             {line:'UNPAID',    sub:'balance due',            tone:'red'};
@@ -1026,7 +1032,7 @@ async function buildReceiptPDF(b){
   const prop=state.data.properties.find(p=>p.id===b.propertyId);
   const nights=diffDays(b.checkIn,b.checkOut);
   const total=round2(b.totalAmount), paid=round2(b.paid), due=round2(Math.max(0,total-paid));
-  const ota=isOTA(b);
+  const via=bookedVia(b);
   const no=ensureReceiptNo(b)||'—';
   const issued=b.receiptOn||today();
 
@@ -1089,7 +1095,7 @@ async function buildReceiptPDF(b){
   y+=63;
 
   // ── Who ────────────────────────────────────────────────────────────────────
-  sectionLabel(ota?'Guest':'Received with thanks from');
+  sectionLabel('Received with thanks from');
   doc.setFont('times','normal'); doc.setFontSize(19); doc.setTextColor(...INK);
   doc.text(String(b.guestName||'Guest'),M,y); y+=15;
   if(b.phone){ doc.setFont('helvetica','normal'); doc.setFontSize(9.5); doc.setTextColor(...GREY);
@@ -1105,6 +1111,8 @@ async function buildReceiptPDF(b){
     ['Duration',`${nights} night${nights===1?'':'s'}`],
     ['Guests',`${b.guests||1} ${(b.guests||1)>1?'guests':'guest'}`],
   ];
+  // Where the booking came from, not where the money came from.
+  if(via)rows.push(['Booked via',via]);
   const panelH=rows.length*24+14;
   doc.setFillColor(...CREAM); doc.roundedRect(M,panelTop,CW,panelH,6,6,'F');
   let ry=panelTop+22;
@@ -1134,12 +1142,8 @@ async function buildReceiptPDF(b){
   doc.setDrawColor(...LINE); doc.setLineWidth(.4); doc.line(M,y,W-M,y);
   doc.setLineWidth(1.0); doc.line(M,y+2.5,W-M,y+2.5);
   y+=20;
-  if(ota){
-    money(`Settled through ${b.source}`,total,{bold:true,color:DEEP,size:13});
-  } else {
-    money('Amount received',paid,{bold:true,color:DEEP,size:13});
-    if(due>0)money('Balance outstanding',due,{bold:true,color:RED,size:11});
-  }
+  money('Amount received',paid,{bold:true,color:DEEP,size:13});
+  if(due>0)money('Balance outstanding',due,{bold:true,color:RED,size:11});
 
   // ── The stamp ──────────────────────────────────────────────────────────────
   // Rotated by hand: the corners are computed rather than relying on a
@@ -1202,12 +1206,8 @@ async function buildReceiptPDF(b){
   y=lineY+labelGap+20;
 
   // ── What this document is, and is not ──────────────────────────────────────
-  const note = ota
-    ? [`This stay was booked and paid through ${b.source}. For any tax or reimbursement purpose,`,
-       `please use the invoice issued to you by ${b.source}.`,
-       'This document is a record of your stay and is not a tax invoice.']
-    : ['This is a receipt for payment received towards accommodation.',
-       'It is not a tax invoice.'];
+  const note = ['This is a receipt for payment received towards accommodation.',
+                'It is not a tax invoice.'];
   const noteH=note.length*13+22;
   doc.setFillColor(...CREAM); doc.roundedRect(M,y,CW,noteH,6,6,'F');
   // A thin accent on the left edge, so the box reads as a note and not a panel.
@@ -1238,6 +1238,10 @@ async function buildReceiptPDF(b){
 async function receiptBlob(b){ return (await buildReceiptPDF(b)).output('blob'); }
 
 function receiptGuard(b){
+  if(!canReceipt(b)){
+    alert(`${bookingSource(b)||'This source'} collects payment from the guest, so there is nothing for us to receipt. Receipts are for direct and Booking.com stays.`);
+    return false;
+  }
   const total=round2(b.totalAmount), paid=round2(b.paid);
   if(total<=0&&paid<=0){
     alert('This booking has no amount on it, so a receipt would be blank. Add the tariff on the booking first.');
@@ -1694,10 +1698,10 @@ function renderSendModal(){
     wrap.appendChild(btn({className:'btn-gold',style:{width:'100%',justifyContent:'center',display:'flex',
       alignItems:'center',gap:7,minHeight:46},onClick:()=>shareHouseNotes(prop)},
       ico('notes',{style:{fontSize:16}}),'House notes PDF'));
-    wrap.appendChild(btn({className:'btn-gold',style:{width:'100%',justifyContent:'center',display:'flex',
+    if(canReceipt(b))wrap.appendChild(btn({className:'btn-gold',style:{width:'100%',justifyContent:'center',display:'flex',
       alignItems:'center',gap:7,minHeight:46},onClick:()=>shareReceipt(b)},
       ico('receipt',{style:{fontSize:16}}),b.receiptNo?`Receipt ${b.receiptNo}`:'Receipt'));
-    if(isOTA(b))wrap.appendChild(hintLine(`${b.source} issues its own invoice for this stay. The receipt says so, so the guest knows which document is which.`));
+    else wrap.appendChild(hintLine(`${bookingSource(b)||'This platform'} collects payment from the guest, so there is no receipt to give for this stay.`));
     wrap.appendChild(div({style:{fontSize:12,color:'var(--muted)',lineHeight:1.55,background:'var(--warn-light)',
       border:'1px solid var(--warn-line)',borderRadius:'var(--radius-sm)',padding:'10px 12px'}},
       'WhatsApp links cannot carry a file. Send a message first, then tap an attachment above and pick the same chat from the share sheet. The house notes are the ones to send once they have checked in.'));
