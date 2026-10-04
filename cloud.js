@@ -35,7 +35,14 @@
   // What the last drain actually did. Without this the only way to find out
   // why a mark did not become an expense is to read the database by hand,
   // which is not a thing the app should ask of anybody.
-  let attLog = { at: '', found: 0, created: 0, names: [] };
+  let attLog  = { at: '', found: 0, created: 0, stamped: 0, pending: 0, names: [] };
+  // What the last drain that actually DID something did. Separate, because
+  // creating an expense marks the data dirty, which schedules another push a
+  // few seconds later, whose drain finds nothing — and used to overwrite the
+  // record of the conversion that had just happened. The panel then said
+  // "nothing waiting" seconds after converting a mark, which is how a working
+  // conversion came to look like a failure.
+  let attLast = { at: '', created: 0, names: [] };
 
   const num = v => (v === '' || v == null ? null : Number(v));
   const str = v => (v == null || v === '' ? null : String(v));
@@ -230,8 +237,10 @@
     try {
       return await drainAttendanceInner(c, owner, data);
     } catch (err) {
-      attError = (err && err.message) || String(err);
-      attLog = { at: new Date().toISOString(), found: 0, created: 0, names: [] };
+      // Framed where it is raised, so the panel can print whatever it is given
+      // verbatim — a stamp failure explains itself and does not want this.
+      attError = 'Could not read the marks — ' + ((err && err.message) || String(err));
+      attLog = { at: new Date().toISOString(), found: 0, created: 0, stamped: 0, pending: 0, names: [] };
       return false;
     }
   }
@@ -242,7 +251,8 @@
       .select('id,staff_id,date').eq('owner_id', owner)
       .is('deleted_at', null).is('expense_id', null).order('date', { ascending: true });
     if (error) throw error;
-    attLog = { at: new Date().toISOString(), found: (marks || []).length, created: 0, names: [] };
+    attLog = { at: new Date().toISOString(), found: (marks || []).length,
+               created: 0, stamped: 0, pending: 0, names: [] };
     if (!marks || !marks.length) return false;
 
     const known = new Map((data.attendance || []).map(a => [a.id, a]));
@@ -286,17 +296,29 @@
         make.forEach(({ mark }) => stamp.push(mark.id));
         attLog.created = make.length;
         attLog.names = make.map(m => `${m.staff.name} · ${prettyDate(m.mark.date)}`);
+        attLast = { at: attLog.at, created: attLog.created, names: attLog.names.slice() };
       }
     }
 
     // Stamp last. If this fails the local side is already correct, and the
     // next drain finds the mark in data.attendance and only retries the stamp.
+    // A failure here used to be swallowed, which left a mark that looked
+    // unconverted in the database while its expense already existed — and
+    // nothing anywhere said so.
     for (const id of stamp) {
       const { error: sErr } = await c.from('attendance')
         .update({ expense_id: expenseIdFor(id) }).eq('id', id).eq('owner_id', owner);
-      if (sErr) break;
+      if (sErr) {
+        attError = 'The expense was created, but the mark could not be ticked off in the '
+                 + 'cloud — ' + (sErr.message || sErr) + '. It will be retried at the next sync.';
+        break;
+      }
+      attLog.stamped++;
     }
-    return stamp.length > 0;
+    // Marks that are spent here but still unstamped in the cloud: the honest
+    // count of what is out of step, which the panel reports rather than hiding.
+    attLog.pending = Math.max(0, stamp.length - attLog.stamped);
+    return attLog.stamped > 0;
   }
 
   async function push(data) {
@@ -382,7 +404,7 @@
       email: session?.user?.email || '',
       userId: session?.user?.id || '',
       online: navigator.onLine,
-      dirty, pushing, lastSync: last, lastError, heldMarks: held, attError, attLog,
+      dirty, pushing, lastSync: last, lastError, heldMarks: held, attError, attLog, attLast,
     };
   }
 

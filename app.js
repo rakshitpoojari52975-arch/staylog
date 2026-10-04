@@ -4,7 +4,7 @@
 'use strict';
 
 // ─── Build ────────────────────────────────────────────────────────────────────
-const APP_VERSION='v27', APP_BUILT='28 Sept 2026';
+const APP_VERSION='v28', APP_BUILT='28 Sept 2026';
 
 // ─── Auth ─────────────────────────────────────────────────────────────────────
 const AUTH_KEY   = 'staylog_auth';
@@ -1549,20 +1549,33 @@ function renderCloudModal(){
             render();
           }},'Check now')));
 
+      // Report what the last check SAW, not only what it changed. A mark that
+      // was found but not converted used to read the same as no mark at all.
+      const last=s.attLast||{};
       let line, tone='var(--text-mid)';
-      if(s.attError){ line=`Could not read the marks — ${s.attError}`; tone='var(--danger)'; }
+      if(s.attError){ line=s.attError; tone='var(--danger)'; }
       else if(s.heldMarks>0){
         const who=state.data.staff.filter(x=>!(Number(x.dailyWage)>0)).map(x=>x.name).join(', ');
         line=`${s.heldMarks} ${s.heldMarks===1?'mark is':'marks are'} waiting — no daily wage is set${who?` for ${who}`:''}. Set it in the staff screen and ${s.heldMarks===1?'it converts':'they convert'} at the next sync.`;
         tone='var(--gold)';
       }
       else if(log.created>0){ line=`${log.created} wage ${log.created===1?'expense':'expenses'} added: ${(log.names||[]).join(', ')}`; tone='var(--accent)'; }
+      else if(log.pending>0){ line=`${log.pending} ${log.pending===1?'mark is':'marks are'} already in your expenses but not yet ticked off in the cloud. The next sync retries it.`; tone='var(--gold)'; }
       else if(!log.at){ line='Not checked yet on this phone. Tap Check now.'; tone='var(--muted)'; }
       else { line='Nothing waiting — every mark has become an expense.'; tone='var(--muted)'; }
 
       box.appendChild(div({style:{fontSize:12.5,color:tone,lineHeight:1.5,marginTop:6}},line));
+
+      // The last conversion stays on screen even once a later, quieter check
+      // has run — otherwise a mark converts and the panel forgets within
+      // seconds, which reads as though nothing happened.
+      if(last.created>0&&!(log.created>0))
+        box.appendChild(div({style:{fontSize:11.5,color:'var(--accent)',marginTop:5,lineHeight:1.45}},
+          `Last added ${new Date(last.at).toLocaleString('en-IN',{day:'numeric',month:'short',hour:'numeric',minute:'2-digit'})}: ${(last.names||[]).join(', ')}`));
+
       if(log.at)box.appendChild(div({style:{fontSize:11,color:'var(--light)',marginTop:4}},
-        'Last checked '+new Date(log.at).toLocaleString('en-IN',{day:'numeric',month:'short',hour:'numeric',minute:'2-digit'})));
+        `Last checked ${new Date(log.at).toLocaleString('en-IN',{day:'numeric',month:'short',hour:'numeric',minute:'2-digit'})}`
+        +` · ${log.found} mark${log.found===1?'':'s'} seen in the cloud`));
       wrap.appendChild(box);
     }
 
