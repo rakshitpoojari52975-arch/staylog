@@ -52,11 +52,13 @@
         rooms: num(p.rooms), price_per_night: num(p.pricePerNight),
         description: str(p.description), maps_link: str(p.mapsLink),
         wifi_name: str(p.wifiName), wifi_password: str(p.wifiPassword),
+        signature: str(p.signature), signature_ratio: num(p.signatureRatio),
       }),
       down: r => ({
         id: r.id, name: r.name, location: r.location || '', rooms: r.rooms ?? '',
         pricePerNight: r.price_per_night ?? '', description: r.description || '',
         mapsLink: r.maps_link || '', wifiName: r.wifi_name || '', wifiPassword: r.wifi_password || '',
+        signature: r.signature || '', signatureRatio: r.signature_ratio ?? '',
       }),
     },
     staff: {
@@ -80,6 +82,7 @@
         id_proof_type: str(b.idProofType), id_proof_number: str(b.idProofNumber),
         // b.idProofImage is intentionally absent — see the header
         msg_sent: b.msgSent || (b.confirmSentOn ? { confirm: b.confirmSentOn } : {}),
+        receipt_no: str(b.receiptNo), receipt_on: dat(b.receiptOn),
       }),
       down: r => ({
         id: r.id, propertyId: r.property_id || '', guestName: r.guest_name, phone: r.phone || '',
@@ -87,6 +90,7 @@
         totalAmount: r.total_amount ?? '', paid: r.paid ?? '', source: r.source || 'Direct',
         status: r.status, notes: r.notes || '',
         idProofType: r.id_proof_type || '', idProofNumber: r.id_proof_number || '',
+        receiptNo: r.receipt_no || '', receiptOn: r.receipt_on || '',
         idProofImage: '',                       // refilled from the local copy on restore
         msgSent: r.msg_sent || {},
       }),

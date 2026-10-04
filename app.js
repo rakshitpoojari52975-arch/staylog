@@ -4,7 +4,7 @@
 'use strict';
 
 // ─── Build ────────────────────────────────────────────────────────────────────
-const APP_VERSION='v22', APP_BUILT='28 Sept 2026';
+const APP_VERSION='v26', APP_BUILT='28 Sept 2026';
 
 // ─── Auth ─────────────────────────────────────────────────────────────────────
 const AUTH_KEY   = 'staylog_auth';
@@ -713,6 +713,8 @@ function bookingCard(b){   // dense row; expands into the full detail
     actions.appendChild(btn({className:'btn-ghost btn-sm',onClick:()=>setState({modal:'addBooking',editItem:b})},ico('edit',{style:{marginRight:4}}),'Edit'));
     if(waNumber(b.phone))actions.appendChild(btn({className:'btn-ghost btn-sm',style:{color:'var(--accent)',borderColor:'var(--accent-line)'},onClick:()=>setState({modal:'sendConfirm',editItem:b})},ico('brand-whatsapp',{style:{marginRight:4,fontSize:15}}),'Send'));
     actions.appendChild(btn({className:'btn-gold btn-sm',onClick:()=>downloadConfirmation(b)},ico('file-text',{style:{marginRight:4,fontSize:14}}),'PDF'));
+    actions.appendChild(btn({className:'btn-gold btn-sm',onClick:()=>shareReceipt(b)},
+      ico('receipt',{style:{marginRight:4,fontSize:14}}),b.receiptNo?'Receipt again':'Receipt'));
     actions.appendChild(btn({className:'btn-danger btn-sm',onClick:()=>{if(confirm('Delete this booking?')){mutateData(d=>d.bookings=d.bookings.filter(x=>x.id!==b.id));setState({expandedBooking:null});}}},ico('trash',{style:{marginRight:4}}),'Delete'));
     detail.appendChild(actions);card.appendChild(detail);
   }
@@ -879,6 +881,388 @@ function pdfError(err){
 async function downloadConfirmation(b){
   try{ (await buildConfirmationPDF(b)).save(confirmationFileName(b)); }
   catch(err){ pdfError(err); }
+}
+
+// ─── Signature ────────────────────────────────────────────────────────────────
+// The signature lives in the property record, not in this file. This repository
+// is public; a signature committed into it is a signature anybody can lift and
+// put on a document of their own. Kept as data it syncs through Supabase, where
+// the row-level policies already restrict it to the owner, and it never appears
+// in anything that gets uploaded to GitHub.
+//
+// It is set from Property settings. The receipt falls back to a plain ruled
+// line when none is set, so nothing breaks by leaving it empty.
+const SIG_MAX_W = 520;          // plenty for 86pt on the page at print density
+const SIG_MAX_BYTES = 260000;   // a guard, not a target: a photo would be far larger
+
+// Trims to the ink, drops the paper, and re-inks to a dark blue-black, so a
+// photograph of a signature on white paper comes out as a clean transparent
+// mark rather than a grey rectangle.
+function prepareSignature(file){
+  return new Promise((resolve,reject)=>{
+    if(!file)return reject(new Error('No file chosen.'));
+    if(file.size>8*1024*1024)return reject(new Error('That image is very large. Please use a photo or scan under 8 MB.'));
+    const img=new Image();
+    const url=URL.createObjectURL(file);
+    img.onload=()=>{
+      URL.revokeObjectURL(url);
+      try{
+        const c=document.createElement('canvas');
+        c.width=img.naturalWidth; c.height=img.naturalHeight;
+        const x=c.getContext('2d');
+        x.fillStyle='#fff'; x.fillRect(0,0,c.width,c.height);   // flatten any alpha onto paper
+        x.drawImage(img,0,0);
+        const px=x.getImageData(0,0,c.width,c.height).data;
+        // Find the ink.
+        let minX=c.width,minY=c.height,maxX=-1,maxY=-1;
+        for(let yy=0;yy<c.height;yy++)for(let xx=0;xx<c.width;xx++){
+          const i=(yy*c.width+xx)*4;
+          const lum=0.299*px[i]+0.587*px[i+1]+0.114*px[i+2];
+          if(lum<200){ if(xx<minX)minX=xx; if(xx>maxX)maxX=xx; if(yy<minY)minY=yy; if(yy>maxY)maxY=yy; }
+        }
+        if(maxX<0)return reject(new Error('That image looks blank — no dark strokes were found in it.'));
+        const pad=4;
+        minX=Math.max(0,minX-pad); minY=Math.max(0,minY-pad);
+        maxX=Math.min(c.width-1,maxX+pad); maxY=Math.min(c.height-1,maxY+pad);
+        const cw=maxX-minX+1, ch=maxY-minY+1;
+        const scale=Math.min(1,SIG_MAX_W/cw);
+        const out=document.createElement('canvas');
+        out.width=Math.max(1,Math.round(cw*scale)); out.height=Math.max(1,Math.round(ch*scale));
+        const o=out.getContext('2d');
+        o.drawImage(c,minX,minY,cw,ch,0,0,out.width,out.height);
+        const d=o.getImageData(0,0,out.width,out.height);
+        const q=d.data;
+        for(let i=0;i<q.length;i+=4){
+          const lum=0.299*q[i]+0.587*q[i+1]+0.114*q[i+2];
+          const alpha=Math.max(0,Math.min(1,(235-lum)/235*1.4));
+          q[i]=26; q[i+1]=32; q[i+2]=46; q[i+3]=Math.round(alpha*255);
+        }
+        o.putImageData(d,0,0);
+        const uri=out.toDataURL('image/png');
+        if(uri.length>SIG_MAX_BYTES)return reject(new Error('That image is too detailed to store. A plain scan on white paper works best.'));
+        resolve({uri,ratio:out.height/out.width});
+      }catch(err){ reject(new Error('Could not read that image.')); }
+    };
+    img.onerror=()=>{ URL.revokeObjectURL(url); reject(new Error('That file is not an image this phone can read.')); };
+    img.src=url;
+  });
+}
+
+// ─── Receipt ──────────────────────────────────────────────────────────────────
+// Deliberately a RECEIPT and not a tax invoice: no GSTIN, no tax lines, and it
+// says so on its face. A guest who files a document showing tax that was never
+// charged is the one way this feature could cause real trouble, so the document
+// cannot be mistaken for one.
+//
+// OTA stays get the same document worded differently. A Booking.com guest paid
+// the platform, not us; the receipt acknowledges the stay and points them at
+// the platform's own invoice rather than reading as a demand.
+
+const OTA_SOURCES = new Set(['Airbnb','Booking.com','MakeMyTrip','Goibibo','OYO']);
+const isOTA = b => OTA_SOURCES.has(String(b.source||'').trim());
+
+// Indian financial year, April to March: 4 Oct 2026 falls in 2026-27.
+function financialYear(iso){
+  const d=new Date(String(iso)+'T00:00:00');
+  if(isNaN(d))return 'unknown';
+  const start = d.getMonth()>=3 ? d.getFullYear() : d.getFullYear()-1;
+  return `${start}-${String((start+1)%100).padStart(2,'0')}`;
+}
+function receiptPrefix(prop){
+  const initials=String(prop?.name||'').split(/\s+/).filter(Boolean)
+    .map(w=>w[0]).join('').replace(/[^A-Za-z]/g,'').toUpperCase().slice(0,3);
+  return initials||'RV';
+}
+// Sequential within the financial year, and never reused: the highest number
+// already issued decides the next one, so deleting a booking leaves a gap
+// rather than handing its number to somebody else.
+function nextReceiptNo(d,prop,iso){
+  const fy=financialYear(iso), px=receiptPrefix(prop);
+  const used=(d.bookings||[]).map(x=>x.receiptNo).filter(Boolean)
+    .filter(n=>String(n).indexOf('/'+fy+'/')>=0)
+    .map(n=>parseInt(String(n).split('/').pop(),10))
+    .filter(n=>!isNaN(n));
+  return `${px}/${fy}/${String((used.length?Math.max(...used):0)+1).padStart(3,'0')}`;
+}
+// Assigned once, on first issue, and stored on the booking. Re-sending the
+// same stay must hand the guest the same number as the first time.
+function ensureReceiptNo(b){
+  if(b.receiptNo)return b.receiptNo;
+  const iso=today();
+  const prop=state.data.properties.find(p=>p.id===b.propertyId);
+  let no=null;
+  mutateData(d=>{
+    const row=(d.bookings||[]).find(x=>x.id===b.id);
+    if(row&&row.receiptNo){no=row.receiptNo;return;}
+    no=nextReceiptNo(d,prop,iso);
+    if(row){row.receiptNo=no;row.receiptOn=iso;}
+  });
+  if(no){b.receiptNo=no;b.receiptOn=b.receiptOn||iso;}
+  return no;
+}
+
+// jsPDF's built-in fonts are WinAnsi encoded and have no rupee glyph, so a
+// bare ₹ comes out as a blank box. Spelled out instead.
+const fmtCurPdf=n=>'Rs. '+Number(n||0).toLocaleString('en-IN',{maximumFractionDigits:2});
+
+// Which stamp a booking earns. Kept out of the PDF builder so it can be
+// checked directly: rotated, letter-spaced text does not survive extraction
+// from a PDF reliably enough to assert on.
+const STAMP_INK={green:[47,107,79],deep:[32,74,55],gold:[168,118,44],red:[166,58,52]};
+function receiptStamp(b){
+  const total=round2(b.totalAmount), paid=round2(b.paid), due=round2(Math.max(0,total-paid));
+  if(isOTA(b))                return {line:'PAID',      sub:'via '+b.source,          tone:'deep'};
+  if(total>0&&paid>=total)    return {line:'PAID',      sub:'with thanks',            tone:'green'};
+  if(paid>0)                  return {line:'PART PAID', sub:fmtCurPdf(due)+' due',    tone:'gold'};
+  return                             {line:'UNPAID',    sub:'balance due',            tone:'red'};
+}
+
+function receiptFileName(b){
+  return `Receipt-${(b.guestName||'Guest').replace(/[^\w]+/g,'-')}-${b.checkIn}.pdf`;
+}
+
+async function buildReceiptPDF(b){
+  const jsPDF=await loadJsPDF();
+  const prop=state.data.properties.find(p=>p.id===b.propertyId);
+  const nights=diffDays(b.checkIn,b.checkOut);
+  const total=round2(b.totalAmount), paid=round2(b.paid), due=round2(Math.max(0,total-paid));
+  const ota=isOTA(b);
+  const no=ensureReceiptNo(b)||'—';
+  const issued=b.receiptOn||today();
+
+  const doc=new jsPDF({unit:'pt',format:'a4'});
+  const W=doc.internal.pageSize.getWidth(), H=doc.internal.pageSize.getHeight();
+  const M=58, CW=W-M*2;
+  const GREEN=[47,107,79], DEEP=[32,74,55], INK=[31,36,32], GREY=[124,120,105],
+        LINE=[223,213,192], CREAM=[250,246,238], GOLD=[168,118,44], RED=[166,58,52];
+
+  // ── Page furniture ─────────────────────────────────────────────────────────
+  // A double hairline frame, the outer one heavier. It costs two draw calls and
+  // is most of what separates a printed document from a screenshot of one.
+  doc.setDrawColor(...LINE); doc.setLineWidth(1.1);
+  doc.rect(26,26,W-52,H-52);
+  doc.setLineWidth(.4);
+  doc.rect(31,31,W-62,H-62);
+
+  let y=0;
+  const text=(t,x,size,{font='helvetica',style='normal',color=INK,align='left',width=CW,lead=1.35,space=0}={})=>{
+    doc.setFont(font,style); doc.setFontSize(size); doc.setTextColor(...color);
+    doc.splitTextToSize(String(t),width).forEach(ln=>{ doc.text(ln,x,y,{align,charSpace:space}); y+=size*lead; });
+  };
+  // Label above a rule, the rule running the full width — the spine of the layout.
+  const sectionLabel=(t,color=GREEN)=>{
+    doc.setFont('helvetica','bold'); doc.setFontSize(7.5); doc.setTextColor(...color);
+    doc.text(String(t).toUpperCase(),M,y,{charSpace:1.4}); y+=6;
+    doc.setDrawColor(...LINE); doc.setLineWidth(.6); doc.line(M,y,W-M,y); y+=15;
+  };
+
+  // ── Masthead ───────────────────────────────────────────────────────────────
+  y=M+6;
+  doc.setFont('times','normal'); doc.setFontSize(29); doc.setTextColor(...DEEP);
+  doc.text(prop?.name||'Raaya Vasyam',W/2,y,{align:'center'});
+  y+=13;
+  if(prop?.location){
+    doc.setFont('helvetica','normal'); doc.setFontSize(8); doc.setTextColor(...GREY);
+    doc.text(prop.location,W/2,y,{align:'center',charSpace:.5}); y+=15;
+  } else y+=6;
+
+  // "RECEIPT" set between two rules, the way a letterhead would do it.
+  const word='RECEIPT', wSize=10.5;
+  doc.setFont('helvetica','bold'); doc.setFontSize(wSize);
+  const halfWord=doc.getTextWidth(word)/2 + word.length*1.5;
+  doc.setDrawColor(...GREEN); doc.setLineWidth(.8);
+  doc.line(M,y-3.5,W/2-halfWord-14,y-3.5);
+  doc.line(W/2+halfWord+14,y-3.5,W-M,y-3.5);
+  doc.setTextColor(...GREEN);
+  doc.text(word,W/2,y,{align:'center',charSpace:3});
+  y+=24;
+
+  // ── Reference strip ────────────────────────────────────────────────────────
+  doc.setFillColor(...CREAM); doc.roundedRect(M,y,CW,46,6,6,'F');
+  doc.setFont('helvetica','bold'); doc.setFontSize(7); doc.setTextColor(...GREY);
+  doc.text('RECEIPT NO.',M+16,y+17,{charSpace:1});
+  doc.text('DATE OF ISSUE',W-M-16,y+17,{align:'right',charSpace:1});
+  doc.setFont('helvetica','bold'); doc.setFontSize(12.5); doc.setTextColor(...INK);
+  doc.text(String(no),M+16,y+34);
+  doc.setFont('helvetica','normal');
+  doc.text(fmtDateLong(issued),W-M-16,y+34,{align:'right'});
+  y+=63;
+
+  // ── Who ────────────────────────────────────────────────────────────────────
+  sectionLabel(ota?'Guest':'Received with thanks from');
+  doc.setFont('times','normal'); doc.setFontSize(19); doc.setTextColor(...INK);
+  doc.text(String(b.guestName||'Guest'),M,y); y+=15;
+  if(b.phone){ doc.setFont('helvetica','normal'); doc.setFontSize(9.5); doc.setTextColor(...GREY);
+    doc.text(String(b.phone),M,y); y+=4; }
+  y+=19;
+
+  // ── The stay, as one panel rather than four boxes ──────────────────────────
+  sectionLabel('For the stay');
+  const panelTop=y;
+  const rows=[
+    ['Check-in',fmtDateLong(b.checkIn)],
+    ['Check-out',fmtDateLong(b.checkOut)],
+    ['Duration',`${nights} night${nights===1?'':'s'}`],
+    ['Guests',`${b.guests||1} ${(b.guests||1)>1?'guests':'guest'}`],
+  ];
+  const panelH=rows.length*24+14;
+  doc.setFillColor(...CREAM); doc.roundedRect(M,panelTop,CW,panelH,6,6,'F');
+  let ry=panelTop+22;
+  rows.forEach(([k,v],i)=>{
+    doc.setFont('helvetica','bold'); doc.setFontSize(7.5); doc.setTextColor(...GREY);
+    doc.text(String(k).toUpperCase(),M+16,ry,{charSpace:1});
+    doc.setFont('helvetica','normal'); doc.setFontSize(10.5); doc.setTextColor(...INK);
+    doc.text(String(v),W-M-16,ry,{align:'right'});
+    if(i<rows.length-1){ doc.setDrawColor(...LINE); doc.setLineWidth(.4);
+      doc.line(M+16,ry+8,W-M-16,ry+8); }
+    ry+=24;
+  });
+  y=panelTop+panelH+21;
+
+  // ── Amount ─────────────────────────────────────────────────────────────────
+  sectionLabel('Amount');
+  const money=(label,value,{bold=false,color=INK,size=10.5}={})=>{
+    doc.setFont('helvetica',bold?'bold':'normal'); doc.setFontSize(size); doc.setTextColor(...color);
+    doc.text(String(label),M,y);
+    doc.text(fmtCurPdf(value),W-M,y,{align:'right'});
+    y+=19;
+  };
+  money(`Accommodation · ${nights} night${nights===1?'':'s'}`,total);
+  y+=2;
+  // A double rule under the subtotal: thin, then thicker. Reads as a total line
+  // without needing the word.
+  doc.setDrawColor(...LINE); doc.setLineWidth(.4); doc.line(M,y,W-M,y);
+  doc.setLineWidth(1.0); doc.line(M,y+2.5,W-M,y+2.5);
+  y+=20;
+  if(ota){
+    money(`Settled through ${b.source}`,total,{bold:true,color:DEEP,size:13});
+  } else {
+    money('Amount received',paid,{bold:true,color:DEEP,size:13});
+    if(due>0)money('Balance outstanding',due,{bold:true,color:RED,size:11});
+  }
+
+  // ── The stamp ──────────────────────────────────────────────────────────────
+  // Rotated by hand: the corners are computed rather than relying on a
+  // transformation matrix, which is not in every build of jsPDF.
+  const stamp=receiptStamp(b);
+  const drawStamp=(cx,cy,deg)=>{
+    const rad=deg*Math.PI/180;
+    const rot=(x,yy)=>[cx+(x-cx)*Math.cos(rad)-(yy-cy)*Math.sin(rad),
+                       cy+(x-cx)*Math.sin(rad)+(yy-cy)*Math.cos(rad)];
+    const SP=2;                       // the letter-spacing the word is set with
+    doc.setFont('helvetica','bold'); doc.setFontSize(stamp.line.length>6?17:21);
+    // getTextWidth does not know about charSpace, so the box has to be widened
+    // by hand or a long word walks straight through its own border.
+    const wordW=doc.getTextWidth(stamp.line)+(stamp.line.length-1)*SP;
+    doc.setFont('helvetica','normal'); doc.setFontSize(8);
+    const subW=doc.getTextWidth(stamp.sub)+(stamp.sub.length-1)*0.6;
+    const halfW=Math.max(wordW,subW)/2+24, halfH=30;
+    doc.setFont('helvetica','bold'); doc.setFontSize(stamp.line.length>6?17:21);
+    doc.setDrawColor(...STAMP_INK[stamp.tone]);
+    [[0,0.9],[4,0.5]].forEach(([inset,width])=>{
+      doc.setLineWidth(width);
+      const c=[rot(cx-halfW+inset,cy-halfH+inset),rot(cx+halfW-inset,cy-halfH+inset),
+               rot(cx+halfW-inset,cy+halfH-inset),rot(cx-halfW+inset,cy+halfH-inset)];
+      for(let i=0;i<4;i++)doc.line(c[i][0],c[i][1],c[(i+1)%4][0],c[(i+1)%4][1]);
+    });
+    doc.setTextColor(...STAMP_INK[stamp.tone]);
+    const t1=rot(cx,cy+1);
+    doc.text(stamp.line,t1[0],t1[1],{align:'center',angle:-deg,charSpace:SP});
+    doc.setFont('helvetica','normal'); doc.setFontSize(8);
+    const t2=rot(cx,cy+15);
+    doc.text(stamp.sub,t2[0],t2[1],{align:'center',angle:-deg,charSpace:.6});
+  };
+  y+=8;
+  const bandTop=y;
+  drawStamp(W-M-96,bandTop+32,-11);
+
+  // Balancing the stamp: the signature block an Indian receipt is expected to
+  // carry, and the reason the left of this band is not simply empty.
+  doc.setFont('helvetica','normal'); doc.setFontSize(9); doc.setTextColor(...GREY);
+  doc.text(`For ${prop?.name||'Raaya Vasyam'}`,M,bandTop+16);
+  const sigUri=prop?.signature||'', sigRatio=Number(prop?.signatureRatio)||1.1;
+  const SIG_W=86, SIG_H=Math.round(SIG_W*sigRatio);
+  let lineY=bandTop+54, labelGap=13;
+  if(sigUri){
+    // The signature sits ON the rule, just crossing it, the way a pen would.
+    // Only just: this signature has a long descender, and any more overlap
+    // runs the tail straight through the words below. addImage is wrapped
+    // because a malformed data URI must cost the receipt its signature and
+    // nothing else.
+    try{
+      doc.addImage(sigUri,'PNG',M+4,bandTop+20,SIG_W,SIG_H);
+      lineY=bandTop+20+SIG_H-5;
+      labelGap=16;
+    }catch(e){}
+  }
+  doc.setDrawColor(...LINE); doc.setLineWidth(.6);
+  doc.line(M,lineY,M+176,lineY);
+  doc.setFont('helvetica','normal'); doc.setFontSize(7.5); doc.setTextColor(...GREY);
+  doc.text('AUTHORISED SIGNATORY',M,lineY+labelGap,{charSpace:1});
+  y=lineY+labelGap+20;
+
+  // ── What this document is, and is not ──────────────────────────────────────
+  const note = ota
+    ? [`This stay was booked and paid through ${b.source}. For any tax or reimbursement purpose,`,
+       `please use the invoice issued to you by ${b.source}.`,
+       'This document is a record of your stay and is not a tax invoice.']
+    : ['This is a receipt for payment received towards accommodation.',
+       'It is not a tax invoice.'];
+  const noteH=note.length*13+22;
+  doc.setFillColor(...CREAM); doc.roundedRect(M,y,CW,noteH,6,6,'F');
+  // A thin accent on the left edge, so the box reads as a note and not a panel.
+  doc.setFillColor(...GREEN); doc.rect(M,y+8,2.4,noteH-16,'F');
+  doc.setFont('helvetica','normal'); doc.setFontSize(8.8); doc.setTextColor(...GREY);
+  let ny=y+20;
+  note.forEach(ln=>{ doc.text(ln,M+18,ny); ny+=13; });
+  y+=noteH+26;
+
+  // ── Footer ─────────────────────────────────────────────────────────────────
+  // Three diamonds on a rule: the one piece of ornament in the document.
+  doc.setDrawColor(...LINE); doc.setLineWidth(.5);
+  doc.line(M,y,W/2-26,y); doc.line(W/2+26,y,W-M,y);
+  doc.setFillColor(...GREEN);
+  [-9,0,9].forEach((dx,i)=>{
+    const r=i===1?2.6:1.7, cx=W/2+dx;
+    doc.lines([[r,-r],[r,r],[-r,r],[-r,-r]],cx-r,y,[1,1],'F',true);
+  });
+  y+=22;
+  text(`Thank you for staying with us at ${prop?.name||'our home'}.`,
+    W/2,10.5,{font:'times',align:'center',color:INK,width:CW});
+  y+=3;
+  text('We hope the house gave you the rest you came for.',
+    W/2,9,{align:'center',color:GREY,width:CW});
+  return doc;
+}
+
+async function receiptBlob(b){ return (await buildReceiptPDF(b)).output('blob'); }
+
+function receiptGuard(b){
+  const total=round2(b.totalAmount), paid=round2(b.paid);
+  if(total<=0&&paid<=0){
+    alert('This booking has no amount on it, so a receipt would be blank. Add the tariff on the booking first.');
+    return false;
+  }
+  return true;
+}
+async function downloadReceipt(b){
+  if(!receiptGuard(b))return;
+  try{ (await buildReceiptPDF(b)).save(receiptFileName(b)); }catch(err){ pdfError(err); }
+}
+async function shareReceipt(b){
+  if(!receiptGuard(b))return;
+  let blob;
+  try{ blob=await receiptBlob(b); }catch(err){ pdfError(err); return; }
+  const file=new File([blob],receiptFileName(b),{type:'application/pdf'});
+  if(navigator.canShare&&navigator.canShare({files:[file]})){
+    try{ await navigator.share({files:[file],title:`Receipt — ${b.guestName}`}); }
+    catch(err){ if(err&&err.name!=='AbortError')pdfError(err); }
+  } else {
+    const a=document.createElement('a');
+    a.href=URL.createObjectURL(blob); a.download=receiptFileName(b); a.click();
+    setTimeout(()=>URL.revokeObjectURL(a.href),4000);
+    alert('Your browser cannot open the share sheet, so the receipt has been saved to Files. Attach it from there in WhatsApp.');
+  }
 }
 
 // ─── WhatsApp ─────────────────────────────────────────────────────────────────
@@ -1310,6 +1694,10 @@ function renderSendModal(){
     wrap.appendChild(btn({className:'btn-gold',style:{width:'100%',justifyContent:'center',display:'flex',
       alignItems:'center',gap:7,minHeight:46},onClick:()=>shareHouseNotes(prop)},
       ico('notes',{style:{fontSize:16}}),'House notes PDF'));
+    wrap.appendChild(btn({className:'btn-gold',style:{width:'100%',justifyContent:'center',display:'flex',
+      alignItems:'center',gap:7,minHeight:46},onClick:()=>shareReceipt(b)},
+      ico('receipt',{style:{fontSize:16}}),b.receiptNo?`Receipt ${b.receiptNo}`:'Receipt'));
+    if(isOTA(b))wrap.appendChild(hintLine(`${b.source} issues its own invoice for this stay. The receipt says so, so the guest knows which document is which.`));
     wrap.appendChild(div({style:{fontSize:12,color:'var(--muted)',lineHeight:1.55,background:'var(--warn-light)',
       border:'1px solid var(--warn-line)',borderRadius:'var(--radius-sm)',padding:'10px 12px'}},
       'WhatsApp links cannot carry a file. Send a message first, then tap an attachment above and pick the same chat from the share sheet. The house notes are the ones to send once they have checked in.'));
@@ -2473,7 +2861,7 @@ function renderRepaymentModal(){
 function renderPropertyModal(){
   const{editItem}=state; const isEdit=!!editItem;
   const f=isEdit?{...editItem}:{name:'',location:'',rooms:'',pricePerNight:'',description:'',
-    mapsLink:'',wifiName:'',wifiPassword:''};
+    mapsLink:'',wifiName:'',wifiPassword:'',signature:'',signatureRatio:''};
   const content=()=>{
     const wrap=div({style:{display:'flex',flexDirection:'column',gap:11}});
     const field=(k,ph,t)=>{const inp=h('input',{type:t||'text',placeholder:ph,value:f[k]||''});
@@ -2493,6 +2881,44 @@ function renderPropertyModal(){
     wifi.appendChild(field('wifiName','Wi-Fi name'));
     wifi.appendChild(field('wifiPassword','Wi-Fi password'));
     wrap.appendChild(wifi);
+
+    // ── Signature ────────────────────────────────────────────────────────────
+    wrap.appendChild(heading('Signature on receipts'));
+    const sigBox=div({style:{border:'1.5px solid var(--border)',borderRadius:'var(--radius-sm)',
+      padding:'12px',background:'var(--surface-2)'}});
+    const sigInput=h('input',{type:'file',accept:'image/*',style:{display:'none'}});
+    function paintSig(){
+      sigBox.innerHTML='';
+      if(f.signature){
+        const prev=h('img',{src:f.signature,alt:'Your signature',
+          style:{display:'block',maxWidth:'170px',maxHeight:'90px',margin:'0 auto 10px'}});
+        sigBox.appendChild(prev);
+      } else {
+        sigBox.appendChild(div({style:{fontSize:12.5,color:'var(--muted)',lineHeight:1.5,marginBottom:10,textAlign:'center'}},
+          'No signature set. Receipts print a blank line to sign by hand.'));
+      }
+      const row=div({style:{display:'flex',gap:8,justifyContent:'center'}});
+      row.appendChild(btn({className:'btn-ghost btn-sm',onClick:()=>sigInput.click()},
+        ico('upload',{style:{marginRight:4,fontSize:14}}),f.signature?'Replace':'Upload'));
+      if(f.signature)row.appendChild(btn({className:'btn-danger btn-sm',
+        onClick:()=>{f.signature='';f.signatureRatio='';paintSig();}},'Remove'));
+      sigBox.appendChild(row);
+      sigBox.appendChild(div({style:{fontSize:11.5,color:'var(--muted)',lineHeight:1.5,marginTop:9,textAlign:'center'}},
+        'Sign on white paper and photograph it. The app trims the paper away and keeps only the ink. It is stored with your property, never in the app\u2019s code.'));
+    }
+    sigInput.addEventListener('change',async e=>{
+      const file=e.target.files&&e.target.files[0];
+      e.target.value='';
+      if(!file)return;
+      try{
+        const {uri,ratio}=await prepareSignature(file);
+        f.signature=uri; f.signatureRatio=ratio;
+        paintSig();
+      }catch(err){ alert(err.message||'Could not use that image.'); }
+    });
+    wrap.appendChild(sigInput);
+    paintSig();
+    wrap.appendChild(sigBox);
 
     wrap.appendChild(btn({className:'btn-primary',style:{marginTop:4,width:'100%'},onClick:()=>{
       if(!f.name)return;
