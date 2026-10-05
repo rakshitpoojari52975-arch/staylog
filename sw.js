@@ -3,7 +3,7 @@
    App shell (index.html, app.js, manifest) is network-first: a deploy shows up
    on the next launch that has a connection, and falls back to cache offline.
    Fonts and libraries are cache-first — they never change under a fixed URL. */
-const CACHE_NAME = 'staylog-v30';
+const CACHE_NAME = 'staylog-v31';
 const ASSETS = [
   './',
   './index.html',

@@ -4,7 +4,7 @@
 'use strict';
 
 // ─── Build ────────────────────────────────────────────────────────────────────
-const APP_VERSION='v28', APP_BUILT='28 Sept 2026';
+const APP_VERSION='v29', APP_BUILT='28 Sept 2026';
 
 // ─── Auth ─────────────────────────────────────────────────────────────────────
 const AUTH_KEY   = 'staylog_auth';
@@ -1561,21 +1561,39 @@ function renderCloudModal(){
       }
       else if(log.created>0){ line=`${log.created} wage ${log.created===1?'expense':'expenses'} added: ${(log.names||[]).join(', ')}`; tone='var(--accent)'; }
       else if(log.pending>0){ line=`${log.pending} ${log.pending===1?'mark is':'marks are'} already in your expenses but not yet ticked off in the cloud. The next sync retries it.`; tone='var(--gold)'; }
+      else if(log.stamped>0){ line=`${log.stamped} mark${log.stamped===1?'':'s'} ticked off in the cloud. The expense${log.stamped===1?' was':'s were'} already in your list.`; tone='var(--accent)'; }
       else if(!log.at){ line='Not checked yet on this phone. Tap Check now.'; tone='var(--muted)'; }
       else { line='Nothing waiting — every mark has become an expense.'; tone='var(--muted)'; }
 
       box.appendChild(div({style:{fontSize:12.5,color:tone,lineHeight:1.5,marginTop:6}},line));
 
-      // The last conversion stays on screen even once a later, quieter check
-      // has run — otherwise a mark converts and the panel forgets within
-      // seconds, which reads as though nothing happened.
+      // The durable answer to "did her mark become an expense?". A log is a
+      // record of one moment and resets; these are the expenses themselves,
+      // sitting in the data, and they are still here tomorrow.
+      const born=state.data.expenses.filter(e=>e.fromAttendance)
+        .sort((a,b)=>String(b.date).localeCompare(String(a.date)));
+      if(born.length){
+        box.appendChild(div({style:{fontSize:11,color:'var(--muted)',marginTop:10,marginBottom:3,
+          fontWeight:700,letterSpacing:'.06em',textTransform:'uppercase'}},
+          `${born.length} day${born.length===1?'':'s'} recorded from her marks`));
+        born.slice(0,5).forEach(e=>{
+          box.appendChild(div({style:{display:'flex',justifyContent:'space-between',gap:10,
+            fontSize:12,color:'var(--text-mid)',padding:'3px 0'}},
+            div({},`${fmtDate(e.date)} · ${staffName(e.staffId)||'Staff'}`),
+            div({className:'num',style:{fontWeight:600,color:e.paid?'var(--muted)':'var(--text)'}},
+              `${fmtCur(e.amount)}${e.paid?' · paid':''}`)));
+        });
+        if(born.length>5)box.appendChild(div({style:{fontSize:11,color:'var(--light)',marginTop:3}},
+          `and ${born.length-5} earlier`));
+      }
+
       if(last.created>0&&!(log.created>0))
-        box.appendChild(div({style:{fontSize:11.5,color:'var(--accent)',marginTop:5,lineHeight:1.45}},
+        box.appendChild(div({style:{fontSize:11.5,color:'var(--accent)',marginTop:8,lineHeight:1.45}},
           `Last added ${new Date(last.at).toLocaleString('en-IN',{day:'numeric',month:'short',hour:'numeric',minute:'2-digit'})}: ${(last.names||[]).join(', ')}`));
 
-      if(log.at)box.appendChild(div({style:{fontSize:11,color:'var(--light)',marginTop:4}},
+      if(log.at)box.appendChild(div({style:{fontSize:11,color:'var(--light)',marginTop:6}},
         `Last checked ${new Date(log.at).toLocaleString('en-IN',{day:'numeric',month:'short',hour:'numeric',minute:'2-digit'})}`
-        +` · ${log.found} mark${log.found===1?'':'s'} seen in the cloud`));
+        +` · ${log.found} mark${log.found===1?'':'s'} found to process`));
       wrap.appendChild(box);
     }
 

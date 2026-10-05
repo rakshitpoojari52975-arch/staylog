@@ -35,14 +35,23 @@
   // What the last drain actually did. Without this the only way to find out
   // why a mark did not become an expense is to read the database by hand,
   // which is not a thing the app should ask of anybody.
-  let attLog  = { at: '', found: 0, created: 0, stamped: 0, pending: 0, names: [] };
+  // Kept on disk, not only in memory. These used to reset on every launch, so
+  // the check that runs at boot — which finds nothing, because everything has
+  // already been converted — was the only thing the panel ever had to report.
+  // It said "nothing waiting" forever, whatever had happened earlier.
+  const ATT_LOG_KEY = 'staylog_att_log';
+  const blankLog = () => ({ at: '', found: 0, created: 0, stamped: 0, pending: 0, names: [] });
+  const loadLog = k => { try { return JSON.parse(localStorage.getItem(k) || 'null'); } catch { return null; } };
+  const saveLog = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} };
+  let attLog  = loadLog(ATT_LOG_KEY) || blankLog();
   // What the last drain that actually DID something did. Separate, because
   // creating an expense marks the data dirty, which schedules another push a
   // few seconds later, whose drain finds nothing — and used to overwrite the
   // record of the conversion that had just happened. The panel then said
   // "nothing waiting" seconds after converting a mark, which is how a working
   // conversion came to look like a failure.
-  let attLast = { at: '', created: 0, names: [] };
+  const ATT_LAST_KEY = 'staylog_att_last';
+  let attLast = loadLog(ATT_LAST_KEY) || { at: '', created: 0, names: [] };
 
   const num = v => (v === '' || v == null ? null : Number(v));
   const str = v => (v == null || v === '' ? null : String(v));
@@ -240,7 +249,8 @@
       // Framed where it is raised, so the panel can print whatever it is given
       // verbatim — a stamp failure explains itself and does not want this.
       attError = 'Could not read the marks — ' + ((err && err.message) || String(err));
-      attLog = { at: new Date().toISOString(), found: 0, created: 0, stamped: 0, pending: 0, names: [] };
+      attLog = Object.assign(blankLog(), { at: new Date().toISOString() });
+      saveLog(ATT_LOG_KEY, attLog);
       return false;
     }
   }
@@ -251,9 +261,9 @@
       .select('id,staff_id,date').eq('owner_id', owner)
       .is('deleted_at', null).is('expense_id', null).order('date', { ascending: true });
     if (error) throw error;
-    attLog = { at: new Date().toISOString(), found: (marks || []).length,
-               created: 0, stamped: 0, pending: 0, names: [] };
-    if (!marks || !marks.length) return false;
+    attLog = Object.assign(blankLog(), {
+      at: new Date().toISOString(), found: (marks || []).length });
+    if (!marks || !marks.length) { saveLog(ATT_LOG_KEY, attLog); return false; }
 
     const known = new Map((data.attendance || []).map(a => [a.id, a]));
     const make = [];
@@ -297,6 +307,7 @@
         attLog.created = make.length;
         attLog.names = make.map(m => `${m.staff.name} · ${prettyDate(m.mark.date)}`);
         attLast = { at: attLog.at, created: attLog.created, names: attLog.names.slice() };
+        saveLog(ATT_LAST_KEY, attLast);
       }
     }
 
@@ -306,11 +317,20 @@
     // unconverted in the database while its expense already existed — and
     // nothing anywhere said so.
     for (const id of stamp) {
-      const { error: sErr } = await c.from('attendance')
-        .update({ expense_id: expenseIdFor(id) }).eq('id', id).eq('owner_id', owner);
+      // .select() so the reply says which rows were actually updated. Without
+      // it an update matching NO rows is indistinguishable from one that
+      // worked, and a mark that never got ticked off counted as ticked off.
+      const { data: hit, error: sErr } = await c.from('attendance')
+        .update({ expense_id: expenseIdFor(id) })
+        .eq('id', id).eq('owner_id', owner).select('id');
       if (sErr) {
         attError = 'The expense was created, but the mark could not be ticked off in the '
                  + 'cloud — ' + (sErr.message || sErr) + '. It will be retried at the next sync.';
+        break;
+      }
+      if (!hit || !hit.length) {
+        attError = 'The expense was created, but ticking the mark off in the cloud changed '
+                 + 'nothing — the row was not found. The expense is safe; tell Rakshit.';
         break;
       }
       attLog.stamped++;
@@ -318,6 +338,7 @@
     // Marks that are spent here but still unstamped in the cloud: the honest
     // count of what is out of step, which the panel reports rather than hiding.
     attLog.pending = Math.max(0, stamp.length - attLog.stamped);
+    saveLog(ATT_LOG_KEY, attLog);
     return attLog.stamped > 0;
   }
 
