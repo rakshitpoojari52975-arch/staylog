@@ -4,7 +4,9 @@
 'use strict';
 
 // ─── Build ────────────────────────────────────────────────────────────────────
-const APP_VERSION='v29', APP_BUILT='28 Sept 2026';
+// Bump BOTH of these together. This date sat at 28 Sept through a dozen
+// releases and was read, reasonably, as proof the upload had not landed.
+const APP_VERSION='v30', APP_BUILT='9 Oct 2026';
 
 // ─── Auth ─────────────────────────────────────────────────────────────────────
 const AUTH_KEY   = 'staylog_auth';
@@ -1572,6 +1574,24 @@ function renderCloudModal(){
       // sitting in the data, and they are still here tomorrow.
       const born=state.data.expenses.filter(e=>e.fromAttendance)
         .sort((a,b)=>String(b.date).localeCompare(String(a.date)));
+
+      // The two numbers that matter, together. A mismatch was the complaint;
+      // it should be visible without a database query.
+      if(log.cloudMarks>0||born.length){
+        const gap=Math.max(0,(log.cloudMarks||0)-born.length-(log.removed||0));
+        box.appendChild(div({style:{display:'flex',gap:14,marginTop:11,paddingTop:10,
+          borderTop:'1px solid var(--border-soft)'}},
+          div({style:{flex:1}},div({className:'kicker'},'Marks in cloud'),
+            div({className:'num',style:{fontSize:17,fontWeight:700,marginTop:2}},String(log.cloudMarks||0))),
+          div({style:{flex:1}},div({className:'kicker'},'Recorded here'),
+            div({className:'num',style:{fontSize:17,fontWeight:700,marginTop:2,
+              color:gap>0?'var(--gold)':'var(--accent)'}},String(born.length)))));
+        if(log.removed>0)box.appendChild(div({style:{fontSize:11.5,color:'var(--muted)',marginTop:5,lineHeight:1.45}},
+          `${log.removed} ${log.removed===1?'day was':'days were'} converted and the expense deleted here afterwards. That stays deleted.`));
+        if(gap>0)box.appendChild(div({style:{fontSize:11.5,color:'var(--gold)',marginTop:5,lineHeight:1.45}},
+          `${gap} ${gap===1?'day has':'days have'} not been recorded here yet. Tap Check now.`));
+      }
+
       if(born.length){
         box.appendChild(div({style:{fontSize:11,color:'var(--muted)',marginTop:10,marginBottom:3,
           fontWeight:700,letterSpacing:'.06em',textTransform:'uppercase'}},

@@ -40,7 +40,8 @@
   // already been converted — was the only thing the panel ever had to report.
   // It said "nothing waiting" forever, whatever had happened earlier.
   const ATT_LOG_KEY = 'staylog_att_log';
-  const blankLog = () => ({ at: '', found: 0, created: 0, stamped: 0, pending: 0, names: [] });
+  const blankLog = () => ({ at: '', found: 0, created: 0, stamped: 0, pending: 0,
+                            cloudMarks: 0, removed: 0, names: [] });
   const loadLog = k => { try { return JSON.parse(localStorage.getItem(k) || 'null'); } catch { return null; } };
   const saveLog = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} };
   let attLog  = loadLog(ATT_LOG_KEY) || blankLog();
@@ -261,16 +262,35 @@
       .select('id,staff_id,date').eq('owner_id', owner)
       .is('deleted_at', null).is('expense_id', null).order('date', { ascending: true });
     if (error) throw error;
+    // Every mark, not only the unconverted ones. Without the full picture the
+    // app cannot say "six in the cloud, four here" — which is the question
+    // actually being asked when a day appears to have gone missing.
+    const { data: allMarks } = await c.from('attendance')
+      .select('id,staff_id,date,expense_id').eq('owner_id', owner)
+      .is('deleted_at', null).order('date', { ascending: false }).limit(400);
+
+    // Reconciliation runs whether or not there is anything to convert — when
+    // every mark is already ticked off there is still a question worth
+    // answering, which is whether an expense has since gone missing here.
+    const haveExpense = id => (data.expenses || []).some(e => e.id === expenseIdFor(id));
     attLog = Object.assign(blankLog(), {
-      at: new Date().toISOString(), found: (marks || []).length });
+      at: new Date().toISOString(),
+      found: (marks || []).length,
+      cloudMarks: (allMarks || []).length,
+      removed: (allMarks || []).filter(m => m.expense_id && !haveExpense(m.id)).length });
     if (!marks || !marks.length) { saveLog(ATT_LOG_KEY, attLog); return false; }
 
-    const known = new Map((data.attendance || []).map(a => [a.id, a]));
+    // What counts as "already done" is whether the EXPENSE exists here, not
+    // whether this phone once wrote the mark down. The old check asked the
+    // bookkeeping list, so a mark whose expense had since gone — deleted, or
+    // lost to a restore that replaced expenses but not that list — was skipped
+    // for good: never rebuilt, only re-stamped. That is how a day in the cloud
+    // ends up with nothing to show for it here.
     const make = [];
     const stamp = [];
 
     for (const m of marks) {
-      if (known.has(m.id)) {            // already spent here; the stamp is what failed
+      if (haveExpense(m.id)) {          // the expense is here; only the tick-off is outstanding
         stamp.push(m.id);
         continue;
       }
@@ -281,6 +301,7 @@
       if (!st || !(rate > 0)) { held++; continue; }
       make.push({ mark: m, staff: st, rate });
     }
+
 
     if (make.length && window.STAYLOG_APPLY) {
       const ok = window.STAYLOG_APPLY(d => {
@@ -302,6 +323,8 @@
             d.attendance.push({ id: mark.id, staffId: staff.id, date: mark.date, expenseId: eid });
         }
       });
+      if (!ok) attError = 'The wage expenses could not be written to this phone. '
+                        + 'Nothing is lost in the cloud; try Check now again.';
       if (ok) {
         make.forEach(({ mark }) => stamp.push(mark.id));
         attLog.created = make.length;
@@ -323,15 +346,16 @@
       const { data: hit, error: sErr } = await c.from('attendance')
         .update({ expense_id: expenseIdFor(id) })
         .eq('id', id).eq('owner_id', owner).select('id');
+      // One bad row must not stop the others being ticked off.
       if (sErr) {
-        attError = 'The expense was created, but the mark could not be ticked off in the '
-                 + 'cloud — ' + (sErr.message || sErr) + '. It will be retried at the next sync.';
-        break;
+        attError = 'Some marks could not be ticked off in the cloud — '
+                 + (sErr.message || sErr) + '. The expenses are safe; it retries at the next sync.';
+        continue;
       }
       if (!hit || !hit.length) {
-        attError = 'The expense was created, but ticking the mark off in the cloud changed '
-                 + 'nothing — the row was not found. The expense is safe; tell Rakshit.';
-        break;
+        attError = 'Ticking a mark off changed nothing — the row was not found. '
+                 + 'The expense is safe; tell Rakshit.';
+        continue;
       }
       attLog.stamped++;
     }
