@@ -12,7 +12,7 @@
 const CFG = window.STAYLOG_CLOUD || {};
 const CHECKIN_TIME = '1:00 PM', CHECKOUT_TIME = '11:00 AM';
 const CACHE_KEY = 'rv_staff_cache';
-const PAGE_VERSION = 'v7 · 3 Oct 2026';
+const PAGE_VERSION = 'v8 · 10 Oct 2026';
 
 const MONTH_SHORT = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 const DAYS = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
@@ -50,9 +50,15 @@ const span = (a,...c) => h('span',a,...c);
 
 let sb = null, session = null, view = null, busy = false;
 
+// Every request to Supabase is made with cache:'no-store'. The service worker
+// already leaves the API alone; this is the second, independent layer, so a
+// stale answer cannot come back from the browser's own HTTP cache either.
+// Live data is fetched live, or not at all.
+const noStoreFetch = (input, init) => fetch(input, Object.assign({}, init, { cache: 'no-store' }));
+
 function client() {
   if (!sb) sb = window.supabase.createClient(CFG.url, CFG.publishableKey,
-    { auth:{ persistSession:true, autoRefreshToken:true } });
+    { auth:{ persistSession:true, autoRefreshToken:true }, global:{ fetch: noStoreFetch } });
   return sb;
 }
 const cacheGet = () => { try { return JSON.parse(localStorage.getItem(CACHE_KEY)); } catch { return null; } };

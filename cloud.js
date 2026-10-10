@@ -172,12 +172,19 @@
     return sdkPromise;
   }
 
+// Every request to Supabase is made with cache:'no-store'. The service worker
+  // already leaves the API alone; this is the second, independent layer, so a
+  // stale answer cannot come back from the browser's own HTTP cache either.
+  // Live data is fetched live, or not at all.
+  const noStoreFetch = (input, init) => fetch(input, Object.assign({}, init, { cache: 'no-store' }));
+
   async function client() {
     if (sb) return sb;
     if (!CFG.url || !CFG.publishableKey) throw new Error('cloud-config.js is missing its values');
     const lib = await loadSDK();
     sb = lib.createClient(CFG.url, CFG.publishableKey, {
       auth: { persistSession: true, autoRefreshToken: true },
+      global: { fetch: noStoreFetch },
     });
     return sb;
   }

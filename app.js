@@ -6,7 +6,7 @@
 // ─── Build ────────────────────────────────────────────────────────────────────
 // Bump BOTH of these together. This date sat at 28 Sept through a dozen
 // releases and was read, reasonably, as proof the upload had not landed.
-const APP_VERSION='v30', APP_BUILT='9 Oct 2026';
+const APP_VERSION='v31', APP_BUILT='10 Oct 2026';
 
 // ─── Auth ─────────────────────────────────────────────────────────────────────
 const AUTH_KEY   = 'staylog_auth';
@@ -374,6 +374,20 @@ function renderHeader(){
   return header;
 }
 
+// ─── Which service worker is running ──────────────────────────────────────────
+function swVersion(){
+  return new Promise(res=>{
+    try{
+      const c=navigator.serviceWorker&&navigator.serviceWorker.controller;
+      if(!c)return res('');
+      const ch=new MessageChannel();
+      const t=setTimeout(()=>res('(older, no version reply)'),1500);
+      ch.port1.onmessage=e=>{clearTimeout(t);res((e.data&&e.data.cache)||'');};
+      c.postMessage({type:'version'},[ch.port2]);
+    }catch(e){res('');}
+  });
+}
+
 // ─── Menu + property picker ───────────────────────────────────────────────────
 function menuRow(icon,label,sub,onClick,danger){
   return btn({style:{display:'flex',alignItems:'center',gap:12,width:'100%',textAlign:'left',
@@ -474,7 +488,13 @@ function renderMenuModal(){
     menuRow('lock','Lock app','Ask for the PIN again',()=>{state.modal=null;state.loggedIn=false;render();},true),
     div({style:{textAlign:'center',fontSize:11.5,color:'var(--muted)',padding:'14px 0 2px',
       borderTop:'1px solid var(--border-soft)',marginTop:6}},
-      `StayLog ${APP_VERSION} · built ${APP_BUILT}`)
+      `StayLog ${APP_VERSION} · built ${APP_BUILT}`,
+      // Asks the service worker which version is actually running. app.js and
+      // sw.js are uploaded separately, and the worker is what decides whether
+      // the app sees live data — so it is the one worth seeing on screen.
+      (()=>{const el=div({style:{fontSize:10.5,color:'var(--light)',marginTop:3}},'Checking offline cache…');
+        swVersion().then(v=>{el.textContent=v?`Offline cache ${v}`:'Offline cache not active';});
+        return el;})())
   );
   return modal('StayLog',content);
 }

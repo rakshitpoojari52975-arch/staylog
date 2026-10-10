@@ -1,9 +1,28 @@
-/* StayLog Service Worker — offline support with same-day updates
+/* StayLog Service Worker
 
-   App shell (index.html, app.js, manifest) is network-first: a deploy shows up
-   on the next launch that has a connection, and falls back to cache offline.
-   Fonts and libraries are cache-first — they never change under a fixed URL. */
-const CACHE_NAME = 'staylog-v32';
+   It caches exactly two kinds of thing, and nothing else:
+
+     1. The app's own files (same origin). Network-first: a deploy shows up on
+        the next launch that has a connection, and the cache is the fallback
+        when offline.
+     2. A short, NAMED list of static third-party assets — the fonts and the
+        icon font. Cache-first, because they never change under a fixed URL.
+
+   Every other request goes straight to the network, as if this file did not
+   exist. That rule is the whole point of the file, and it is an allowlist on
+   purpose.
+
+   The version this replaces cached ANY cross-origin GET as a "third-party
+   asset". That swept up the Supabase API: the first answer to "which
+   attendance marks exist?" was stored, and every sync afterwards was handed
+   that same stored answer without the database ever being asked. New marks
+   never appeared until a deploy happened to clear the cache, which made each
+   release look like a fix and each next day look like a regression. Live data
+   must never be served from a cache, so live data is now never even looked at
+   here — it is not on the list. */
+
+const CACHE_NAME = 'staylog-v33';
+
 const ASSETS = [
   './',
   './index.html',
@@ -19,6 +38,41 @@ const ASSETS = [
   'https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.19.0/dist/tabler-icons.min.css',
 ];
 
+// The only third-party hosts whose responses may be kept. Fonts and an icon
+// font: static, public, versioned by URL. Supabase is deliberately absent.
+const STATIC_HOSTS = new Set([
+  'fonts.googleapis.com',
+  'fonts.gstatic.com',
+  'cdn.jsdelivr.net',
+]);
+
+// Decides, for one request, whether this worker touches it at all.
+//   'shell'  — the app's own code and pages: network-first
+//   'static' — fonts, icons, vendored libraries: cache-first
+//   null     — not ours. The browser fetches it untouched.
+function routeFor(req) {
+  if (req.method !== 'GET') return null;
+  // A request carrying credentials is somebody's data, whatever its URL.
+  // Belt and braces: the allowlist below already excludes the API, and this
+  // keeps it excluded even if an API ever ends up on the app's own origin.
+  if (req.headers && req.headers.get && req.headers.get('authorization')) return null;
+
+  let url;
+  try { url = new URL(req.url); } catch (e) { return null; }
+
+  if (url.origin === self.location.origin) {
+    const p = url.pathname;
+    if (p.includes('/vendor/')) return 'static';                 // pinned by version
+    if (/\.(png|svg|ico|jpg|jpeg|webp|woff2?)$/i.test(p)) return 'static';
+    if (req.mode === 'navigate' || /\.(html|js|json|webmanifest)$/i.test(p) || p.endsWith('/'))
+      return 'shell';
+    return null;
+  }
+
+  if (url.protocol === 'https:' && STATIC_HOSTS.has(url.hostname)) return 'static';
+  return null;
+}
+
 self.addEventListener('install', e => {
   e.waitUntil(
     caches.open(CACHE_NAME)
@@ -27,6 +81,8 @@ self.addEventListener('install', e => {
   );
 });
 
+// Every cache from an earlier version is deleted outright. That is what
+// clears the stale API answers the previous worker had stored.
 self.addEventListener('activate', e => {
   e.waitUntil(
     caches.keys()
@@ -35,47 +91,48 @@ self.addEventListener('activate', e => {
   );
 });
 
-const isAppShell = req => {
-  const url = new URL(req.url);
-  if (url.origin !== self.location.origin) return false;
-  // vendored libraries are pinned by version and never change — cache them
-  if (url.pathname.includes('/vendor/')) return false;
-  return req.mode === 'navigate' || /\.(html|js|json)$/.test(url.pathname) || url.pathname.endsWith('/');
-};
+function networkFirst(req) {
+  return fetch(req)
+    .then(res => {
+      if (res && res.ok) {
+        const copy = res.clone();
+        caches.open(CACHE_NAME).then(c => c.put(req, copy));
+        return res;
+      }
+      // A 5xx, a 404 or a captive-portal page is not a new deploy — keep
+      // serving what we already have rather than breaking the app.
+      return caches.match(req).then(hit => hit || res);
+    })
+    // Offline. index.html stands in for page loads only — handing it to a
+    // script request would execute HTML as JavaScript.
+    .catch(() => caches.match(req).then(hit =>
+      hit || (req.mode === 'navigate' ? caches.match('./index.html') : Response.error())));
+}
+
+function cacheFirst(req) {
+  return caches.match(req).then(hit => hit || fetch(req).then(res => {
+    if (res && res.status === 200 && res.type !== 'opaque') {
+      const copy = res.clone();
+      caches.open(CACHE_NAME).then(c => c.put(req, copy));
+    }
+    return res;
+  // A missing font or library offline is an honest failure. The previous
+  // version answered it with index.html, which is never the right answer.
+  }).catch(() => Response.error()));
+}
 
 self.addEventListener('fetch', e => {
-  if (e.request.method !== 'GET') return;
-
-  if (isAppShell(e.request)) {
-    // Newest code wins; the cache is the fallback, not the default
-    e.respondWith(
-      fetch(e.request)
-        .then(res => {
-          if (res && res.ok) {
-            const copy = res.clone();
-            caches.open(CACHE_NAME).then(c => c.put(e.request, copy));
-            return res;
-          }
-          // A 5xx, a 404 or a captive-portal page is not a new deploy —
-          // keep serving what we already have rather than breaking the app.
-          return caches.match(e.request).then(hit => hit || res);
-        })
-        // Offline: serve the cached copy. index.html is a fallback for page
-        // loads only — handing it to a script request would execute HTML as JS.
-        .catch(() => caches.match(e.request).then(hit =>
-          hit || (e.request.mode === 'navigate' ? caches.match('./index.html') : Response.error())))
-    );
-    return;
-  }
-
-  // Vendored and third-party assets: cache first, they never change
-  e.respondWith(
-    caches.match(e.request).then(hit => hit || fetch(e.request).then(res => {
-      if (res && res.status === 200 && res.type !== 'opaque') {
-        const copy = res.clone();
-        caches.open(CACHE_NAME).then(c => c.put(e.request, copy));
-      }
-      return res;
-    }).catch(() => caches.match('./index.html')))
-  );
+  const kind = routeFor(e.request);
+  if (!kind) return;                       // not ours to touch
+  e.respondWith(kind === 'shell' ? networkFirst(e.request) : cacheFirst(e.request));
 });
+
+// Lets the page ask which worker is actually running, so "did my upload
+// land?" has an answer on screen.
+self.addEventListener('message', e => {
+  if (e.data && e.data.type === 'version' && e.ports && e.ports[0])
+    e.ports[0].postMessage({ cache: CACHE_NAME });
+});
+
+// Exposed for tests, which load this file outside a browser.
+if (typeof module !== 'undefined') module.exports = { routeFor, STATIC_HOSTS, CACHE_NAME };
