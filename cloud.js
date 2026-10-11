@@ -445,7 +445,8 @@
         if (!b) { C.removed++; continue; }               // deleted on purpose; stays deleted
         if (b.id !== own) continue;                      // linked to a mirror or a hand-entered stay
         if (!e.gone_at && (b.checkIn !== e.start_date || b.checkOut !== e.end_date)) {
-          patch(b.id, { checkIn: e.start_date, checkOut: e.end_date, icalMoved: today }); C.updated++;
+          patch(b.id, { checkIn: e.start_date, checkOut: e.end_date, icalMoved: today,
+                        icalMovedFrom: { checkIn: b.checkIn, checkOut: b.checkOut } }); C.updated++;
         }
         if (e.gone_at && !b.icalGone && b.status !== 'cancelled') { patch(b.id, { icalGone: true }); C.gone++; }
         if (!e.gone_at && b.icalGone) patch(b.id, { icalGone: false });
@@ -512,6 +513,44 @@
     return plan;
   }
 
+  // ── Still open on the other platform ───────────────────────────────────────
+  // A stay is safe only once every platform has closed its nights. A feed
+  // shows the nights that platform has closed, so a live stay with a night no
+  // feed event covers is a night that platform can still sell.
+  //
+  // A feed is trusted to show dates that came from elsewhere only after it has
+  // shown one: whether Booking.com's export carries the Airbnb dates it
+  // imports (and the other way round) is not documented, and guessing would
+  // mean an alarm on every stay or on none. Until then the check is off for
+  // that feed and the panel says so. A feed whose last read failed is skipped:
+  // its picture is stale. A stay is never checked against its own platform.
+  const nextDay = iso => {
+    const [y, m, d] = iso.split('-').map(Number);
+    return new Date(Date.UTC(y, m - 1, d + 1)).toISOString().slice(0, 10);   // a calendar date, not a moment
+  };
+  function coverageGaps(events, feeds, bookings, today) {
+    const byId = new Map((bookings || []).map(b => [b.id, b]));
+    const out = { gaps: {}, proven: {} };
+    for (const f of feeds || []) {
+      const live = (events || []).filter(e => e.feed_id === f.id && !e.gone_at);
+      const proven = live.some(e => {
+        const b = e.imported_booking_id && byId.get(e.imported_booking_id);
+        return b && (b.source || 'Direct') !== f.platform;
+      });
+      out.proven[f.id] = proven;
+      if (!proven || !f.last_ok_at || f.last_error) continue;
+      for (const b of bookings || []) {
+        if (b.status === 'cancelled' || b.propertyId !== f.property_id || (b.source || 'Direct') === f.platform) continue;
+        if (!b.checkIn || !b.checkOut || !(b.checkOut > today)) continue;
+        const nights = [];
+        for (let n = b.checkIn > today ? b.checkIn : today; n < b.checkOut && nights.length < 366; n = nextDay(n)) nights.push(n);
+        const open = nights.filter(n => !live.some(e => e.start_date <= n && n < e.end_date));
+        if (open.length) (out.gaps[b.id] = out.gaps[b.id] || []).push({ platform: f.platform, open: open.length, nights: nights.length, from: open[0] });
+      }
+    }
+    return out;
+  }
+
   // Nothing here may break the push: before ical.sql has been run the table
   // does not exist, and that is a normal state, not an error to show.
   async function drainIcal(c, owner, data) {
@@ -552,7 +591,20 @@
         const changed = F.run.added || F.run.updated || F.run.removed;
         feeds[fid] = { ...F, lastChange: changed ? { at, ...F.run } : (before[fid] && before[fid].lastChange) || null };
       }
+      // The still-open check, on the bookings and stamps as they now stand.
+      let cover = null;
+      const { data: feedRows, error: fErr } = await c.from('ical_feeds')
+        .select('id,property_id,platform,last_ok_at,last_error').eq('owner_id', owner);
+      if (!fErr) {
+        const stamped = new Map(plan.stamp.map(x => [x.feed_id + '|' + x.uid, x.booking_id]));
+        const evs = (events || []).map(e => ({ ...e,
+          imported_booking_id: e.imported_booking_id || stamped.get(e.feed_id + '|' + e.uid) || null }));
+        const now = (wrote && window.STAYLOG_GET_DATA && window.STAYLOG_GET_DATA()) || data;
+        cover = coverageGaps(evs, feedRows || [], now.bookings || [], localToday());
+      }
       icalLog = { at, ...plan.counts, feeds,
+        gaps: cover ? cover.gaps : (icalLog && icalLog.gaps) || {},
+        proven: cover ? cover.proven : (icalLog && icalLog.proven) || {},
         error: stampErr ? 'Imported, but could not mark it done in the cloud — ' + stampErr : '' };
       saveLog(ICAL_LOG_KEY, icalLog);
       return wrote;
@@ -795,7 +847,7 @@
   window.StayLogCloud = {
     restoreSession, signIn, signOut, push, pull, status, markDirty, checkIn,
     listFeeds, saveFeed, importNow,
-    _planIcal: planIcal, _icalBookingId: icalBookingId,   // for the tests
+    _planIcal: planIcal, _icalBookingId: icalBookingId, _coverageGaps: coverageGaps,   // for the tests
     onChange: fn => listeners.push(fn),
     staffEmail: u => `${String(u || '').trim().toLowerCase()}@${CFG.staffEmailDomain}`,
   };

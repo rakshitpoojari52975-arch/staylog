@@ -327,6 +327,111 @@ console.log('\n— Calendar sync: feed by feed —');
   ok('no page errors', errs.length===0, errs);
   await ctx.close(); }
 
+console.log('\n— still open on the other platform (the check on its own) —');
+{ const {ctx,page}=await open(SEED({}));
+  const now=new Date().toISOString();
+  const FEEDS=[{id:'f-air',property_id:'p1',platform:'Airbnb',last_ok_at:now,last_error:null},
+               {id:'f-bdc',property_id:'p1',platform:'Booking.com',last_ok_at:now,last_error:null}];
+  const air1=bk({id:'ics_air1',source:'Airbnb',guestName:'Airbnb guest',checkIn:D(5),checkOut:D(8)});
+  const air2=bk({id:'ics_air2',source:'Airbnb',guestName:'Airbnb guest',checkIn:D(20),checkOut:D(23)});
+  const bdc1=bk({id:'ics_bdc1',source:'Booking.com',guestName:'Booking.com guest',checkIn:D(30),checkOut:D(32)});
+  const own=BDC({uid:'own',start_date:D(30),end_date:D(32),imported_booking_id:'ics_bdc1'});
+  const mirror=BDC({uid:'mir',start_date:D(5),end_date:D(8),imported_booking_id:'ics_air1'});
+  const gaps=(ev,bs,feeds)=>page.evaluate(([e,b,f,t])=>window.StayLogCloud._coverageGaps(e,f,b,t),[ev,bs,feeds||FEEDS,D(0)]);
+
+  let r=await gaps([own],[air1,air2,bdc1]);
+  ok('until Booking.com\'s feed has shown a stay from elsewhere, it is not judged',
+     r.proven['f-bdc']===false&&Object.keys(r.gaps).length===0, r);
+  r=await gaps([own,mirror],[air1,air2,bdc1]);
+  ok('once it has shown one (its copy of an Airbnb stay), it is', r.proven['f-bdc']===true, r.proven);
+  ok('the Airbnb stay it covers is fine', !r.gaps.ics_air1, r.gaps);
+  ok('the Airbnb stay it does not cover is still open there',
+     JSON.stringify(r.gaps.ics_air2)===JSON.stringify([{platform:'Booking.com',open:3,nights:3,from:D(20)}]), r.gaps);
+  ok('a stay is never checked against its own platform', !r.gaps.ics_bdc1, r.gaps);
+
+  r=await gaps([own,mirror,BDC({uid:'part',start_date:D(20),end_date:D(22)})],[air1,air2,bdc1]);
+  ok('a partly closed stay says which night is open', JSON.stringify(r.gaps.ics_air2)===JSON.stringify([{platform:'Booking.com',open:1,nights:3,from:D(22)}]), r.gaps);
+  r=await gaps([own,mirror,BDC({uid:'long',start_date:D(18),end_date:D(26)})],[air1,air2,bdc1]);
+  ok('closed nights merged into one longer range still count', !r.gaps.ics_air2, r.gaps);
+  r=await gaps([own,mirror,BDC({uid:'gone',start_date:D(20),end_date:D(23),gone_at:now})],[air1,air2,bdc1]);
+  ok('a range that has left the feed closes nothing', r.gaps.ics_air2?.[0]?.open===3, r.gaps);
+
+  const cancelled={...air2,status:'cancelled'}, past=bk({id:'ics_past',source:'Airbnb',checkIn:D(-6),checkOut:D(-2)});
+  const inProg=bk({id:'ics_now',source:'Airbnb',checkIn:D(-2),checkOut:D(2)});
+  r=await gaps([own,mirror],[air1,cancelled,past,inProg,bdc1]);
+  ok('cancelled and past stays are not checked', !r.gaps.ics_air2&&!r.gaps.ics_past, r.gaps);
+  ok('a stay in progress counts only the nights to come', r.gaps.ics_now?.[0]?.nights===2&&r.gaps.ics_now?.[0]?.from===D(0), r.gaps);
+
+  r=await gaps([own,mirror],[air1,air2,bdc1],[FEEDS[0],{...FEEDS[1],last_error:'the feed answered HTTP 403'}]);
+  ok('a feed whose last read failed is not judged on stale data', Object.keys(r.gaps).length===0, r.gaps);
+  r=await gaps([own,mirror],[air1,air2,bdc1],[FEEDS[0],{...FEEDS[1],last_ok_at:null}]);
+  ok('nor one never read successfully', Object.keys(r.gaps).length===0, r.gaps);
+  r=await gaps([own,mirror],[air1,{...air2,propertyId:'p2'},bdc1]);
+  ok('a stay at another property is not judged by this property\'s feed', !r.gaps.ics_air2, r.gaps);
+
+  // a direct stay, and dates closed for it on Airbnb by hand
+  const direct=bk({id:'bkDirect',source:'Direct',checkIn:D(40),checkOut:D(42)}), direct2=bk({id:'bkDirect2',source:'Direct',checkIn:D(50),checkOut:D(51)});
+  const airBlock=AIRBLOCK({uid:'blk',start_date:D(40),end_date:D(42),imported_booking_id:'bkDirect'});
+  r=await gaps([own,mirror,airBlock],[air1,bdc1,direct,direct2]);
+  ok('a direct stay closed on Airbnb is fine there', !(r.gaps.bkDirect||[]).some(g=>g.platform==='Airbnb'), r.gaps);
+  ok('a direct stay nobody closed on Airbnb is flagged', (r.gaps.bkDirect2||[]).some(g=>g.platform==='Airbnb'&&g.nights===1), r.gaps);
+  ok('and on Booking.com too, once that feed is trusted', (r.gaps.bkDirect2||[]).some(g=>g.platform==='Booking.com'), r.gaps);
+  await ctx.close(); }
+
+console.log('\n— still open, on screen —');
+{ const {ctx,page,errs}=await open(SEED({}));
+  const now=new Date().toISOString();
+  await page.evaluate(([ev,fe])=>{window.__server.rows.ical_events=ev;window.__server.rows.ical_feeds=fe;},[[
+    AIR({uid:'a1',start_date:D(5),end_date:D(8)}), BDC({uid:'m1',start_date:D(5),end_date:D(8)}),   // a stay and its copy
+    AIR({uid:'a2',start_date:D(20),end_date:D(23)})],                                               // a stay Booking.com has not closed
+   [{id:'f-air',owner_id:'owner-1',property_id:'p1',platform:'Airbnb',url:'https://a',last_fetched_at:now,last_ok_at:now,last_count:2,last_error:null},
+    {id:'f-bdc',owner_id:'owner-1',property_id:'p1',platform:'Booking.com',url:'https://b',last_fetched_at:now,last_ok_at:now,last_count:1,last_error:null}]]);
+  await page.evaluate(async()=>{await window.StayLogCloud.push(state.data);});
+  await page.evaluate(()=>{state.loggedIn=true;state.tab='bookings';render();}); await page.waitForTimeout(300);
+  const w=await page.locator('[data-open]').allInnerTexts();
+  ok('the card of the stay Booking.com has not closed says so', w.length===1&&/Still open on Booking\.com: all 3 nights from .* could be booked twice/.test(w[0]), w);
+  await page.evaluate(()=>{state.tab='dashboard';render();}); await page.waitForTimeout(200);
+  ok('Home counts it', /1 stay is still open on another platform — Booking\.com/.test(await page.locator('[data-cal-alert]').innerText().catch(()=>'')));
+  await page.evaluate(()=>{state.modal='cloud';render();}); await page.waitForTimeout(400);
+  ok('Calendar sync says it under the Booking.com feed',
+     /1 stay still open on Booking\.com/.test(await page.locator('[data-feed-report="f-bdc"]').innerText().catch(()=>'')));
+
+  // Booking.com catches up and closes the dates
+  await page.evaluate(d=>{window.__server.rows.ical_events.push({feed_id:'f-bdc',uid:'m2',owner_id:'owner-1',property_id:'p1',
+    platform:'Booking.com',start_date:d[0],end_date:d[1],summary:'CLOSED - Not available',description:'',kind:'reserved',gone_at:null,imported_booking_id:null});},[D(20),D(23)]);
+  await page.evaluate(async()=>{state.modal=null;await window.StayLogCloud.push(state.data);state.tab='bookings';render();}); await page.waitForTimeout(300);
+  ok('once Booking.com closes them, the warning goes', await page.locator('[data-open]').count()===0);
+  ok('no page errors', errs.length===0, errs);
+  await ctx.close(); }
+
+{ const {ctx,page}=await open(SEED({}));
+  const now=new Date().toISOString();
+  await page.evaluate(([ev,fe])=>{window.__server.rows.ical_events=ev;window.__server.rows.ical_feeds=fe;},[[AIR({uid:'solo',start_date:D(5),end_date:D(8)})],
+   [{id:'f-air',owner_id:'owner-1',property_id:'p1',platform:'Airbnb',url:'https://a',last_ok_at:now,last_count:1,last_error:null},
+    {id:'f-bdc',owner_id:'owner-1',property_id:'p1',platform:'Booking.com',url:'https://b',last_ok_at:now,last_count:0,last_error:null}]]);
+  await page.evaluate(async()=>{await window.StayLogCloud.push(state.data);state.loggedIn=true;state.tab='bookings';render();}); await page.waitForTimeout(300);
+  ok('with no evidence of what Booking.com\'s feed carries, nothing is claimed', await page.locator('[data-open]').count()===0);
+  await page.evaluate(()=>{state.modal='cloud';render();}); await page.waitForTimeout(400);
+  ok('and Calendar sync says the check is waiting',
+     /Still-open check: waiting/.test(await page.locator('[data-feed-report="f-air"]').innerText().catch(()=>'')));
+  await ctx.close(); }
+
+console.log('\n— a stay the platform moved —');
+{ const {ctx,page}=await open(SEED({}));
+  const e=AIR({uid:'mv',start_date:D(5),end_date:D(8)});
+  await page.evaluate(ev=>{window.__server.rows.ical_events=ev;},[e]);
+  await page.evaluate(async()=>{await window.StayLogCloud.push(state.data);});
+  await page.evaluate(d=>{Object.assign(window.__server.rows.ical_events[0],{start_date:d[0],end_date:d[1]});},[D(6),D(9)]);
+  await page.evaluate(async()=>{await window.StayLogCloud.push(state.data);state.loggedIn=true;state.tab='bookings';render();}); await page.waitForTimeout(300);
+  const t=await page.locator('[data-moved]').innerText().catch(()=>'');
+  ok('its card says the platform moved it, and from when', /Airbnb moved this stay on .* \(was .* → .*\)/.test(t), t);
+  const b=await page.evaluate(()=>state.data.bookings[0]);
+  ok('with the old dates kept', b.icalMovedFrom&&b.icalMovedFrom.checkIn===D(5)&&b.icalMovedFrom.checkOut===D(8), b.icalMovedFrom);
+  await page.evaluate(()=>{const b=state.data.bookings[0];const d=new Date();d.setDate(d.getDate()-8);
+    b.icalMoved=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;render();});
+  ok('after a week it stops saying so', await page.locator('[data-moved]').count()===0);
+  await ctx.close(); }
+
 console.log('\n— the release is stamped —');
 { const app=fs.readFileSync(ROOT+'/app.js','utf8'), sw=fs.readFileSync(ROOT+'/sw.js','utf8');
   ok('app version and service worker cache move together',
