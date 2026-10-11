@@ -6,7 +6,7 @@
 // ─── Build ────────────────────────────────────────────────────────────────────
 // Bump BOTH of these together. This date sat at 28 Sept through a dozen
 // releases and was read, reasonably, as proof the upload had not landed.
-const APP_VERSION='v38', APP_BUILT='11 Oct 2026';
+const APP_VERSION='v39', APP_BUILT='11 Oct 2026';
 // The CACHE_NAME of the sw.js released with this app.js. Every release bumps
 // APP_VERSION and CACHE_NAME together, so one is derived from the other rather
 // than being a fourth thing to forget; the tests fail if they ever disagree.
@@ -709,6 +709,15 @@ function bookingClashes(bookings){
   return out;
 }
 const clashesFor=b=>(state._clashes||{})[b.id]||[];
+// Nights a platform can still sell, from the last calendar check (cloud.js
+// coverageGaps). Read once per render; cancelled and past stays never count.
+const openGapsFor=b=>b.status==='cancelled'||!(b.checkOut>today())?[]:((state._gaps||{})[b.id]||[]);
+const MOVED_SHOWN_DAYS=7;
+function movedRecently(b){
+  if(!b.icalMoved||!b.icalMovedFrom)return false;
+  const [y,m,d]=b.icalMoved.split('-').map(Number);
+  return (new Date()-new Date(y,m-1,d))/86400000<MOVED_SHOWN_DAYS;
+}
 const isImported=b=>/^ics_/.test(String(b.id||''));
 
 function bookingCard(b){   // dense row; expands into the full detail
@@ -756,6 +765,10 @@ function bookingCard(b){   // dense row; expands into the full detail
     ico(icon,{style:{fontSize:14,flexShrink:0}}),div({},text));
   clashes.forEach(o=>card.appendChild(warn('var(--danger)','var(--danger-light)','alert-triangle',
     `Double booking: overlaps ${o.guestName} (${fmtDate(o.checkIn)} → ${fmtDate(o.checkOut)}, ${o.source||'Direct'})`,'data-clash')));
+  openGapsFor(b).forEach(g=>card.appendChild(warn('var(--warn)','var(--warn-light)','calendar-exclamation',
+    `Still open on ${g.platform}: ${g.open===g.nights?(g.nights===1?'the night':`all ${g.nights} nights`):`${g.open} of ${g.nights} nights`} from ${fmtDate(g.from)} — it could be booked twice. Close the dates there.`,'data-open')));
+  if(movedRecently(b)&&b.status!=='cancelled')card.appendChild(warn('var(--info)','var(--info-light)','calendar-event',
+    `${b.source} moved this stay on ${fmtDate(b.icalMoved)} (was ${fmtDate(b.icalMovedFrom.checkIn)} → ${fmtDate(b.icalMovedFrom.checkOut)})`,'data-moved'));
   if(b.icalGone&&b.status!=='cancelled')card.appendChild(warn('var(--gold)','var(--gold-light)','calendar-x',
     `No longer on ${b.source} — cancelled? Check, then cancel it here.`,'data-gone'));
 
@@ -1633,7 +1646,11 @@ function icalSummary(log){
 }
 
 // One feed: what was fetched, what it led to here, and the error if any.
-function icalFeedReport(f,stats){
+function icalFeedReport(f,stats,log){
+  const proven=log&&log.proven?log.proven[f.id]:undefined;
+  const openHere=Object.entries((log&&log.gaps)||{}).filter(([bid,gs])=>{
+    const b=state.data.bookings.find(x=>x.id===bid);
+    return b&&b.propertyId===f.property_id&&openGapsFor(b).some(g=>g.platform===f.platform);}).length;
   const prop=state.data.properties.find(p=>p.id===f.property_id);
   const wrap=div({'data-feed-report':f.id,style:{paddingTop:10,marginTop:10,borderTop:'1px solid var(--border-soft)'}});
   wrap.appendChild(div({style:{fontSize:13,fontWeight:700}},`${f.platform}${prop?' · '+prop.name:''}`));
@@ -1659,6 +1676,8 @@ function icalFeedReport(f,stats){
   if(stats.removed)notes.push(`Removed means no longer on ${f.platform}: ${stats.removed===1?'its booking is':'their bookings are'} flagged to check, not cancelled.`);
   if(stats.matched)notes.push(`${plural(stats.matched,'stay')} matched to bookings you already had (typed in, or seen on the other platform).`);
   if(stats.deleted)notes.push(`${plural(stats.deleted,'booking')} from this feed deleted here afterwards. ${stats.deleted===1?'It stays':'They stay'} deleted.`);
+  if(proven===false&&stats.events)notes.push(`Still-open check: waiting until this feed shows a stay that began elsewhere, so it is not guessing what ${f.platform}'s export includes.`);
+  if(proven&&openHere)notes.push(`${plural(openHere,'stay')} still open on ${f.platform}: see Bookings.`);
   if(stats.blocks)notes.push(`${plural(stats.blocks,'blocked date range')} with no stay behind ${stats.blocks===1?'it':'them'}: not imported.`);
   notes.forEach(t=>wrap.appendChild(div({style:{fontSize:11.5,color:'var(--muted)',marginTop:5,lineHeight:1.45}},t)));
   const lc=stats.lastChange;
@@ -1693,7 +1712,7 @@ function calendarSyncBox(s){
     }
     const stats=(s.icalLog&&s.icalLog.feeds)||{};
     feeds.slice().sort((x,y)=>(x.property_id+x.platform).localeCompare(y.property_id+y.platform))
-      .forEach(f=>body.appendChild(icalFeedReport(f,stats[f.id])));
+      .forEach(f=>body.appendChild(icalFeedReport(f,stats[f.id],s.icalLog)));
   }).catch(err=>{
     body.innerHTML='';
     body.appendChild(div({style:{fontSize:12.5,color:icalMissing(err)?'var(--muted)':'var(--danger)',marginTop:6,lineHeight:1.5}},
@@ -2094,16 +2113,20 @@ function renderDashboard(){
   {
     const clashed=allB.filter(b=>b.status!=='cancelled'&&clashesFor(b).length);
     const gone=allB.filter(b=>b.icalGone&&b.status!=='cancelled'&&b.checkOut>today());
-    if(clashed.length||gone.length){
+    const open=allB.filter(b=>openGapsFor(b).length);
+    if(clashed.length||gone.length||open.length){
       const pairs=Math.round(clashed.reduce((n,b)=>n+clashesFor(b).length,0)/2);
       wrap.appendChild(div({className:'card','data-cal-alert':'1',style:{padding:'11px 13px',cursor:'pointer',
-        borderColor:clashed.length?'var(--danger)':'var(--gold-line)'},
+        borderColor:clashed.length?'var(--danger)':open.length?'var(--warn)':'var(--gold-line)'},
         onClick:()=>setState({tab:'bookings',bookingFilter:'all'})},
         clashed.length?div({style:{fontSize:13,fontWeight:700,color:'var(--danger)',display:'flex',alignItems:'center',gap:7}},
           ico('alert-triangle',{style:{fontSize:16}}),`${pairs} double booking${pairs===1?'':'s'}`):null,
         clashed.length?div({style:{fontSize:12,color:'var(--text-mid)',marginTop:3,lineHeight:1.5}},
           clashed.map(b=>`${b.guestName} ${fmtDate(b.checkIn)}`).join(' · ')):null,
-        gone.length?div({style:{fontSize:12.5,fontWeight:600,color:'var(--gold)',marginTop:clashed.length?7:0}},
+        open.length?div({'data-open-count':String(open.length),style:{fontSize:12.5,fontWeight:600,color:'var(--warn)',marginTop:clashed.length?7:0}},
+          `${open.length} stay${open.length===1?' is':'s are'} still open on another platform — `
+          +[...new Set(open.flatMap(b=>openGapsFor(b).map(g=>g.platform)))].join(' and ')):null,
+        gone.length?div({style:{fontSize:12.5,fontWeight:600,color:'var(--gold)',marginTop:clashed.length||open.length?7:0}},
           `${gone.length} imported stay${gone.length===1?' is':'s are'} no longer on the platform — cancelled?`):null));
     }
   }
@@ -3635,6 +3658,7 @@ function render(){
   }
   if(!state.loggedIn){renderLoginScreen();return;}
   state._clashes=bookingClashes(state.data.bookings);
+  state._gaps=((cloudStatus().icalLog)||{}).gaps||{};
   app.innerHTML='';
   app.appendChild(renderHeader());
   const swb=swBanner(); if(swb)app.appendChild(swb);

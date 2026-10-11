@@ -113,6 +113,20 @@ also fetch from Supabase with `cache: 'no-store'` as a second layer.
   booking triggers another a few seconds later that finds nothing.
 - `supabase/ical-report.sql` lists every booking a feed accounts for, with
   source, dates and which feeds list it — for comparing against the platforms.
+- **Airbnb blocks stay out of StayLog** — Rakshit's decision after a block he
+  set did not appear: most are Booking.com stays seen from Airbnb's side. Do
+  not "fix" this.
+- **Still open on the other platform** (`coverageGaps()`, run each sync): a
+  live, future stay with a night that a platform's feed does not cover is a
+  night that platform can still sell. Shown on the card ("Still open on
+  Booking.com: …"), counted on Home and per feed. Never checked against its
+  own platform; skipped for a feed whose last read failed. A feed is only
+  judged once it has **shown a stay that began elsewhere** (an event linked to
+  a booking from another source): whether each export carries the other's
+  imported dates is undocumented, and guessing means an alarm on every stay
+  or none. Until then Calendar sync says the check is waiting.
+- A stay a platform moves keeps its old dates (`icalMovedFrom`); the card says
+  so for 7 days.
 
 ## Privacy and access — do not loosen these
 
@@ -178,6 +192,11 @@ areas are changed.
 
 ## Open items
 
+- Whether Booking.com's export includes the Airbnb dates it imports (and the
+  reverse) decides whether the still-open check ever switches on for that
+  feed. Calendar sync shows "Still-open check: waiting" until it does; if it
+  never does, that platform's export does not echo the other, and closing
+  dates there by hand is the only protection.
 - **The calendar import has not met a real feed or the real project yet.**
   After setup, run `supabase/ical-report.sql` and compare against the Airbnb
   calendar and the Booking.com extranet for the first few days. If a platform's
