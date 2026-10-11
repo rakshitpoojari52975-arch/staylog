@@ -120,6 +120,11 @@ areas are changed.
 
 - Her page shows "Received so far ₹0" — wages may be paid in cash without being
   marked paid in the app. Raise it before it becomes a misunderstanding.
+- Pay-sheet loan repayments are dated by each wage's day, not the payday
+  (`syncExpenseLoan` uses `exp.date`, as single payouts do). Arrears are
+  unaffected, but the CSV's monthly "Loan repayments" section files an
+  instalment taken on 2 Nov for October's wages under October. Fix by recording a
+  paid-on date on the expense and using it for the repayment row.
 - A sync safety brake: refuse to tombstone an unusual number of rows without
   asking.
 - `app.js` could check the expected `sw.js` version and warn on a mismatch.
