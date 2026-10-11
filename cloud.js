@@ -32,6 +32,8 @@
   let lastError = '';
   let held = 0;           // marks waiting on a daily wage being set
   let attError = '';      // attendance trouble, kept apart from sync trouble
+  let brake = null;       // what the last stopped push would have deleted
+  let declinedSig = '';   // that same set of deletions, already refused once
   // What the last drain actually did. Without this the only way to find out
   // why a mark did not become an expense is to read the database by hand,
   // which is not a thing the app should ask of anybody.
@@ -373,7 +375,46 @@
     return attLog.stamped > 0;
   }
 
-  async function push(data) {
+  // ── The safety brake ───────────────────────────────────────────────────────
+  // The tombstone pass deletes whatever the server has and this phone lacks.
+  // That is right when he deletes a booking, and a disaster when the phone's
+  // data is wrong — a new phone that has not been filled yet, a bad restore,
+  // a half-loaded state. So before anything is written, the deletions are
+  // counted, and an unusual number is put to him first.
+  const BRAKE_ROWS = 5;        // more than this many rows in one sync
+  const BRAKE_SHARE = 0.2;     // or more than this share of any one table
+  const LABEL = { properties: 'properties', staff: 'staff', loans: 'loans',
+    loan_repayments: 'loan repayments', expenses: 'expenses', bookings: 'bookings' };
+  const ONE = { properties: 'property', staff: 'staff', loans: 'loan',
+    loan_repayments: 'loan repayment', expenses: 'expense', bookings: 'booking' };
+
+  async function plannedTombstones(c, owner, up) {
+    const plan = [];
+    for (const table of ORDER) {
+      const { data: live, error } = await c.from(table).select('id')
+        .eq('owner_id', owner).is('deleted_at', null);
+      if (error) throw error;
+      const keep = new Set(up[table].map(r => r.id));
+      const gone = (live || []).map(r => r.id).filter(id => !keep.has(id));
+      if (gone.length) plan.push({ table, count: gone.length, of: (live || []).length, ids: gone.sort() });
+    }
+    return plan;
+  }
+  function overLimit(plan) {
+    const total = plan.reduce((t, p) => t + p.count, 0);
+    return total > BRAKE_ROWS || plan.some(p => p.count / p.of > BRAKE_SHARE);
+  }
+  function describe(plan) {
+    const lines = plan.map(p => `• ${p.count} of ${p.of} ${LABEL[p.table] || p.table} (${Math.round(p.count / p.of * 100)}%)`);
+    return 'This sync would delete from the cloud:\n' + lines.join('\n') +
+      '\n\nThat is more than usual, so nothing has been changed yet. ' +
+      'If this phone is new or was just restored, choose Cancel and use ' +
+      '"Replace this phone from the cloud" instead.\n\n' +
+      'OK deletes them (they stay recoverable in SQL). Cancel stops this sync.';
+  }
+
+  async function push(data, opts) {
+    opts = opts || {};
     if (!session) throw new Error('not signed in');
     // Two pushes can now overlap — opening the app starts one, and an edit a
     // moment later starts another. Dropping the second would leave the newer
@@ -390,9 +431,33 @@
       const drained = await drainAttendance(c, owner, data).catch(() => false);
       if (drained) data = (window.STAYLOG_GET_DATA && window.STAYLOG_GET_DATA()) || data;
       const sets = collect(data);
+      const up = {};
+      for (const table of ORDER) up[table] = (sets[table] || [])
+        .filter(x => ID_OK.test(String(x.id || ''))).map(x => MAP[table].up(x, owner));
+
+      // Counted before anything is written, so a refusal leaves the cloud as it was.
+      const plan = await plannedTombstones(c, owner, up);
+      if (overLimit(plan)) {
+        const sig = plan.map(p => p.table + ':' + p.ids.join(',')).join('|');
+        // A background sync does not ask twice about deletions already refused;
+        // Sync now always asks.
+        const ask = opts.manual || sig !== declinedSig;
+        let yes = false;
+        if (ask && typeof window.STAYLOG_CONFIRM_TOMBSTONE === 'function') {
+          try { yes = !!(await window.STAYLOG_CONFIRM_TOMBSTONE({ plan, message: describe(plan) })); }
+          catch { yes = false; }
+        }
+        if (!yes) {
+          if (ask) declinedSig = sig;
+          brake = plan.map(({ table, count, of }) => ({ table, count, of }));
+          const what = brake.map(p => `${p.count} ${(p.count === 1 ? ONE : LABEL)[p.table] || p.table}`).join(', ');
+          throw new Error(`Sync paused — it would delete ${what}. Nothing was changed. Tap Sync now to review.`);
+        }
+      }
+      brake = null; declinedSig = '';
+
       for (const table of ORDER) {
-        const rows = (sets[table] || []).filter(x => ID_OK.test(String(x.id || '')))
-          .map(x => MAP[table].up(x, owner));
+        const rows = up[table];
         if (rows.length) {
           const { error } = await c.from(table).upsert(rows, { onConflict: 'id' });
           if (error) throw error;
@@ -456,7 +521,7 @@
       email: session?.user?.email || '',
       userId: session?.user?.id || '',
       online: navigator.onLine,
-      dirty, pushing, lastSync: last, lastError, heldMarks: held, attError, attLog, attLast,
+      dirty, pushing, lastSync: last, lastError, brake, heldMarks: held, attError, attLog, attLast,
     };
   }
 

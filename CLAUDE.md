@@ -43,6 +43,14 @@ also fetch from Supabase with `cache: 'no-store'` as a second layer.
   device, not for merging. Two devices editing at once are not supported.
 - Sync runs on app open, on focus, on coming back online, and 4s after any
   change. Overlapping pushes are queued, not dropped.
+- **Safety brake.** Before writing anything, `push()` counts what the
+  tombstone pass would delete. More than 5 rows in one sync, or more than 20%
+  of any table, stops the sync and asks (`STAYLOG_CONFIRM_TOMBSTONE` in
+  `app.js`), naming each table and count. Cancel writes nothing and the cloud
+  panel shows "Sync paused". Background syncs do not re-ask about the same
+  deletions; Sync now and Check now always ask. An empty new phone that signs
+  in before "Replace this phone from the cloud" hits this brake instead of
+  wiping the cloud.
 
 ## Attendance → wage expenses
 
@@ -111,6 +119,7 @@ also fetch from Supabase with `cache: 'no-store'` as a second layer.
     node tests/test_sw_upgrade.js
     node tests/test_att_gap.js
     node tests/test_pay_loan.js
+    node tests/test_sync_brake.js
 
 The first four survived a machine reset; fifteen earlier suites (receipt, WhatsApp,
 loans, PDFs, staff page, theme) did not and should be rebuilt here before those
@@ -125,8 +134,6 @@ areas are changed.
   unaffected, but the CSV's monthly "Loan repayments" section files an
   instalment taken on 2 Nov for October's wages under October. Fix by recording a
   paid-on date on the expense and using it for the repayment row.
-- A sync safety brake: refuse to tombstone an unusual number of rows without
-  asking.
 - `app.js` could check the expected `sw.js` version and warn on a mismatch.
 - Booking.com/Airbnb iCal import (needs a Supabase Edge Function; the feeds
   have no CORS headers).

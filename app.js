@@ -6,7 +6,7 @@
 // ─── Build ────────────────────────────────────────────────────────────────────
 // Bump BOTH of these together. This date sat at 28 Sept through a dozen
 // releases and was read, reasonably, as proof the upload had not landed.
-const APP_VERSION='v34', APP_BUILT='11 Oct 2026';
+const APP_VERSION='v35', APP_BUILT='11 Oct 2026';
 
 // ─── Auth ─────────────────────────────────────────────────────────────────────
 const AUTH_KEY   = 'staylog_auth';
@@ -51,6 +51,8 @@ function saveData(d){
   try{window.StayLogCloud&&window.StayLogCloud.markDirty(()=>state.data);}catch{}
 }
 window.STAYLOG_GET_DATA=()=>state.data;
+// cloud.js asks before a sync would delete an unusual number of rows
+window.STAYLOG_CONFIRM_TOMBSTONE=({message})=>confirm(message);
 // cloud.js turns her attendance marks into unpaid wage expenses through this.
 // It goes through mutateData so the write is saved and the screen repaints
 // exactly as it would for an expense typed by hand.
@@ -1567,7 +1569,7 @@ function renderCloudModal(){
         div({className:'kicker'},'Attendance'),
         btn({className:'btn-ghost btn-sm',style:{padding:'4px 10px',fontSize:12},
           onClick:async()=>{
-            try{ await window.StayLogCloud.push(state.data); }catch(err){}
+            try{ await window.StayLogCloud.push(state.data,{manual:true}); }catch(err){}
             render();
           }},'Check now')));
 
@@ -1671,8 +1673,11 @@ function renderCloudModal(){
       ico('cloud-upload',{style:{marginRight:7,fontSize:17}}),'Sync now');
     sync.addEventListener('click',async()=>{
       sync.disabled=true;sync.textContent='Syncing…';
-      try{ await window.StayLogCloud.push(state.data); render(); }
-      catch(err){ sync.disabled=false; sync.textContent='Sync now'; alert('Sync failed: '+(err.message||err)); }
+      try{ await window.StayLogCloud.push(state.data,{manual:true}); render(); }
+      catch(err){
+        // A paused sync is his own Cancel, and the panel already says what it would delete.
+        if(cloudStatus().brake){ render(); return; }
+        sync.disabled=false; sync.textContent='Sync now'; alert('Sync failed: '+(err.message||err)); }
     });
     wrap.appendChild(sync);
 
