@@ -72,6 +72,15 @@ also fetch from Supabase with `cache: 'no-store'` as a second layer.
 - `cloud-config.js` holds the Supabase URL and the *publishable* key, which are
   public by design. Never commit a `service_role` or `sb_secret_` key.
 
+## Loans
+
+- **Payday loan deduction.** The Pay sheet offers (off by default) to take the
+  month's instalment out of the wages being settled. It is split across the
+  ticked days, oldest first; each day carries its share as `loanId` /
+  `loanDeduction` / `grossAmount`, exactly like a single payout, so
+  `syncExpenseLoan` makes one repayment row per day and deleting a day reverses
+  only its share. A day already carrying a cut keeps it and is not cut again.
+
 ## Receipts
 
 - A **receipt, never a tax invoice**: no GSTIN, no tax lines, and it says so.
@@ -101,8 +110,9 @@ also fetch from Supabase with `cache: 'no-store'` as a second layer.
     node tests/test_sw_live.js
     node tests/test_sw_upgrade.js
     node tests/test_att_gap.js
+    node tests/test_pay_loan.js
 
-These four survived a machine reset; fifteen earlier suites (receipt, WhatsApp,
+The first four survived a machine reset; fifteen earlier suites (receipt, WhatsApp,
 loans, PDFs, staff page, theme) did not and should be rebuilt here before those
 areas are changed.
 
@@ -110,8 +120,6 @@ areas are changed.
 
 - Her page shows "Received so far ₹0" — wages may be paid in cash without being
   marked paid in the app. Raise it before it becomes a misunderstanding.
-- The ₹40,000 loan shows 0% repaid; the settle sheet could offer to deduct the
-  monthly ₹2,000 instalment.
 - A sync safety brake: refuse to tombstone an unusual number of rows without
   asking.
 - `app.js` could check the expected `sw.js` version and warn on a mismatch.

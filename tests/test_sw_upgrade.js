@@ -6,6 +6,9 @@ const { chromium } = require('playwright');
 const http=require('http'),fs=require('fs'),path=require('path');
 const ROOT=require('path').resolve(__dirname,'..'), TMP=require('path').join(__dirname,'fixtures');
 const SHIPPED=fs.readFileSync(TMP+'/sw-before-fix.js','utf8'), FIXED=fs.readFileSync(ROOT+'/sw.js','utf8');
+// Read the release stamps from the files themselves, so a release bump never breaks this test.
+const CACHE=FIXED.match(/CACHE_NAME = '([^']+)'/)[1];
+const [,APP_V,APP_B]=fs.readFileSync(ROOT+'/app.js','utf8').match(/APP_VERSION='([^']+)', APP_BUILT='([^']+)'/);
 let SW_SRC=SHIPPED;                                  // the phone starts on the broken one
 let pass=0,fail=0;
 const ok=(n,c,x)=>{c?(pass++,console.log('  ✓ '+n)):(fail++,console.log('  ✗ '+n+(x!==undefined?'  → '+JSON.stringify(x):'')));};
@@ -117,8 +120,8 @@ await page.reload();                       // index.html also reloads once on co
 await page.waitForFunction(()=>typeof state!=='undefined'&&!state._loading);
 await page.waitForTimeout(800);
 const caches_=await page.evaluate(()=>caches.keys());
-ok('the old cache, with its stale answers, is gone', !caches_.some(k=>k!=='staylog-v33'), caches_);
-ok('the fixed worker is the one in charge', caches_.includes('staylog-v33'), caches_);
+ok('the old cache, with its stale answers, is gone', !caches_.some(k=>k!==CACHE), caches_);
+ok('the fixed worker is the one in charge', caches_.includes(CACHE), caches_);
 
 await sync(); await page.waitForTimeout(800);
 days=await page.evaluate(()=>state.data.expenses.filter(e=>e.fromAttendance).map(e=>e.date).sort());
@@ -135,8 +138,8 @@ ok('the panel count now matches the database', st.cloudMarks===DB.attendance.len
 await page.evaluate(()=>{state.loggedIn=true;state.modal='menu';render();});
 await page.waitForTimeout(1800);
 const foot=await page.locator('body').innerText();
-ok('the menu footer names the running worker', /Offline cache staylog-v33/.test(foot), foot.slice(-160));
-ok('and the app version and build date', /StayLog v31 · built 10 Oct 2026/.test(foot), foot.slice(-160));
+ok('the menu footer names the running worker', foot.includes('Offline cache '+CACHE), foot.slice(-160));
+ok('and the app version and build date', foot.includes(`StayLog ${APP_V} · built ${APP_B}`), foot.slice(-160));
 ok('no page errors', errs.length===0, errs);
 
 await br.close(); api.close(); app.close();

@@ -6,7 +6,7 @@
 // ─── Build ────────────────────────────────────────────────────────────────────
 // Bump BOTH of these together. This date sat at 28 Sept through a dozen
 // releases and was read, reasonably, as proof the upload had not landed.
-const APP_VERSION='v31', APP_BUILT='10 Oct 2026';
+const APP_VERSION='v34', APP_BUILT='11 Oct 2026';
 
 // ─── Auth ─────────────────────────────────────────────────────────────────────
 const AUTH_KEY   = 'staylog_auth';
@@ -2312,6 +2312,25 @@ function unlinkExpenseLoan(d,expenseId){
   d.loans.forEach(l=>{l.repayments=(l.repayments||[]).filter(r=>r.expenseId!==expenseId);});
   refreshLoanStatuses(d);
 }
+// What a payout should take off this loan: the unpaid part of the next
+// instalment, never more than is still owed.
+function loanInstalmentDue(loan){
+  const nd=loanNextDue(loan);
+  return round2(Math.min(nd?nd.amount-nd.paid:Number(loan.installmentAmount||0),Math.max(0,loanBalance(loan))));
+}
+// A month's instalment is more than any one day's wage, so on payday it is
+// spread across the wages being paid, oldest first. Each wage then carries its
+// share exactly as a single payout does (loanId, loanDeduction, grossAmount)
+// and syncExpenseLoan turns each share into one repayment row — so deleting a
+// day later reverses that day's share and nothing else.
+function splitLoanDeduction(expenses,total){
+  let left=round2(total); const out=[];
+  [...expenses].sort((a,b)=>String(a.date).localeCompare(String(b.date))).forEach(e=>{
+    const share=round2(Math.min(Number(e.amount||0),left));
+    if(share>0){out.push({id:e.id,share});left=round2(left-share);}
+  });
+  return out;
+}
 
 const LOAN_ROW_META={
   paid    :{label:'Paid',    bg:'var(--accent-light)',color:'var(--accent)'},
@@ -2696,6 +2715,18 @@ function renderSettleModal(){
   if(!staff)return modal('Pay wages',()=>div({},'No staff member selected.'));
   const rows=pendingWages(data,staff.id);
   const picked=new Set(rows.map(e=>e.id));     // everything, until he says otherwise
+  // A wage that already carries a loan cut (set on the expense itself) keeps it;
+  // the payday deduction is spread over the others.
+  const hasCut=e=>!!e.loanId&&Number(e.loanDeduction||0)>0;
+  const loans=activeLoansForStaff(staff.id);
+  // Offered, never assumed: off until he switches it on.
+  const ln={on:false,loanId:loans[0]?.id||'',amt:0};
+  function defaultCut(loanId){
+    const l=loanById(loanId); if(!l)return 0;
+    // cuts already sitting on unpaid wages for this loan count towards this month
+    const pending=round2(rows.filter(e=>picked.has(e.id)&&e.loanId===loanId).reduce((t,e)=>t+Number(e.loanDeduction||0),0));
+    return round2(Math.max(0,loanInstalmentDue(l)-pending));
+  }
 
   const content=()=>{
     const wrap=div({style:{display:'flex',flexDirection:'column',gap:0}});
@@ -2708,17 +2739,29 @@ function renderSettleModal(){
 
     const totalLine=div({style:{fontSize:13,color:'var(--muted)'}});
     const payBtn=btn({className:'btn-primary',style:{width:'100%',marginTop:4}});
+    const loanBlock=div({'data-loan':'1',style:{display:'flex',flexDirection:'column',gap:9,marginTop:12}});
 
-    function refreshTotals(){
+    // Everything the sheet shows and does comes from here, so the screen and
+    // the confirmation can never disagree.
+    function figures(){
       const sel=rows.filter(e=>picked.has(e.id));
       const sum=round2(sel.reduce((t,e)=>t+Number(e.amount||0),0));
-      const cut=round2(sel.reduce((t,e)=>t+(e.loanId?Number(e.loanDeduction||0):0),0));
-      totalLine.textContent=sel.length
-        ? `${sel.length} of ${rows.length} selected${cut>0?` · ${fmtCur(cut)} to loan`:''}`
+      const oldCut=round2(sel.reduce((t,e)=>t+(hasCut(e)?Number(e.loanDeduction||0):0),0));
+      const room=round2(sel.filter(e=>!hasCut(e)).reduce((t,e)=>t+Number(e.amount||0),0));
+      const newCut=ln.on?round2(ln.amt):0;
+      return{sel,sum,oldCut,room,newCut,cash:round2(sum-newCut),tooBig:newCut>room+0.001};
+    }
+
+    function refreshTotals(){
+      const F=figures(), cut=round2(F.oldCut+F.newCut);
+      totalLine.textContent=F.sel.length
+        ? `${F.sel.length} of ${rows.length} selected${cut>0?` · ${fmtCur(cut)} to loan`:''}`
         : 'Nothing selected';
-      payBtn.textContent=sel.length?`Mark ${fmtCur(sum)} as paid`:'Mark as paid';
-      payBtn.disabled=!sel.length;
-      payBtn.style.opacity=sel.length?'1':'.5';
+      const can=F.sel.length>0&&!F.tooBig&&!(ln.on&&!(F.newCut>0));
+      payBtn.textContent=F.sel.length?`Mark ${fmtCur(F.cash)} as paid`:'Mark as paid';
+      payBtn.disabled=!can;
+      payBtn.style.opacity=can?'1':'.5';
+      paintLoanSummary(F);
     }
 
     const head=div({style:{display:'flex',alignItems:'center',justifyContent:'space-between',
@@ -2768,15 +2811,85 @@ function renderSettleModal(){
       paintRow(row,true);
     });
 
+    // ── Loan instalment ──────────────────────────────────────────────────────
+    const loanSummary=div({'data-loan-summary':'1',style:{display:'none'}});
+    function paintLoanSummary(F){
+      if(!ln.on){loanSummary.style.display='none';loanSummary.innerHTML='';return;}
+      loanSummary.innerHTML='';
+      loanSummary.style.display='block';
+      Object.assign(loanSummary.style,{background:'var(--accent-light)',border:'1px solid var(--accent-line)',borderRadius:'var(--radius-sm)',padding:'11px 13px',fontSize:13,lineHeight:1.6,color:'var(--accent)'});
+      loanSummary.appendChild(div({style:{display:'flex',justifyContent:'space-between'}},span({},'Wages ticked'),span({style:{fontWeight:600}},fmtCur(F.sum))));
+      loanSummary.appendChild(div({style:{display:'flex',justifyContent:'space-between'}},span({},'Less loan instalment'),span({style:{fontWeight:600}},'− '+fmtCur(F.newCut))));
+      loanSummary.appendChild(div({style:{display:'flex',justifyContent:'space-between',borderTop:'1px solid var(--accent-line)',marginTop:5,paddingTop:5,fontWeight:700,color:F.tooBig?'var(--danger)':'var(--accent)'}},
+        span({},'Cash to hand over'),span({},fmtCur(F.cash))));
+      if(F.tooBig)loanSummary.appendChild(div({style:{color:'var(--danger)',marginTop:4}},
+        `The deduction is larger than the ${fmtCur(F.room)} of wages ticked. Tick more days or deduct less.`));
+    }
+    function buildLoanBlock(){
+      loanBlock.innerHTML='';
+      if(!loans.length)return;
+      const owes=round2(loans.reduce((a,l)=>a+Math.max(0,loanBalance(l)),0));
+      const on=ln.on;
+      const togRow=div({'data-loan-toggle':'1',style:{display:'flex',alignItems:'center',justifyContent:'space-between',gap:10,background:on?'var(--gold-light)':'var(--cream)',borderRadius:'var(--radius-sm)',padding:'11px 13px',border:`1.5px solid ${on?'var(--gold-line)':'var(--border)'}`,cursor:'pointer'}});
+      togRow.appendChild(div({style:{minWidth:0}},
+        div({style:{fontSize:14,fontWeight:600}},'Deduct loan instalment'),
+        div({style:{fontSize:12,color:'var(--muted)',marginTop:2}},`${staff.name} owes ${fmtCur(owes)}`)));
+      togRow.appendChild(div({style:{width:44,height:26,borderRadius:20,background:on?'var(--accent)':'var(--border)',flexShrink:0,position:'relative',transition:'background .15s'}},
+        div({style:{width:20,height:20,borderRadius:'50%',background:'var(--on-accent)',position:'absolute',top:3,left:on?21:3,transition:'left .15s',boxShadow:'0 1px 3px rgba(0,0,0,0.2)'}})));
+      togRow.addEventListener('click',()=>{
+        ln.on=!ln.on;
+        if(ln.on)ln.amt=defaultCut(ln.loanId);
+        buildLoanBlock();refreshTotals();
+      });
+      loanBlock.appendChild(togRow);
+      if(ln.on){
+        const l=loanById(ln.loanId);
+        if(loans.length>1){
+          loanBlock.appendChild(div({className:'label'},'Against which loan'));
+          const lSel=h('select',{'data-loan-pick':'1'});
+          loans.forEach(x=>lSel.appendChild(h('option',{value:x.id,selected:ln.loanId===x.id},
+            `${fmtCur(x.principal)} of ${fmtDate(x.disbursedOn)} · ${fmtCur(Math.max(0,loanBalance(x)))} left`)));
+          lSel.addEventListener('change',e=>{ln.loanId=e.target.value;ln.amt=defaultCut(ln.loanId);buildLoanBlock();refreshTotals();});
+          loanBlock.appendChild(lSel);
+        }
+        loanBlock.appendChild(div({className:'label'},'Instalment to deduct (₹)'));
+        const dInp=h('input',{type:'number','data-loan-amt':'1',value:ln.amt||''});
+        dInp.addEventListener('input',e=>{ln.amt=e.target.value;refreshTotals();});
+        loanBlock.appendChild(dInp);
+        const nd=loanNextDue(l);
+        loanBlock.appendChild(div({style:{fontSize:12,color:'var(--muted)',lineHeight:1.5}},
+          `Scheduled instalment ${fmtCur(l.installmentAmount)}${nd?` · due ${fmtDate(nd.dueDate)}`:''} · balance ${fmtCur(Math.max(0,loanBalance(l)))}. It is split across the days ticked, oldest first, and credited to the loan when you mark them paid.`));
+        loanBlock.appendChild(loanSummary);
+      }
+    }
+    if(loans.length){wrap.appendChild(loanBlock);buildLoanBlock();}
+
     payBtn.addEventListener('click',()=>{
-      const ids=rows.filter(e=>picked.has(e.id)).map(e=>e.id);
-      if(!ids.length)return;
-      const sum=round2(rows.filter(e=>picked.has(e.id)).reduce((t,e)=>t+Number(e.amount||0),0));
-      if(!confirm(`Mark ${ids.length} wage${ids.length>1?'s':''} totalling ${fmtCur(sum)} as paid to ${staff.name}?`))return;
+      const F=figures();
+      if(!F.sel.length)return;
+      const ids=F.sel.map(e=>e.id);
+      const cut=F.newCut;
+      if(ln.on){
+        if(!(cut>0)){alert('Enter the instalment amount to deduct, or switch the deduction off.');return;}
+        if(F.tooBig){alert(`The ${fmtCur(cut)} deduction is more than the ${fmtCur(F.room)} of wages ticked.`);return;}
+        const bal=Math.max(0,loanBalance(loanById(ln.loanId)));
+        if(cut>bal+0.5&&!confirm(`${fmtCur(cut)} is more than the ${fmtCur(bal)} still outstanding on this loan. Continue?`))return;
+      }
+      const msg=`Mark ${ids.length} wage${ids.length>1?'s':''} totalling ${fmtCur(F.sum)} as paid to ${staff.name}?`
+        +(cut>0?`\n\n${fmtCur(cut)} goes to the loan; ${fmtCur(F.cash)} is handed over.`:'');
+      if(!confirm(msg))return;
       mutateData(d=>{
-        ids.forEach(id=>{
-          const e=d.expenses.find(x=>x.id===id);
-          if(!e||e.paid)return;                 // already settled; never pay twice
+        const live=ids.map(id=>d.expenses.find(x=>x.id===id)).filter(e=>e&&!e.paid);  // never pay twice
+        const shares=new Map(cut>0?splitLoanDeduction(live.filter(e=>!hasCut(e)),cut).map(s=>[s.id,s.share]):[]);
+        live.forEach(e=>{
+          const share=shares.get(e.id);
+          if(share){
+            const gross=round2(e.amount);
+            e.grossAmount=gross;
+            e.loanId=ln.loanId;
+            e.loanDeduction=share;
+            e.amount=round2(gross-share);
+          }
           e.paid=true;
           syncExpenseLoan(d,e);                 // records the instalment against the loan
         });
@@ -3192,8 +3305,7 @@ function renderExpenseModal(){
         else{
           const l=loans[0];
           f.loanId=l.id;
-          const nd=loanNextDue(l);
-          f.loanDeduction=round2(Math.min(nd?nd.amount-nd.paid:Number(l.installmentAmount||0),Math.max(0,loanBalance(l))));
+          f.loanDeduction=loanInstalmentDue(l);
           f.paid=true;
         }
         buildStaffBlock();syncPaidToggle();
@@ -3209,8 +3321,7 @@ function renderExpenseModal(){
             `${fmtCur(x.principal)} of ${fmtDate(x.disbursedOn)} · ${fmtCur(Math.max(0,loanBalance(x)))} left`)));
           lSel.addEventListener('change',e=>{
             f.loanId=e.target.value;
-            const nl=loanById(f.loanId),nd=loanNextDue(nl);
-            f.loanDeduction=round2(Math.min(nd?nd.amount-nd.paid:Number(nl.installmentAmount||0),Math.max(0,loanBalance(nl))));
+            f.loanDeduction=loanInstalmentDue(loanById(f.loanId));
             buildStaffBlock();
           });
           staffBlock.appendChild(lSel);
