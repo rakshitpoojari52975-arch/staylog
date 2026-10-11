@@ -6,7 +6,11 @@
 // ─── Build ────────────────────────────────────────────────────────────────────
 // Bump BOTH of these together. This date sat at 28 Sept through a dozen
 // releases and was read, reasonably, as proof the upload had not landed.
-const APP_VERSION='v35', APP_BUILT='11 Oct 2026';
+const APP_VERSION='v36', APP_BUILT='11 Oct 2026';
+// The CACHE_NAME of the sw.js released with this app.js. Every release bumps
+// APP_VERSION and CACHE_NAME together, so one is derived from the other rather
+// than being a fourth thing to forget; the tests fail if they ever disagree.
+const SW_CACHE='staylog-'+APP_VERSION;
 
 // ─── Auth ─────────────────────────────────────────────────────────────────────
 const AUTH_KEY   = 'staylog_auth';
@@ -85,6 +89,7 @@ const addDaysISO =(iso,n)=>{const d=new Date(iso+'T00:00:00');d.setDate(d.getDat
 // ─── State ────────────────────────────────────────────────────────────────────
 let state={
   data:{...defaultData}, auth:null, loggedIn:false,
+  swMismatch:null, swBannerHidden:false,   // the running service worker is not this release's
   tab:'dashboard', modal:null, editItem:null,
   filterProp:'all', bookingFilter:'all', expandedBooking:null,
   loanFilter:'active', expandedLoan:null, showStaffPanel:false, expandedExpense:null,
@@ -388,6 +393,35 @@ function swVersion(){
       c.postMessage({type:'version'},[ch.port2]);
     }catch(e){res('');}
   });
+}
+
+// ─── Part-updated? ────────────────────────────────────────────────────────────
+// app.js and sw.js are fetched, cached and activated separately, so a phone can
+// end up running one release's app with another release's worker. A new worker
+// takes over on its own within seconds and the page reloads, so the question is
+// asked only after that has had time to happen — otherwise every ordinary
+// update would flash the banner.
+const SW_CHECK_DELAY=4000;
+function checkSwMatch(){
+  return swVersion().then(v=>{
+    if(!v)return;                     // no worker yet (first visit, private window): nothing to compare
+    const was=state.swMismatch;
+    state.swMismatch = v===SW_CACHE ? null : v;
+    // never repaint the PIN screen under his fingers; the banner waits for the app
+    if(state.swMismatch!==was&&state.loggedIn)render();
+  });
+}
+function swBanner(){
+  if(!state.swMismatch||state.swBannerHidden)return null;
+  const running=state.swMismatch.startsWith('(')?'an older offline cache':`offline cache ${state.swMismatch}`;
+  return div({'data-sw-banner':'1',role:'status',style:{display:'flex',alignItems:'center',gap:10,
+      margin:'8px 12px 0',padding:'8px 12px',background:'var(--surface-2)',border:'1px solid var(--border)',
+      borderRadius:'var(--radius-sm)',fontSize:12.5,color:'var(--text-mid)',lineHeight:1.45}},
+    div({style:{flex:1,minWidth:0}},
+      `StayLog is part-updated: ${APP_VERSION} is running with ${running}. Close and reopen the app to finish updating.`),
+    btn({'aria-label':'Dismiss',style:{background:'none',border:'none',color:'var(--light)',fontSize:18,
+      padding:'0 4px',cursor:'pointer',lineHeight:1,flexShrink:0},
+      onClick:()=>{state.swBannerHidden=true;render();}},'×'));
 }
 
 // ─── Menu + property picker ───────────────────────────────────────────────────
@@ -3421,6 +3455,7 @@ function render(){
   if(!state.loggedIn){renderLoginScreen();return;}
   app.innerHTML='';
   app.appendChild(renderHeader());
+  const swb=swBanner(); if(swb)app.appendChild(swb);
   const main=div({style:{flex:1}});
   if(state.tab==='dashboard') main.appendChild(renderDashboard());
   else if(state.tab==='bookings') main.appendChild(renderBookings());
@@ -3459,4 +3494,7 @@ Promise.all([loadDataFromIDB(),loadAuth()]).then(([data,auth])=>{
       .then(()=>window.StayLogCloud.checkIn&&window.StayLogCloud.checkIn(true))
       .catch(()=>{});
   }
+  setTimeout(checkSwMatch,SW_CHECK_DELAY);
 });
+// Coming back to the app is when an hourly update may have landed underneath it.
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)setTimeout(checkSwMatch,SW_CHECK_DELAY);});

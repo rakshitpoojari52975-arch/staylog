@@ -10,6 +10,7 @@ kept outside it and was lost when the machine running them was reset.
     node tests/test_att_gap.js     # attendance → expense reconciliation
     node tests/test_pay_loan.js    # Pay sheet: loan instalment taken out of wages
     node tests/test_sync_brake.js  # sync stops and asks before deleting an unusual number of rows
+    node tests/test_sw_mismatch.js # banner when the running worker is another release's
 
 `fixtures/sw-before-fix.js` is the service worker that cached the Supabase API.
 It is kept so `test_sw_upgrade.js` can prove the fix recovers from it.

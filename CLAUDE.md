@@ -17,6 +17,12 @@ anything.
   releases and was read, reasonably, as proof uploads were not landing.
 - The ⋯ menu footer shows the app version and the running service worker's
   cache name. If they disagree with what was shipped, an upload did not land.
+- `app.js` expects the worker `'staylog-'+APP_VERSION` (`SW_CACHE`), so
+  `APP_VERSION` and `CACHE_NAME` must carry the same number. 4s after opening
+  (and on returning to the app) it asks the running worker; if it is another
+  release's, or too old to answer, a quiet dismissible strip under the header
+  says the app is part-updated and to reopen it. No worker at all shows
+  nothing. The check never repaints the PIN screen.
 - SQL lives in `supabase/` and is run by hand in the Supabase SQL editor.
   Every script must be safe to run twice (`if not exists`, `create or replace`).
 
@@ -120,6 +126,7 @@ also fetch from Supabase with `cache: 'no-store'` as a second layer.
     node tests/test_att_gap.js
     node tests/test_pay_loan.js
     node tests/test_sync_brake.js
+    node tests/test_sw_mismatch.js
 
 The first four survived a machine reset; fifteen earlier suites (receipt, WhatsApp,
 loans, PDFs, staff page, theme) did not and should be rebuilt here before those
@@ -134,6 +141,5 @@ areas are changed.
   unaffected, but the CSV's monthly "Loan repayments" section files an
   instalment taken on 2 Nov for October's wages under October. Fix by recording a
   paid-on date on the expense and using it for the repayment row.
-- `app.js` could check the expected `sw.js` version and warn on a mismatch.
 - Booking.com/Airbnb iCal import (needs a Supabase Edge Function; the feeds
   have no CORS headers).
