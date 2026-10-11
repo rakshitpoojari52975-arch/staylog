@@ -19,7 +19,7 @@ const D=n=>{const d=new Date();d.setDate(d.getDate()+n);
 
 // A Supabase with tables as arrays. Filters are honoured; every write is logged.
 const STUB = `
-window.__server={rows:{ical_events:[],ical_feeds:[]},writes:[],invoked:[],missing:{}};
+window.__server=JSON.parse(sessionStorage.getItem('__srv')||'null')||{rows:{ical_events:[],ical_feeds:[]},writes:[],invoked:[],missing:{}};
 window.supabase={createClient:()=>({
   auth:{getSession:async()=>({data:{session:{user:{id:'owner-1',email:'me@example.com'},access_token:'tok'}}}),
         onAuthStateChange:()=>({data:{subscription:{unsubscribe(){}}}})},
@@ -239,31 +239,90 @@ console.log('\n— a stay that leaves the feed —');
   ok('Home mentions it', /no longer on the platform/.test(await page.locator('[data-cal-alert]').innerText().catch(()=>'')));
   await ctx.close(); }
 
-console.log('\n— the calendar links in the cloud panel —');
+console.log('\n— the calendar links box —');
 { const {ctx,page,errs,dialogs}=await open(SEED({}));
   await page.evaluate(()=>{window.__server.rows.ical_feeds=[{id:'f1',owner_id:'owner-1',property_id:'p1',platform:'Airbnb',
-    url:'https://www.airbnb.com/calendar/ical/1.ics?s=x',last_ok_at:new Date().toISOString(),last_count:4,last_error:null}];
+    url:'https://www.airbnb.com/calendar/ical/1.ics?s=x',last_fetched_at:new Date().toISOString(),
+    last_ok_at:new Date().toISOString(),last_count:4,last_error:null}];
     state.loggedIn=true;state.modal='cloud';render();});
   await page.waitForTimeout(400);
   ok('a saved link is shown', await page.locator('[data-feed="p1|Airbnb"]').inputValue()==='https://www.airbnb.com/calendar/ical/1.ics?s=x');
-  ok('with when it was last read', /Read .* · 4 dates in the feed/.test(await page.locator('[data-feed-status="p1|Airbnb"]').innerText()));
   await page.locator('[data-feed="p1|Booking.com"]').fill('http://admin.booking.com/ical.ics');
   await page.locator('[data-feed-save="p1|Booking.com"]').click(); await page.waitForTimeout(300);
   ok('a link that is not https is refused', dialogs.some(d=>/start with https/.test(d)), dialogs);
   await page.locator('[data-feed="p1|Booking.com"]').fill('https://admin.booking.com/hotel/ical.ics?t=y');
-  await page.locator('[data-feed-save="p1|Booking.com"]').click(); await page.waitForTimeout(400);
+  await page.locator('[data-feed-save="p1|Booking.com"]').click(); await page.waitForTimeout(500);
   const feeds=await page.evaluate(()=>window.__server.rows.ical_feeds.map(f=>`${f.owner_id}|${f.property_id}|${f.platform}|${f.url}`));
-  ok('saving stores it for this owner, property and platform',
+  ok('saving stores it in the cloud for this owner, property and platform',
      feeds.includes('owner-1|p1|Booking.com|https://admin.booking.com/hotel/ical.ics?t=y'), feeds);
-  ok('and the panel shows it saved, waiting for a read',
-     /Not read yet/.test(await page.locator('[data-feed-status="p1|Booking.com"]').innerText().catch(()=>'')));
+  const report=await page.locator('[data-ical]').innerText();
+  ok('and Calendar sync lists it, not fetched yet', /Booking\.com · Raaya Vasyam[\s\S]*Not fetched yet/.test(report), report);
+  const local=await page.evaluate(()=>{const all={};for(let i=0;i<localStorage.length;i++){const k=localStorage.key(i);all[k]=localStorage.getItem(k);}
+    return JSON.stringify(all)+JSON.stringify(state.data);});
+  ok('the links are not kept on the phone: not in its data, backups or storage',
+     !/ical\.ics|calendar\/ical/.test(local), local.match(/.{40}ical.{40}/));
   await page.locator('[data-feed="p1|Airbnb"]').fill('');
-  await page.locator('[data-feed-save="p1|Airbnb"]').click(); await page.waitForTimeout(400);
+  await page.locator('[data-feed-save="p1|Airbnb"]').click(); await page.waitForTimeout(500);
   ok('clearing a link removes it', !(await page.evaluate(()=>window.__server.rows.ical_feeds.some(f=>f.platform==='Airbnb'))));
-  await page.evaluate(()=>{window.__server.rows.ical_events=[]; window.__server.writes=[];});
-  await page.locator('button',{hasText:'Import now'}).click(); await page.waitForTimeout(500);
+  ok('no page errors', errs.length===0, errs);
+  await ctx.close(); }
+
+console.log('\n— Calendar sync: feed by feed —');
+{ // Airbnb: A1 new, A2 moved by the platform, A3 gone from the feed, A4 a block with no stay.
+  // Booking.com: B1 is its copy of A1; B2 made a booking that was deleted here.
+  // One fetch worked; Booking.com's last one failed.
+  const A2=AIR({uid:'A2',start_date:D(20),end_date:D(23)}), A3=AIR({uid:'A3',start_date:D(30),end_date:D(32)});
+  const B2=BDC({uid:'B2',start_date:D(40),end_date:D(42)});
+  const {ctx,page,errs}=await open(SEED({}));
+  const ids=await page.evaluate(es=>es.map(e=>window.StayLogCloud._icalBookingId(e)),[A2,A3,B2]);
+  const own=(e,id,o)=>({...e,imported_booking_id:id,...o});
+  await page.evaluate(([bs])=>{mutateData(d=>{d.bookings.push(...bs);});},
+    [[{id:ids[0],propertyId:'p1',guestName:'Airbnb guest',checkIn:D(19),checkOut:D(22),guests:1,totalAmount:'',paid:'',source:'Airbnb',status:'confirmed',notes:''},
+      {id:ids[1],propertyId:'p1',guestName:'Airbnb guest',checkIn:D(30),checkOut:D(32),guests:1,totalAmount:'',paid:'',source:'Airbnb',status:'confirmed',notes:''}]]);
+  const earlier=new Date(Date.now()-3*3600e3).toISOString(), now=new Date().toISOString();
+  await page.evaluate(([ev,fe])=>{window.__server.rows.ical_events=ev;window.__server.rows.ical_feeds=fe;},[[
+    AIR({uid:'A1',start_date:D(10),end_date:D(12)}), own(A2,ids[0]), own(A3,ids[1],{gone_at:now}),
+    AIRBLOCK({uid:'A4',start_date:D(50),end_date:D(52)}),
+    BDC({uid:'B1',start_date:D(10),end_date:D(12)}), own(B2,ids[2])],
+   [{id:'f-air',owner_id:'owner-1',property_id:'p1',platform:'Airbnb',url:'https://a/1.ics',
+     last_fetched_at:now,last_ok_at:now,last_count:4,last_error:null},
+    {id:'f-bdc',owner_id:'owner-1',property_id:'p1',platform:'Booking.com',url:'https://b/1.ics',
+     last_fetched_at:now,last_ok_at:earlier,last_count:2,last_error:'the feed answered HTTP 403'}]]);
+  await page.evaluate(async()=>{await window.StayLogCloud.push(state.data);});
+  const look=async()=>{await page.evaluate(()=>{state.loggedIn=true;state.modal='cloud';render();});await page.waitForTimeout(400);
+    const f=id=>page.locator(`[data-feed-report="${id}"]`);
+    const n=async(id,k)=>Number(await f(id).locator(`[data-n-${k}]`).getAttribute(`data-n-${k}`));
+    return {air:{text:await f('f-air').innerText(),added:await n('f-air','added'),updated:await n('f-air','updated'),removed:await n('f-air','removed')},
+            bdc:{text:await f('f-bdc').innerText(),added:await n('f-bdc','added'),updated:await n('f-bdc','updated'),removed:await n('f-bdc','removed')}};};
+  let r=await look();
+  ok('Airbnb: when it was fetched and how many events it found', /Fetched .* · 4 events in the feed/.test(r.air.text), r.air.text);
+  ok('Airbnb: 3 added, 1 updated, 1 removed', r.air.added===3&&r.air.updated===1&&r.air.removed===1, r.air);
+  ok('removed is explained as flagged, not cancelled', /no longer on Airbnb: its booking is flagged to check, not cancelled/.test(r.air.text), r.air.text);
+  ok('the block with no stay is accounted for', /1 blocked date range with no stay behind it/.test(r.air.text), r.air.text);
+  ok('and what this check changed', /Last change .*: 1 added, 1 updated, 1 removed/.test(r.air.text), r.air.text);
+  ok('Booking.com: the failed fetch, in red, with the reason', await page.locator('[data-feed-report="f-bdc"] [data-feed-error]').count()===1
+     &&/Last fetch failed .*: the feed answered HTTP 403/.test(r.bdc.text), r.bdc.text);
+  ok('and when it last worked', /Last good fetch/.test(r.bdc.text), r.bdc.text);
+  ok('Booking.com: its copy of the Airbnb stay is matched, not added', r.bdc.added===1&&/1 stay matched to bookings you already had/.test(r.bdc.text), r.bdc);
+  ok('and the booking deleted here is counted as staying deleted', /1 booking from this feed deleted here afterwards\. It stays deleted/.test(r.bdc.text), r.bdc.text);
+
+  // the follow-up sync a few seconds later finds nothing new
+  await page.evaluate(async()=>{await window.StayLogCloud.push(state.data);});
+  let r2=await look();
+  ok('a quiet sync afterwards keeps the figures', r2.air.added===3&&r2.air.updated===1&&r2.air.removed===1, r2.air);
+  ok('and the last change', /Last change .*: 1 added, 1 updated, 1 removed/.test(r2.air.text), r2.air.text);
+  ok('the overall line says nothing new this time', /Nothing new from the calendars/.test(await page.locator('[data-ical-log]').innerText()));
+
+  await page.evaluate(()=>sessionStorage.setItem('__srv',JSON.stringify(window.__server)));   // the cloud outlives the app
+  await page.reload(); await page.waitForFunction(()=>typeof state!=='undefined'&&!state._loading);
+  await page.evaluate(async()=>{await window.StayLogCloud.restoreSession();});
+  let r3=await look();
+  ok('reopening the app keeps them too', r3.air.added===3&&/Last change/.test(r3.air.text), r3.air);
+
+  await page.evaluate(()=>{window.__server.writes=[];window.__server.invoked=[];});
+  await page.locator('[data-ical-check]').click(); await page.waitForTimeout(600);
   const after=await page.evaluate(()=>({inv:window.__server.invoked,ups:window.__server.writes.filter(w=>w.op==='upsert').length}));
-  ok('Import now runs the function', after.inv.includes('ical-sync'), after);
+  ok('Check now fetches the feeds', after.inv.includes('ical-sync'), after);
   ok('and then syncs', after.ups>0, after);
   ok('no page errors', errs.length===0, errs);
   await ctx.close(); }

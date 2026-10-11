@@ -210,6 +210,18 @@ console.log('\n— failures stay with their feed —');
   ok('and says why', /came back empty; 3 stays/.test(b.error||''), b);
   ok('the feed shows it as a problem', /came back empty/.test(W.feedStatus['f-bdc'].last_error), W.feedStatus['f-bdc']); }
 
+console.log('\n— the link never leaks into an error —');
+{ const W=world(); const real=W.fetch;
+  // Deno's fetch quotes the URL in a network error, and the URL is the feed's password
+  W.fetch=async(url,init)=>{ if(String(url).startsWith('https://admin.booking.com/'))
+    throw new TypeError('error sending request for url (https://admin.booking.com/hotel/ical.ics?t=y): connection refused');
+    return real(url,init); };
+  const body=await (await F.handle(post({'x-cron-secret':'s3cret-cron-value'}),ENV,W.fetch)).json();
+  const stored=W.feedStatus['f-bdc'].last_error, sent=JSON.stringify(body);
+  ok('the stored error keeps the reason', /connection refused/.test(stored), stored);
+  ok('but not the link', !/ical\.ics|t=y|admin\.booking\.com/.test(stored), stored);
+  ok('nor does the reply', !/ical\.ics\?t=y/.test(sent), sent); }
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail?1:0);
 })();

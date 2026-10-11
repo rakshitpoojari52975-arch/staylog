@@ -14,7 +14,8 @@ kept outside it and was lost when the machine running them was reset.
     node tests/test_ical_function.js  # the ical-sync Edge Function, in Node, fake network
     node tests/test_ical_import.js    # calendar events → bookings, mirrors, double bookings
     STAYLOG_PG="-h /tmp -p 5432 -U postgres" node tests/test_ical_sql.js
-                                      # supabase/ical.sql on a real Postgres; skips without one
+                                      # setup.sql + ical.sql on a real Postgres: access rules and
+                                      # supabase/ical-report.sql; skips without one
 
 `fixtures/sw-before-fix.js` is the service worker that cached the Supabase API.
 It is kept so `test_sw_upgrade.js` can prove the fix recovers from it.

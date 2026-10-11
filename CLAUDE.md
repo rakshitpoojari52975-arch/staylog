@@ -99,6 +99,20 @@ also fetch from Supabase with `cache: 'no-store'` as a second layer.
 - Double bookings: `bookingClashes()` — same property, overlapping nights,
   check-out day free, not cancelled, not yet over. Shown on both cards and on
   Home. Computed once per render.
+- **The links are secrets** (the token is in the URL). They live only in
+  `ical_feeds` in Supabase — never in the app's data, its backups, browser
+  storage, or this public repo (the test URLs are made up; checked across all
+  history and `staylog-history.bundle`). The function strips any URL out of an
+  error before storing or returning it: Deno's fetch quotes the URL.
+- **Cloud sync → Calendar sync** reports each feed: fetched when, events found,
+  error (from `ical_feeds`, written by the function), and Added / Updated /
+  Removed (from `planIcal().feeds`, worked out from events + bookings, so any
+  sync gives the same figures). "Removed" = no longer in the feed, booking
+  flagged. The log is kept in localStorage (`staylog_ical_log`) with a
+  per-feed "last change", for the attendance reason: the sync that adds a
+  booking triggers another a few seconds later that finds nothing.
+- `supabase/ical-report.sql` lists every booking a feed accounts for, with
+  source, dates and which feeds list it — for comparing against the platforms.
 
 ## Privacy and access — do not loosen these
 
@@ -156,7 +170,7 @@ also fetch from Supabase with `cache: 'no-store'` as a second layer.
     node tests/test_sw_mismatch.js
     node tests/test_ical_function.js   # Node 22.18+ (strips the .ts types)
     node tests/test_ical_import.js
-    STAYLOG_PG="-h <socket dir> -p <port> -U postgres" node tests/test_ical_sql.js   # skips without a Postgres
+    STAYLOG_PG="-h <socket dir> -p <port> -U postgres" node tests/test_ical_sql.js   # skips without a Postgres; loads setup.sql + ical.sql, checks access and the report
 
 The first four survived a machine reset; fifteen earlier suites (receipt, WhatsApp,
 loans, PDFs, staff page, theme) did not and should be rebuilt here before those
@@ -164,6 +178,23 @@ areas are changed.
 
 ## Open items
 
+- **The calendar import has not met a real feed or the real project yet.**
+  After setup, run `supabase/ical-report.sql` and compare against the Airbnb
+  calendar and the Booking.com extranet for the first few days. If a platform's
+  real feed differs from the documented shape, fix `parseIcs()` and add that
+  feed to `tests/test_ical_function.js`.
+- Booking.com cannot tell a guest from dates closed by hand, so a closure
+  arrives as a "Booking.com guest" booking to delete (it stays deleted). If that
+  becomes a chore: a "not a stay" button that stamps the event without a booking.
+- The "Updated" figure and the "No longer on…" flag rest on phone-only fields
+  (`icalMoved`, `icalGone`). After "Replace this phone from the cloud" the flag
+  is re-derived at the next sync but "Updated" restarts from 0.
+- `setup.sql` never revokes Supabase's default `ALL` on its tables, so
+  `anon`/`authenticated` hold `TRUNCATE` (which ignores RLS) on bookings,
+  expenses and the rest — confirmed on Postgres with Supabase's defaults. The
+  REST API cannot issue TRUNCATE, so it needs database credentials to use, but
+  it should be tightened the way `ical.sql` does: revoke all, grant what RLS
+  expects. Check `staff_access` and the staff functions still work after.
 - Her page shows "Received so far ₹0" — wages may be paid in cash without being
   marked paid in the app. Raise it before it becomes a misunderstanding.
 - Pay-sheet loan repayments are dated by each wage's day, not the payday
