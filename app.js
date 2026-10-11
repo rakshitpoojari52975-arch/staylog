@@ -6,7 +6,7 @@
 // ─── Build ────────────────────────────────────────────────────────────────────
 // Bump BOTH of these together. This date sat at 28 Sept through a dozen
 // releases and was read, reasonably, as proof the upload had not landed.
-const APP_VERSION='v36', APP_BUILT='11 Oct 2026';
+const APP_VERSION='v37', APP_BUILT='11 Oct 2026';
 // The CACHE_NAME of the sw.js released with this app.js. Every release bumps
 // APP_VERSION and CACHE_NAME together, so one is derived from the other rather
 // than being a fourth thing to forget; the tests fail if they ever disagree.
@@ -693,6 +693,24 @@ function dateBlock(iso,tone){
   );
 }
 
+// ─── Double bookings ──────────────────────────────────────────────────────────
+// Two live stays on one property whose nights overlap (check-out day is free).
+// Only stays not yet over: a clash last spring is history, not a problem.
+// Worked out once per render, not once per card.
+function bookingClashes(bookings){
+  const t=today(), out={};
+  const live=(bookings||[]).filter(b=>b.status!=='cancelled'&&b.checkIn&&b.checkOut&&b.checkOut>t&&b.propertyId);
+  for(let i=0;i<live.length;i++)for(let j=i+1;j<live.length;j++){
+    const x=live[i],y=live[j];
+    if(x.propertyId===y.propertyId&&x.checkIn<y.checkOut&&y.checkIn<x.checkOut){
+      (out[x.id]=out[x.id]||[]).push(y); (out[y.id]=out[y.id]||[]).push(x);
+    }
+  }
+  return out;
+}
+const clashesFor=b=>(state._clashes||{})[b.id]||[];
+const isImported=b=>/^ics_/.test(String(b.id||''));
+
 function bookingCard(b){   // dense row; expands into the full detail
   const prop=state.data.properties.find(p=>p.id===b.propertyId);
   const nights=diffDays(b.checkIn,b.checkOut);
@@ -707,12 +725,14 @@ function bookingCard(b){   // dense row; expands into the full detail
   row.appendChild(div({style:{flex:1,minWidth:0}},
     div({style:{fontSize:13.5,fontWeight:700,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}},b.guestName),
     div({style:{fontSize:11.5,color:'var(--muted)',marginTop:1,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}},
-      `${nights} night${nights===1?'':'s'} · ${b.source||'Direct'}${prop&&state.filterProp==='all'?' · '+prop.name:''}`)
+      `${nights} night${nights===1?'':'s'} · ${b.source||'Direct'}${isImported(b)?' · imported':''}${prop&&state.filterProp==='all'?' · '+prop.name:''}`)
   ));
+  // An imported stay arrives with no amount; "₹0 paid" would be a false statement.
+  const noAmount=isImported(b)&&(b.totalAmount===''||b.totalAmount==null);
   row.appendChild(div({style:{textAlign:'right',flexShrink:0}},
-    div({className:'num',style:{fontSize:13.5,fontWeight:700}},fmtCur(total)),
-    div({style:{fontSize:10,color:due>0?'var(--warn)':'var(--muted)',fontWeight:600,marginTop:1}},
-      b.status==='cancelled'?'cancelled':due>0?fmtCur(due)+' due':'paid')
+    div({className:'num',style:{fontSize:13.5,fontWeight:700}},noAmount?'—':fmtCur(total)),
+    div({style:{fontSize:10,color:noAmount?'var(--gold)':due>0?'var(--warn)':'var(--muted)',fontWeight:600,marginTop:1}},
+      b.status==='cancelled'?'cancelled':noAmount?'add amount':due>0?fmtCur(due)+' due':'paid')
   ));
   if(waNumber(b.phone)&&b.status!=='cancelled'){
     const pending=dueMessages([b]).length;
@@ -728,6 +748,16 @@ function bookingCard(b){   // dense row; expands into the full detail
       ico('brand-whatsapp',{style:{fontSize:17}})));
   }
   card.appendChild(row);
+
+  // Shown folded or not: these are the reasons to open the card.
+  const clashes=b.status==='cancelled'?[]:clashesFor(b);
+  const warn=(color,bg,icon,text,attr)=>div({[attr]:'1',style:{display:'flex',alignItems:'center',gap:7,
+    padding:'6px 12px',fontSize:12,fontWeight:600,color,background:bg,borderTop:'1px solid var(--border-soft)'}},
+    ico(icon,{style:{fontSize:14,flexShrink:0}}),div({},text));
+  clashes.forEach(o=>card.appendChild(warn('var(--danger)','var(--danger-light)','alert-triangle',
+    `Double booking: overlaps ${o.guestName} (${fmtDate(o.checkIn)} → ${fmtDate(o.checkOut)}, ${o.source||'Direct'})`,'data-clash')));
+  if(b.icalGone&&b.status!=='cancelled')card.appendChild(warn('var(--gold)','var(--gold-light)','calendar-x',
+    `No longer on ${b.source} — cancelled? Check, then cancel it here.`,'data-gone'));
 
   if(isExpanded){
     const detail=div({style:{borderTop:'1px solid var(--border-soft)',padding:'11px 12px 12px',background:'var(--surface-2)'}});
@@ -1577,6 +1607,81 @@ function cloudMenuSub(){
   return `Synced ${fmtAgo(s.lastSync)}`;
 }
 
+// ─── Calendar import settings ─────────────────────────────────────────────────
+// The export links are stored only in the cloud (ical_feeds), where the Edge
+// Function reads them every 30 minutes. Import now runs it at once and syncs.
+const ICAL_PLATFORMS=['Airbnb','Booking.com'];
+const whenShort=iso=>new Date(iso).toLocaleString('en-IN',{day:'numeric',month:'short',hour:'numeric',minute:'2-digit'});
+function icalSummary(log){
+  if(!log)return null;
+  if(log.error)return{tone:'var(--danger)',text:log.error};
+  const bits=[];
+  if(log.created)bits.push(`${log.created} new booking${log.created===1?'':'s'}`);
+  if(log.updated)bits.push(`${log.updated} with new dates`);
+  if(log.gone)bits.push(`${log.gone} no longer listed`);
+  if(log.linked)bits.push(`${log.linked} matched to bookings you already had`);
+  if(log.held)bits.push(`${log.held} waiting for a property`);
+  return{tone:bits.length?'var(--accent)':'var(--muted)',
+    text:(bits.length?bits.join(' · '):'Nothing new from the calendars')+` · checked ${whenShort(log.at)}`};
+}
+function calendarImportBox(s){
+  const box=div({'data-ical':'1',style:{background:'var(--surface-2)',border:'1px solid var(--border)',
+    borderRadius:'var(--radius-sm)',padding:'11px 13px'}});
+  const go=btn({className:'btn-ghost btn-sm',style:{padding:'4px 10px',fontSize:12}},'Import now');
+  box.appendChild(div({style:{display:'flex',alignItems:'center',justifyContent:'space-between',gap:10}},
+    div({className:'kicker'},'Calendar import'),go));
+  const sum=icalSummary(s.icalLog);
+  if(sum)box.appendChild(div({'data-ical-log':'1',style:{fontSize:12.5,color:sum.tone,lineHeight:1.5,marginTop:6}},sum.text));
+  const body=div({style:{marginTop:6}},div({style:{fontSize:12.5,color:'var(--muted)'}},'Loading your calendar links…'));
+  box.appendChild(body);
+  go.addEventListener('click',async()=>{
+    go.disabled=true;go.textContent='Importing…';
+    try{ await window.StayLogCloud.importNow(); render(); }
+    catch(err){ go.disabled=false;go.textContent='Import now'; alert('Calendar import failed: '+(err.message||err)); }
+  });
+
+  async function load(){
+    let feeds;
+    try{ feeds=await window.StayLogCloud.listFeeds(); }
+    catch(err){
+      const missing=/does not exist|schema cache|PGRST205|42P01/i.test(`${err.code||''} ${err.message||err}`);
+      body.innerHTML='';
+      body.appendChild(div({style:{fontSize:12.5,color:missing?'var(--muted)':'var(--danger)',lineHeight:1.5}},
+        missing?'Not set up in Supabase yet: run supabase/ical.sql and deploy the ical-sync function.'
+               :'Could not load the calendar links — '+(err.message||err)));
+      go.disabled=missing;
+      return;
+    }
+    body.innerHTML='';
+    body.appendChild(div({style:{fontSize:12,color:'var(--muted)',lineHeight:1.5}},
+      'Paste each platform\'s calendar export link. They are read every 30 minutes; new stays appear in Bookings.'));
+    state.data.properties.forEach(p=>{
+      body.appendChild(div({style:{fontSize:12.5,fontWeight:700,marginTop:10}},p.name));
+      ICAL_PLATFORMS.forEach(pl=>{
+        const f=feeds.find(x=>x.property_id===p.id&&x.platform===pl);
+        const inp=h('input',{type:'url','data-feed':`${p.id}|${pl}`,placeholder:`${pl} export link (https://…)`,
+          value:f?.url||'',style:{flex:1,minWidth:0,fontSize:12.5,padding:'7px 9px'}});
+        const save=btn({className:'btn-ghost btn-sm','data-feed-save':`${p.id}|${pl}`,style:{padding:'5px 10px',flexShrink:0}},'Save');
+        save.addEventListener('click',async()=>{
+          save.disabled=true;save.textContent='Saving…';
+          try{ await window.StayLogCloud.saveFeed(p.id,pl,inp.value); await load(); }
+          catch(err){ save.disabled=false;save.textContent='Save'; alert(err.message||err); }
+        });
+        body.appendChild(div({style:{fontSize:11.5,color:'var(--muted)',marginTop:6}},pl));
+        body.appendChild(div({style:{display:'flex',gap:6,marginTop:3}},inp,save));
+        if(f){
+          const st=f.last_error?{c:'var(--danger)',t:f.last_error}
+                  :f.last_ok_at?{c:'var(--muted)',t:`Read ${whenShort(f.last_ok_at)} · ${f.last_count||0} dates in the feed`}
+                  :{c:'var(--muted)',t:'Saved. Not read yet — tap Import now.'};
+          body.appendChild(div({'data-feed-status':`${p.id}|${pl}`,style:{fontSize:11.5,color:st.c,marginTop:3,lineHeight:1.45}},st.t));
+        }
+      });
+    });
+  }
+  load();
+  return box;
+}
+
 function renderCloudModal(){
   const content=()=>{
     const wrap=div({style:{display:'flex',flexDirection:'column',gap:11}});
@@ -1671,6 +1776,7 @@ function renderCloudModal(){
         `Last checked ${new Date(log.at).toLocaleString('en-IN',{day:'numeric',month:'short',hour:'numeric',minute:'2-digit'})}`
         +` · ${log.found} mark${log.found===1?'':'s'} found to process`));
       wrap.appendChild(box);
+      wrap.appendChild(calendarImportBox(s));
     }
 
     if(!s.configured){
@@ -1926,6 +2032,24 @@ function renderDashboard(){
   });
   hero.appendChild(split);
   wrap.appendChild(hero);
+
+  // ── Calendar trouble ───────────────────────────────────────────────────────
+  {
+    const clashed=allB.filter(b=>b.status!=='cancelled'&&clashesFor(b).length);
+    const gone=allB.filter(b=>b.icalGone&&b.status!=='cancelled'&&b.checkOut>today());
+    if(clashed.length||gone.length){
+      const pairs=Math.round(clashed.reduce((n,b)=>n+clashesFor(b).length,0)/2);
+      wrap.appendChild(div({className:'card','data-cal-alert':'1',style:{padding:'11px 13px',cursor:'pointer',
+        borderColor:clashed.length?'var(--danger)':'var(--gold-line)'},
+        onClick:()=>setState({tab:'bookings',bookingFilter:'all'})},
+        clashed.length?div({style:{fontSize:13,fontWeight:700,color:'var(--danger)',display:'flex',alignItems:'center',gap:7}},
+          ico('alert-triangle',{style:{fontSize:16}}),`${pairs} double booking${pairs===1?'':'s'}`):null,
+        clashed.length?div({style:{fontSize:12,color:'var(--text-mid)',marginTop:3,lineHeight:1.5}},
+          clashed.map(b=>`${b.guestName} ${fmtDate(b.checkIn)}`).join(' · ')):null,
+        gone.length?div({style:{fontSize:12.5,fontWeight:600,color:'var(--gold)',marginTop:clashed.length?7:0}},
+          `${gone.length} imported stay${gone.length===1?' is':'s are'} no longer on the platform — cancelled?`):null));
+    }
+  }
 
   // ── Today ──────────────────────────────────────────────────────────────────
   const t=today();
@@ -3453,6 +3577,7 @@ function render(){
     return;
   }
   if(!state.loggedIn){renderLoginScreen();return;}
+  state._clashes=bookingClashes(state.data.bookings);
   app.innerHTML='';
   app.appendChild(renderHeader());
   const swb=swBanner(); if(swb)app.appendChild(swb);

@@ -73,6 +73,33 @@ also fetch from Supabase with `cache: 'no-store'` as a second layer.
 - No daily wage set → the mark is held and reported, never given an invented
   amount. Undo is allowed for 15 minutes after marking, enforced in SQL.
 
+## Calendar import (Booking.com / Airbnb)
+
+- The feeds have no CORS headers, so the Edge Function
+  `supabase/functions/ical-sync/index.ts` reads them (cron every 30 min, or the
+  app's Import now) into `public.ical_events`. Setup steps are in the README
+  beside it. One file, no imports, so it pastes into the dashboard and the
+  tests run it in Node.
+- `ical_events` and `ical_feeds` are **absent from `ORDER` and `MAP`**, like
+  attendance, and for the same reason. Drained one way in `drainIcal()`:
+  event → booking `ics_<hash>` → event stamped `imported_booking_id`.
+  Stamped and the booking is gone → deleted on purpose, stays deleted.
+  An import knows its own booking by id, not by local fields (those do not
+  survive "Replace this phone from the cloud").
+- The two calendars are connected, so each feed echoes the other's stays.
+  `planIcal()` takes Airbnb "Reserved" first, then Booking.com, then Airbnb
+  blocks; an event whose property and exact dates match a live booking is
+  linked to it, never doubled. Airbnb blocks never create bookings. Stays
+  already over are not imported. No amount is ever invented.
+- An event leaving its feed sets `gone_at`; the booking is flagged "No longer on
+  …, cancelled?", never cancelled or deleted. A feed that suddenly comes back
+  empty flags nothing (looks like their glitch, not a wave of cancellations).
+- The owner may only `select` events and update `imported_booking_id`. The
+  script revokes Supabase's default `ALL` (which includes `TRUNCATE`) first.
+- Double bookings: `bookingClashes()` — same property, overlapping nights,
+  check-out day free, not cancelled, not yet over. Shown on both cards and on
+  Home. Computed once per render.
+
 ## Privacy and access — do not loosen these
 
 - The house help reads **only** through `SECURITY DEFINER` functions with fixed
@@ -127,6 +154,9 @@ also fetch from Supabase with `cache: 'no-store'` as a second layer.
     node tests/test_pay_loan.js
     node tests/test_sync_brake.js
     node tests/test_sw_mismatch.js
+    node tests/test_ical_function.js   # Node 22.18+ (strips the .ts types)
+    node tests/test_ical_import.js
+    STAYLOG_PG="-h <socket dir> -p <port> -U postgres" node tests/test_ical_sql.js   # skips without a Postgres
 
 The first four survived a machine reset; fifteen earlier suites (receipt, WhatsApp,
 loans, PDFs, staff page, theme) did not and should be rebuilt here before those
@@ -141,5 +171,3 @@ areas are changed.
   unaffected, but the CSV's monthly "Loan repayments" section files an
   instalment taken on 2 Nov for October's wages under October. Fix by recording a
   paid-on date on the expense and using it for the repayment row.
-- Booking.com/Airbnb iCal import (needs a Supabase Edge Function; the feeds
-  have no CORS headers).
