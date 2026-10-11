@@ -34,6 +34,7 @@
   let attError = '';      // attendance trouble, kept apart from sync trouble
   let brake = null;       // what the last stopped push would have deleted
   let declinedSig = '';   // that same set of deletions, already refused once
+  let icalLog = null;     // what the last calendar import did; null until the tables exist
   // What the last drain actually did. Without this the only way to find out
   // why a mark did not become an expense is to read the database by hand,
   // which is not a thing the app should ask of anybody.
@@ -375,6 +376,185 @@
     return attLog.stamped > 0;
   }
 
+  // ── Calendar import (Booking.com / Airbnb) ─────────────────────────────────
+  // The Edge Function ical-sync reads the platforms' export links into
+  // public.ical_events. Like attendance, that table is absent from ORDER and
+  // MAP and is drained one way: event → ordinary booking → event stamped with
+  // the booking's id. The stamp is how a booking deleted on purpose stays
+  // deleted, and how a mirrored or hand-entered stay is linked, not doubled.
+  const ICAL_COLS = 'feed_id,uid,property_id,platform,start_date,end_date,summary,description,kind,gone_at,imported_booking_id';
+  const localToday = () => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  };
+  // Deterministic, and inside ID_OK: a re-run rewrites the same booking.
+  function fnv(str, seed) {
+    let h = seed >>> 0;
+    for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 16777619) >>> 0; }
+    return h.toString(16).padStart(8, '0');
+  }
+  const icalBookingId = e => 'ics_' + fnv(e.feed_id + '|' + e.uid, 2166136261) + fnv(e.uid + '|' + e.feed_id, 33554467);
+  const placeholder = platform => `${platform} guest`;
+
+  function importNotes(e) {
+    if (e.platform === 'Airbnb') {
+      const url = (/(https:\/\/\S*airbnb\S*\/reservations\/\S+)/i.exec(e.description || '') || [])[1];
+      const last4 = (/Last 4 Digits\)?:\s*(\d{4})/i.exec(e.description || '') || [])[1];
+      return ['Imported from the Airbnb calendar.', url ? `Reservation: ${url}` : '',
+              last4 ? `Guest phone ends ${last4}.` : ''].filter(Boolean).join('\n');
+    }
+    return `Imported from the ${e.platform} calendar. The feed carries no name or amount; fill them in.`;
+  }
+
+  // Pure: what the events mean for these bookings. Exposed for the tests.
+  //  • Airbnb "Reserved" first: those are certainly stays.
+  //  • Then Booking.com, whose events are all "CLOSED - Not available".
+  //  • Airbnb blocks last, and they never create a booking: with the two
+  //    calendars connected, a block is usually a Booking.com stay seen from
+  //    Airbnb's side, or dates closed by hand.
+  // An event whose property and exact dates match a live booking is linked to
+  // it instead of becoming a second booking. That one rule covers mirrors from
+  // the other platform and stays already typed in by hand.
+  function planIcal(events, data, today) {
+    const bookings = (data.bookings || []).map(b => ({ ...b }));   // copies: the plan writes nothing itself
+    const byId = new Map(bookings.map(b => [b.id, b]));
+    const props = new Set((data.properties || []).map(p => p.id));
+    const rank = e => e.platform === 'Airbnb' && e.kind === 'reserved' ? 0 : e.kind === 'reserved' ? 1 : 2;
+    const order = (events || []).slice().sort((a, b) => rank(a) - rank(b) ||
+      String(a.start_date).localeCompare(String(b.start_date)) || String(a.uid).localeCompare(String(b.uid)));
+    const plan = { create: [], update: [], stamp: [], counts: {
+      events: order.length, created: 0, linked: 0, updated: 0, gone: 0, blocks: 0, past: 0, removed: 0, held: 0 } };
+    const C = plan.counts;
+    const sameStay = e => bookings.find(b => b.status !== 'cancelled' && b.propertyId === e.property_id &&
+      b.checkIn === e.start_date && b.checkOut === e.end_date);
+    const patch = (id, fields) => {
+      const b = byId.get(id); Object.assign(b, fields);
+      const u = plan.update.find(x => x.id === id);
+      u ? Object.assign(u.fields, fields) : plan.update.push({ id, fields: { ...fields } });
+    };
+
+    for (const e of order) {
+      const own = icalBookingId(e);
+      if (e.imported_booking_id) {
+        const b = byId.get(e.imported_booking_id);
+        if (!b) { C.removed++; continue; }               // deleted on purpose; stays deleted
+        if (b.id !== own) continue;                      // linked to a mirror or a hand-entered stay
+        if (!e.gone_at && (b.checkIn !== e.start_date || b.checkOut !== e.end_date)) {
+          patch(b.id, { checkIn: e.start_date, checkOut: e.end_date, icalMoved: today }); C.updated++;
+        }
+        if (e.gone_at && !b.icalGone && b.status !== 'cancelled') { patch(b.id, { icalGone: true }); C.gone++; }
+        if (!e.gone_at && b.icalGone) patch(b.id, { icalGone: false });
+        continue;
+      }
+      if (e.gone_at) continue;
+      if (!(e.end_date > today)) { C.past++; continue; }   // history is not imported
+      if (!props.has(e.property_id)) { C.held++; continue; }
+      const already = byId.get(own);                     // made earlier; only the stamp failed
+      const match = already || sameStay(e);
+      if (match) {
+        // A stay first seen through Booking.com's mirror of Airbnb, still untouched,
+        // takes the right name once Airbnb's own event arrives.
+        if (match.id !== own && e.platform === 'Airbnb' && e.kind === 'reserved' &&
+            /^ics_/.test(match.id) && match.source !== 'Airbnb' && match.guestName === placeholder(match.source)) {
+          patch(match.id, { source: 'Airbnb', guestName: placeholder('Airbnb'), notes: importNotes(e) });
+        }
+        plan.stamp.push({ feed_id: e.feed_id, uid: e.uid, booking_id: match.id });
+        if (!already) C.linked++;
+        continue;
+      }
+      if (e.kind === 'blocked') { C.blocks++; continue; }
+      const b = {
+        id: own, propertyId: e.property_id, guestName: placeholder(e.platform), phone: '',
+        checkIn: e.start_date, checkOut: e.end_date, guests: 1, totalAmount: '', paid: '',
+        source: e.platform, status: 'confirmed', notes: importNotes(e),
+        idProofType: '', idProofNumber: '', idProofImage: '', importedOn: today,
+      };
+      plan.create.push(b); bookings.push(b); byId.set(b.id, b);
+      plan.stamp.push({ feed_id: e.feed_id, uid: e.uid, booking_id: b.id });
+      C.created++;
+    }
+    return plan;
+  }
+
+  // Nothing here may break the push: before ical.sql has been run the table
+  // does not exist, and that is a normal state, not an error to show.
+  async function drainIcal(c, owner, data) {
+    try {
+      const { data: events, error } = await c.from('ical_events').select(ICAL_COLS).eq('owner_id', owner);
+      if (error) {
+        const missing = /does not exist|schema cache|PGRST205|42P01/i.test(`${error.code || ''} ${error.message || ''}`);
+        icalLog = missing ? null : { at: new Date().toISOString(), error: 'Could not read the calendars — ' + error.message };
+        return false;
+      }
+      const plan = planIcal(events || [], data, localToday());
+      let wrote = false;
+      if ((plan.create.length || plan.update.length) && window.STAYLOG_APPLY) {
+        wrote = window.STAYLOG_APPLY(d => {
+          d.bookings = d.bookings || [];
+          for (const b of plan.create) if (!d.bookings.some(x => x.id === b.id)) d.bookings.push({ ...b });
+          for (const u of plan.update) { const b = d.bookings.find(x => x.id === u.id); if (b) Object.assign(b, u.fields); }
+        });
+        if (!wrote) {
+          icalLog = { at: new Date().toISOString(), ...plan.counts, error: 'The imported bookings could not be written to this phone.' };
+          return false;
+        }
+      }
+      // Stamp last, as attendance does: if it fails, the next run finds the
+      // booking by its id and only retries the stamp.
+      let stampErr = '';
+      for (const s of plan.stamp) {
+        const { error: e2 } = await c.from('ical_events').update({ imported_booking_id: s.booking_id })
+          .eq('owner_id', owner).eq('feed_id', s.feed_id).eq('uid', s.uid);
+        if (e2) stampErr = e2.message || String(e2);
+      }
+      icalLog = { at: new Date().toISOString(), ...plan.counts,
+        error: stampErr ? 'Imported, but could not mark it done in the cloud — ' + stampErr : '' };
+      return wrote;
+    } catch (err) {
+      icalLog = { at: new Date().toISOString(), error: 'Could not read the calendars — ' + ((err && err.message) || err) };
+      return false;
+    }
+  }
+
+  // Feed links live only in the cloud: they are read by the function there.
+  async function listFeeds() {
+    if (!session) throw new Error('not signed in');
+    const c = await client();
+    const { data, error } = await c.from('ical_feeds')
+      .select('id,property_id,platform,url,last_fetched_at,last_ok_at,last_error,last_count')
+      .eq('owner_id', session.user.id);
+    if (error) throw error;
+    return data || [];
+  }
+  async function saveFeed(propertyId, platform, url) {
+    if (!session) throw new Error('not signed in');
+    const c = await client();
+    const owner = session.user.id;
+    url = String(url || '').trim();
+    if (!url) {
+      const { error } = await c.from('ical_feeds').delete()
+        .eq('owner_id', owner).eq('property_id', propertyId).eq('platform', platform);
+      if (error) throw error;
+      return null;
+    }
+    if (!/^https:\/\//i.test(url)) throw new Error('The link should start with https://');
+    const { error } = await c.from('ical_feeds')
+      .upsert([{ owner_id: owner, property_id: propertyId, platform, url }], { onConflict: 'owner_id,property_id,platform' });
+    if (error) throw error;
+    return true;
+  }
+  // Asks the function to read this owner's feeds now, then syncs, which
+  // brings whatever it found onto the phone.
+  async function importNow() {
+    if (!session) throw new Error('not signed in');
+    const c = await client();
+    const { data, error } = await c.functions.invoke('ical-sync', { body: {} });
+    if (error) throw new Error(error.message || 'The calendar import could not be reached.');
+    const d = window.STAYLOG_GET_DATA && window.STAYLOG_GET_DATA();
+    if (d) await push(d, { manual: true });
+    return data;
+  }
+
   // ── The safety brake ───────────────────────────────────────────────────────
   // The tombstone pass deletes whatever the server has and this phone lacks.
   // That is right when he deletes a booking, and a disaster when the phone's
@@ -430,6 +610,9 @@
       // server has and this phone does not.
       const drained = await drainAttendance(c, owner, data).catch(() => false);
       if (drained) data = (window.STAYLOG_GET_DATA && window.STAYLOG_GET_DATA()) || data;
+      // Same reason: imported bookings go up in this cycle, not after it.
+      const imported = await drainIcal(c, owner, data).catch(() => false);
+      if (imported) data = (window.STAYLOG_GET_DATA && window.STAYLOG_GET_DATA()) || data;
       const sets = collect(data);
       const up = {};
       for (const table of ORDER) up[table] = (sets[table] || [])
@@ -521,7 +704,7 @@
       email: session?.user?.email || '',
       userId: session?.user?.id || '',
       online: navigator.onLine,
-      dirty, pushing, lastSync: last, lastError, brake, heldMarks: held, attError, attLog, attLast,
+      dirty, pushing, lastSync: last, lastError, brake, icalLog, heldMarks: held, attError, attLog, attLast,
     };
   }
 
@@ -564,6 +747,8 @@
 
   window.StayLogCloud = {
     restoreSession, signIn, signOut, push, pull, status, markDirty, checkIn,
+    listFeeds, saveFeed, importNow,
+    _planIcal: planIcal, _icalBookingId: icalBookingId,   // for the tests
     onChange: fn => listeners.push(fn),
     staffEmail: u => `${String(u || '').trim().toLowerCase()}@${CFG.staffEmailDomain}`,
   };
