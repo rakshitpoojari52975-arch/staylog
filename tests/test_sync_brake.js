@@ -170,7 +170,7 @@ console.log('\n— the buttons in the cloud panel ask —');
   ok('and Cancel is not followed by a "Sync failed" alert', alerts.length===0, alerts);
   ok('the panel still shows the pause', /Sync paused/.test(await page.locator('body').innerText()));
   await page.evaluate(()=>{state.modal='cloud';render();}); await page.waitForTimeout(200);
-  await page.locator('button',{hasText:'Check now'}).click(); await page.waitForTimeout(500);
+  await page.locator('button:not([data-ical-check])',{hasText:'Check now'}).click(); await page.waitForTimeout(500);
   ok('so does Check now', dialogs.length===3, dialogs.length);
   await ctx.close(); }
 

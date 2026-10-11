@@ -34,7 +34,6 @@
   let attError = '';      // attendance trouble, kept apart from sync trouble
   let brake = null;       // what the last stopped push would have deleted
   let declinedSig = '';   // that same set of deletions, already refused once
-  let icalLog = null;     // what the last calendar import did; null until the tables exist
   // What the last drain actually did. Without this the only way to find out
   // why a mark did not become an expense is to read the database by hand,
   // which is not a thing the app should ask of anybody.
@@ -56,6 +55,12 @@
   // conversion came to look like a failure.
   const ATT_LAST_KEY = 'staylog_att_last';
   let attLast = loadLog(ATT_LAST_KEY) || { at: '', created: 0, names: [] };
+  // What the calendar import has done, per feed. Kept on disk for the same
+  // reason as attLog: the sync that adds a booking schedules another one a
+  // few seconds later, which finds nothing and would otherwise wipe the record.
+  // null until the tables exist.
+  const ICAL_LOG_KEY = 'staylog_ical_log';
+  let icalLog = loadLog(ICAL_LOG_KEY);
 
   const num = v => (v === '' || v == null ? null : Number(v));
   const str = v => (v == null || v === '' ? null : String(v));
@@ -473,6 +478,37 @@
       plan.stamp.push({ feed_id: e.feed_id, uid: e.uid, booking_id: b.id });
       C.created++;
     }
+
+    // Per feed, worked out from the events and the bookings as they now stand,
+    // so the figures are the same whichever sync computed them:
+    //   added   — bookings this feed created (including any deleted since)
+    //   updated — of those, how many the feed has moved to new dates
+    //   removed — stays the feed no longer lists (flagged on their bookings)
+    //   matched — events linked to a booking that was already there
+    //   deleted — bookings it created that were deleted here, and stay deleted
+    // run.* is what this sync itself changed.
+    const stampOf = new Map(plan.stamp.map(x => [x.feed_id + '|' + x.uid, x.booking_id]));
+    const createdIds = new Set(plan.create.map(b => b.id));
+    const moved = new Set(plan.update.filter(u => 'checkIn' in u.fields).map(u => u.id));
+    const flagged = new Set(plan.update.filter(u => u.fields.icalGone === true).map(u => u.id));
+    plan.feeds = {};
+    for (const e of order) {
+      const F = plan.feeds[e.feed_id] = plan.feeds[e.feed_id] || { events: 0, added: 0, updated: 0, removed: 0,
+        matched: 0, deleted: 0, blocks: 0, run: { added: 0, updated: 0, removed: 0 } };
+      F.events++;
+      const bid = e.imported_booking_id || stampOf.get(e.feed_id + '|' + e.uid);
+      if (!bid) { if (e.kind === 'blocked' && !e.gone_at) F.blocks++; continue; }
+      const b = byId.get(bid);
+      if (bid === icalBookingId(e)) {
+        F.added++;
+        if (!b) F.deleted++;
+        else if (b.icalMoved) F.updated++;
+        if (createdIds.has(bid)) F.run.added++;
+        if (moved.has(bid)) F.run.updated++;
+        if (flagged.has(bid)) F.run.removed++;
+      } else F.matched++;
+      if (e.gone_at && b) F.removed++;
+    }
     return plan;
   }
 
@@ -483,7 +519,8 @@
       const { data: events, error } = await c.from('ical_events').select(ICAL_COLS).eq('owner_id', owner);
       if (error) {
         const missing = /does not exist|schema cache|PGRST205|42P01/i.test(`${error.code || ''} ${error.message || ''}`);
-        icalLog = missing ? null : { at: new Date().toISOString(), error: 'Could not read the calendars — ' + error.message };
+        icalLog = missing ? null : { ...(icalLog || {}), at: new Date().toISOString(), error: 'Could not read the calendars — ' + error.message };
+        if (icalLog) saveLog(ICAL_LOG_KEY, icalLog); else try { localStorage.removeItem(ICAL_LOG_KEY); } catch {}
         return false;
       }
       const plan = planIcal(events || [], data, localToday());
@@ -495,7 +532,8 @@
           for (const u of plan.update) { const b = d.bookings.find(x => x.id === u.id); if (b) Object.assign(b, u.fields); }
         });
         if (!wrote) {
-          icalLog = { at: new Date().toISOString(), ...plan.counts, error: 'The imported bookings could not be written to this phone.' };
+          icalLog = { ...(icalLog || {}), at: new Date().toISOString(), ...plan.counts, error: 'The imported bookings could not be written to this phone.' };
+          saveLog(ICAL_LOG_KEY, icalLog);
           return false;
         }
       }
@@ -507,11 +545,20 @@
           .eq('owner_id', owner).eq('feed_id', s.feed_id).eq('uid', s.uid);
         if (e2) stampErr = e2.message || String(e2);
       }
-      icalLog = { at: new Date().toISOString(), ...plan.counts,
+      const at = new Date().toISOString();
+      const before = (icalLog && icalLog.feeds) || {};
+      const feeds = {};
+      for (const [fid, F] of Object.entries(plan.feeds)) {
+        const changed = F.run.added || F.run.updated || F.run.removed;
+        feeds[fid] = { ...F, lastChange: changed ? { at, ...F.run } : (before[fid] && before[fid].lastChange) || null };
+      }
+      icalLog = { at, ...plan.counts, feeds,
         error: stampErr ? 'Imported, but could not mark it done in the cloud — ' + stampErr : '' };
+      saveLog(ICAL_LOG_KEY, icalLog);
       return wrote;
     } catch (err) {
-      icalLog = { at: new Date().toISOString(), error: 'Could not read the calendars — ' + ((err && err.message) || err) };
+      icalLog = { ...(icalLog || {}), at: new Date().toISOString(), error: 'Could not read the calendars — ' + ((err && err.message) || err) };
+      saveLog(ICAL_LOG_KEY, icalLog);
       return false;
     }
   }

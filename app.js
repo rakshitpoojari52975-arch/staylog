@@ -6,7 +6,7 @@
 // ─── Build ────────────────────────────────────────────────────────────────────
 // Bump BOTH of these together. This date sat at 28 Sept through a dozen
 // releases and was read, reasonably, as proof the upload had not landed.
-const APP_VERSION='v37', APP_BUILT='11 Oct 2026';
+const APP_VERSION='v38', APP_BUILT='11 Oct 2026';
 // The CACHE_NAME of the sw.js released with this app.js. Every release bumps
 // APP_VERSION and CACHE_NAME together, so one is derived from the other rather
 // than being a fourth thing to forget; the tests fail if they ever disagree.
@@ -1607,54 +1607,116 @@ function cloudMenuSub(){
   return `Synced ${fmtAgo(s.lastSync)}`;
 }
 
-// ─── Calendar import settings ─────────────────────────────────────────────────
-// The export links are stored only in the cloud (ical_feeds), where the Edge
-// Function reads them every 30 minutes. Import now runs it at once and syncs.
+// ─── Calendar sync ────────────────────────────────────────────────────────────
+// Two boxes in the cloud panel. "Calendar sync" reports, feed by feed, what the
+// function fetched (from ical_feeds, written by the function) and what this
+// phone did with it (from the import log, kept on disk). "Calendar links" is
+// where the links are edited. The links live only in the cloud (ical_feeds):
+// never in the app's data, its backups, or this repository.
 const ICAL_PLATFORMS=['Airbnb','Booking.com'];
 const whenShort=iso=>new Date(iso).toLocaleString('en-IN',{day:'numeric',month:'short',hour:'numeric',minute:'2-digit'});
+const plural=(n,one,many)=>`${n} ${n===1?one:(many||one+'s')}`;
+const icalMissing=err=>/does not exist|schema cache|PGRST205|42P01/i.test(`${err&&err.code||''} ${err&&err.message||err}`);
+const icalBox=attr=>div({[attr]:'1',style:{background:'var(--surface-2)',border:'1px solid var(--border)',
+  borderRadius:'var(--radius-sm)',padding:'11px 13px'}});
+
 function icalSummary(log){
   if(!log)return null;
   if(log.error)return{tone:'var(--danger)',text:log.error};
   const bits=[];
-  if(log.created)bits.push(`${log.created} new booking${log.created===1?'':'s'}`);
+  if(log.created)bits.push(plural(log.created,'new booking'));
   if(log.updated)bits.push(`${log.updated} with new dates`);
   if(log.gone)bits.push(`${log.gone} no longer listed`);
-  if(log.linked)bits.push(`${log.linked} matched to bookings you already had`);
   if(log.held)bits.push(`${log.held} waiting for a property`);
   return{tone:bits.length?'var(--accent)':'var(--muted)',
     text:(bits.length?bits.join(' · '):'Nothing new from the calendars')+` · checked ${whenShort(log.at)}`};
 }
-function calendarImportBox(s){
-  const box=div({'data-ical':'1',style:{background:'var(--surface-2)',border:'1px solid var(--border)',
-    borderRadius:'var(--radius-sm)',padding:'11px 13px'}});
-  const go=btn({className:'btn-ghost btn-sm',style:{padding:'4px 10px',fontSize:12}},'Import now');
+
+// One feed: what was fetched, what it led to here, and the error if any.
+function icalFeedReport(f,stats){
+  const prop=state.data.properties.find(p=>p.id===f.property_id);
+  const wrap=div({'data-feed-report':f.id,style:{paddingTop:10,marginTop:10,borderTop:'1px solid var(--border-soft)'}});
+  wrap.appendChild(div({style:{fontSize:13,fontWeight:700}},`${f.platform}${prop?' · '+prop.name:''}`));
+  // the fetch, as the function recorded it
+  let fetchLine;
+  if(f.last_error&&f.last_fetched_at){
+    wrap.appendChild(div({'data-feed-error':'1',style:{fontSize:12.5,color:'var(--danger)',lineHeight:1.5,marginTop:3}},
+      `Last fetch failed ${whenShort(f.last_fetched_at)}: ${f.last_error}`));
+    fetchLine=f.last_ok_at?`Last good fetch ${whenShort(f.last_ok_at)}`:'It has not been fetched successfully yet.';
+  }else if(f.last_ok_at){
+    fetchLine=`Fetched ${whenShort(f.last_ok_at)} · ${plural(f.last_count||0,'event')} in the feed`;
+  }else fetchLine='Not fetched yet — tap Check now.';
+  wrap.appendChild(div({'data-feed-fetch':'1',style:{fontSize:12,color:'var(--muted)',marginTop:3,lineHeight:1.45}},fetchLine));
+  if(!stats)return wrap;
+  // what it led to here
+  const tile=(label,n,attr,tone)=>div({style:{flex:1}},div({className:'kicker'},label),
+    div({className:'num',[attr]:String(n),style:{fontSize:17,fontWeight:700,marginTop:2,color:n>0?tone:'var(--muted)'}},String(n)));
+  wrap.appendChild(div({style:{display:'flex',gap:14,marginTop:8}},
+    tile('Added',stats.added,'data-n-added','var(--accent)'),
+    tile('Updated',stats.updated,'data-n-updated','var(--text)'),
+    tile('Removed',stats.removed,'data-n-removed','var(--gold)')));
+  const notes=[];
+  if(stats.removed)notes.push(`Removed means no longer on ${f.platform}: ${stats.removed===1?'its booking is':'their bookings are'} flagged to check, not cancelled.`);
+  if(stats.matched)notes.push(`${plural(stats.matched,'stay')} matched to bookings you already had (typed in, or seen on the other platform).`);
+  if(stats.deleted)notes.push(`${plural(stats.deleted,'booking')} from this feed deleted here afterwards. ${stats.deleted===1?'It stays':'They stay'} deleted.`);
+  if(stats.blocks)notes.push(`${plural(stats.blocks,'blocked date range')} with no stay behind ${stats.blocks===1?'it':'them'}: not imported.`);
+  notes.forEach(t=>wrap.appendChild(div({style:{fontSize:11.5,color:'var(--muted)',marginTop:5,lineHeight:1.45}},t)));
+  const lc=stats.lastChange;
+  if(lc){
+    const bits=[lc.added?`${lc.added} added`:'',lc.updated?`${lc.updated} updated`:'',lc.removed?`${lc.removed} removed`:''].filter(Boolean);
+    wrap.appendChild(div({'data-feed-last':'1',style:{fontSize:11.5,color:'var(--accent)',marginTop:6}},`Last change ${whenShort(lc.at)}: ${bits.join(', ')}`));
+  }
+  return wrap;
+}
+
+function calendarSyncBox(s){
+  const box=icalBox('data-ical');
+  const go=btn({className:'btn-ghost btn-sm','data-ical-check':'1',style:{padding:'4px 10px',fontSize:12}},'Check now');
   box.appendChild(div({style:{display:'flex',alignItems:'center',justifyContent:'space-between',gap:10}},
-    div({className:'kicker'},'Calendar import'),go));
+    div({className:'kicker'},'Calendar sync'),go));
   const sum=icalSummary(s.icalLog);
   if(sum)box.appendChild(div({'data-ical-log':'1',style:{fontSize:12.5,color:sum.tone,lineHeight:1.5,marginTop:6}},sum.text));
+  const body=div({},div({style:{fontSize:12.5,color:'var(--muted)',marginTop:6}},'Loading…'));
+  box.appendChild(body);
+  // Fetches every feed now (the function), then syncs, which imports.
+  go.addEventListener('click',async()=>{
+    go.disabled=true;go.textContent='Checking…';
+    try{ await window.StayLogCloud.importNow(); render(); }
+    catch(err){ go.disabled=false;go.textContent='Check now'; alert('Calendar check failed: '+(err.message||err)); }
+  });
+  window.StayLogCloud.listFeeds().then(feeds=>{
+    body.innerHTML='';
+    if(!feeds.length){
+      body.appendChild(div({style:{fontSize:12.5,color:'var(--muted)',marginTop:6,lineHeight:1.5}},
+        'No calendar links yet. Add them below.'));
+      go.disabled=true; return;
+    }
+    const stats=(s.icalLog&&s.icalLog.feeds)||{};
+    feeds.slice().sort((x,y)=>(x.property_id+x.platform).localeCompare(y.property_id+y.platform))
+      .forEach(f=>body.appendChild(icalFeedReport(f,stats[f.id])));
+  }).catch(err=>{
+    body.innerHTML='';
+    body.appendChild(div({style:{fontSize:12.5,color:icalMissing(err)?'var(--muted)':'var(--danger)',marginTop:6,lineHeight:1.5}},
+      icalMissing(err)?'Not set up in Supabase yet: run supabase/ical.sql and deploy the ical-sync function.'
+                      :'Could not load the calendar status — '+(err.message||err)));
+    go.disabled=true;
+  });
+  return box;
+}
+
+function calendarLinksBox(){
+  const box=icalBox('data-ical-links');
+  box.appendChild(div({className:'kicker'},'Calendar links'));
   const body=div({style:{marginTop:6}},div({style:{fontSize:12.5,color:'var(--muted)'}},'Loading your calendar links…'));
   box.appendChild(body);
-  go.addEventListener('click',async()=>{
-    go.disabled=true;go.textContent='Importing…';
-    try{ await window.StayLogCloud.importNow(); render(); }
-    catch(err){ go.disabled=false;go.textContent='Import now'; alert('Calendar import failed: '+(err.message||err)); }
-  });
-
   async function load(){
     let feeds;
     try{ feeds=await window.StayLogCloud.listFeeds(); }
-    catch(err){
-      const missing=/does not exist|schema cache|PGRST205|42P01/i.test(`${err.code||''} ${err.message||err}`);
-      body.innerHTML='';
-      body.appendChild(div({style:{fontSize:12.5,color:missing?'var(--muted)':'var(--danger)',lineHeight:1.5}},
-        missing?'Not set up in Supabase yet: run supabase/ical.sql and deploy the ical-sync function.'
-               :'Could not load the calendar links — '+(err.message||err)));
-      go.disabled=missing;
-      return;
-    }
+    catch(err){ box.style.display=icalMissing(err)?'none':''; body.innerHTML='';
+      body.appendChild(div({style:{fontSize:12.5,color:'var(--danger)'}},'Could not load the calendar links — '+(err.message||err))); return; }
     body.innerHTML='';
     body.appendChild(div({style:{fontSize:12,color:'var(--muted)',lineHeight:1.5}},
-      'Paste each platform\'s calendar export link. They are read every 30 minutes; new stays appear in Bookings.'));
+      'Paste each platform\'s calendar export link. They are kept in your Supabase project only, and read every 30 minutes.'));
     state.data.properties.forEach(p=>{
       body.appendChild(div({style:{fontSize:12.5,fontWeight:700,marginTop:10}},p.name));
       ICAL_PLATFORMS.forEach(pl=>{
@@ -1664,17 +1726,11 @@ function calendarImportBox(s){
         const save=btn({className:'btn-ghost btn-sm','data-feed-save':`${p.id}|${pl}`,style:{padding:'5px 10px',flexShrink:0}},'Save');
         save.addEventListener('click',async()=>{
           save.disabled=true;save.textContent='Saving…';
-          try{ await window.StayLogCloud.saveFeed(p.id,pl,inp.value); await load(); }
+          try{ await window.StayLogCloud.saveFeed(p.id,pl,inp.value); render(); }
           catch(err){ save.disabled=false;save.textContent='Save'; alert(err.message||err); }
         });
         body.appendChild(div({style:{fontSize:11.5,color:'var(--muted)',marginTop:6}},pl));
         body.appendChild(div({style:{display:'flex',gap:6,marginTop:3}},inp,save));
-        if(f){
-          const st=f.last_error?{c:'var(--danger)',t:f.last_error}
-                  :f.last_ok_at?{c:'var(--muted)',t:`Read ${whenShort(f.last_ok_at)} · ${f.last_count||0} dates in the feed`}
-                  :{c:'var(--muted)',t:'Saved. Not read yet — tap Import now.'};
-          body.appendChild(div({'data-feed-status':`${p.id}|${pl}`,style:{fontSize:11.5,color:st.c,marginTop:3,lineHeight:1.45}},st.t));
-        }
       });
     });
   }
@@ -1776,7 +1832,8 @@ function renderCloudModal(){
         `Last checked ${new Date(log.at).toLocaleString('en-IN',{day:'numeric',month:'short',hour:'numeric',minute:'2-digit'})}`
         +` · ${log.found} mark${log.found===1?'':'s'} found to process`));
       wrap.appendChild(box);
-      wrap.appendChild(calendarImportBox(s));
+      wrap.appendChild(calendarSyncBox(s));
+      wrap.appendChild(calendarLinksBox());
     }
 
     if(!s.configured){

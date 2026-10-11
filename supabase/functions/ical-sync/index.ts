@@ -179,7 +179,10 @@ async function syncFeed(feed: Feed, d: ReturnType<typeof db>, fetchImpl: Fetch, 
     });
     Object.assign(report, { ok: !warning, count: events.length, gone: warning ? 0 : vanished.length, error: warning || undefined });
   } catch (err) {
-    const msg = (err as Error)?.message || String(err);
+    // A network error from fetch quotes the URL, and the URL is the feed's
+    // password. Nothing that is stored or shown may carry it.
+    const msg = ((err as Error)?.message || String(err)).split(feed.url).join('(the link)')
+      .replace(/https?:\/\/\S+/gi, '(the link)');
     await d.patch(`ical_feeds?id=eq.${feed.id}`, { last_fetched_at: now, last_error: msg }).catch(() => {});
     Object.assign(report, { ok: false, error: msg });
   }
