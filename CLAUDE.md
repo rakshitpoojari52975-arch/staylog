@@ -72,6 +72,30 @@ also fetch from Supabase with `cache: 'no-store'` as a second layer.
   deleted on purpose and stays deleted (counted as `removed`).
 - No daily wage set → the mark is held and reported, never given an invented
   amount. Undo is allowed for 15 minutes after marking, enforced in SQL.
+- **The rate depends on the day** (`wageFor()` in `app.js`, used by the drain
+  through `STAYLOG_WAGE_FOR`). A marked day pays `dailyWage`, or
+  `checkoutWage` if any booking that is not cancelled has its check-out that
+  date — any property, a flat rate however many leave, turnover days
+  included. A blank or non-positive checkout wage means the daily wage. The
+  description ends " · checkout day" on those days. Daily wage blank → an
+  ordinary day is held, a checkout day is still paid its own rate.
+- **Re-pricing** (`repriceWages()`): runs inside `mutateData` (every change,
+  so a late iCal import or an extended stay is caught), once at every start,
+  and after a restore. It touches only unpaid attendance wages
+  (`wag_` id — `fromAttendance` does not survive a restore) still at the
+  amount the app set: `autoAmount` (synced as `auto_amount`), or, for days
+  made before it existed, an amount equal to the daily wage, the only rate
+  there was. A different amount, or any loan cut taken on the expense, is a
+  hand edit: never changed. Paid: never changed. It prices with the current
+  rates, so editing a wage also re-prices unpaid app-priced days.
+- `wageKind` ('daily' / 'checkout', synced as `wage_kind`) drives the
+  "Checkout day" label on her page, via a `checkout` key per pending day in
+  `staff_standing()`.
+- `supabase/checkout-wage.sql` adds `staff.checkout_wage`,
+  `expenses.wage_kind`, `expenses.auto_amount` and that key. Run it **after**
+  `attendance.sql` (which also defines `staff_standing`). Until it has run,
+  `push()` sees Supabase refuse the columns, retries without them
+  (`LATER_COLUMNS` in `cloud.js`) and the cloud panel names the script.
 
 ## Calendar import (Booking.com / Airbnb)
 
@@ -184,6 +208,8 @@ also fetch from Supabase with `cache: 'no-store'` as a second layer.
     node tests/test_sw_mismatch.js
     node tests/test_ical_function.js   # Node 22.18+ (strips the .ts types)
     node tests/test_ical_import.js
+    node tests/test_checkout_wage.js
+    STAYLOG_PG="…" node tests/test_checkout_sql.js   # setup.sql + attendance.sql + checkout-wage.sql; her staff_standing
     STAYLOG_PG="-h <socket dir> -p <port> -U postgres" node tests/test_ical_sql.js   # skips without a Postgres; loads setup.sql + ical.sql, checks access and the report
 
 The first four survived a machine reset; fifteen earlier suites (receipt, WhatsApp,
@@ -191,6 +217,15 @@ loans, PDFs, staff page, theme) did not and should be rebuilt here before those
 areas are changed.
 
 ## Open items
+
+- Editing a wage re-prices every unpaid, app-priced attendance day to the new
+  rate (re-pricing always uses current rates). Confirm that is wanted; if a
+  rise should apply only from a date, rates need an effective-from date.
+- `staff_standing()` is defined in `setup.sql`, `attendance.sql` and
+  `checkout-wage.sql`; re-running an earlier one drops what a later one added.
+  Keep one definition (e.g. a `staff-functions.sql` run last) when next touched.
+- The checkout-day rate looks at every property's bookings. Fine with one
+  house help across Raaya Vasyam; revisit if staff ever belong to one property.
 
 - Whether Booking.com's export includes the Airbnb dates it imports (and the
   reverse) decides whether the still-open check ever switches on for that
