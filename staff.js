@@ -12,7 +12,7 @@
 const CFG = window.STAYLOG_CLOUD || {};
 const CHECKIN_TIME = '1:00 PM', CHECKOUT_TIME = '11:00 AM';
 const CACHE_KEY = 'rv_staff_cache';
-const PAGE_VERSION = 'v8 · 10 Oct 2026';
+const PAGE_VERSION = 'v9 · 17 Oct 2026';
 
 const MONTH_SHORT = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 const DAYS = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
@@ -262,7 +262,11 @@ function wageCard(st) {
       const gross = Number(d.gross || 0), cut = Number(d.deducted || 0), net = Number(d.net || 0);
       const row = div({style:{display:'flex',alignItems:'baseline',justifyContent:'space-between',
         gap:10,padding:'8px 0',borderBottom:'1px solid var(--border-soft)'}});
-      row.appendChild(div({style:{fontSize:13.5,minWidth:0}}, fmtDate(d.date)));
+      // A guest left that day, so it is paid at the checkout-day rate. Said in
+      // words beside the date, so a higher figure on that day explains itself.
+      row.appendChild(div({style:{fontSize:13.5,minWidth:0}}, fmtDate(d.date),
+        d.checkout ? div({'data-checkout-day':'1',style:{fontSize:11.5,color:'var(--accent)',fontWeight:600,marginTop:1}},
+          'Checkout day') : null));
       row.appendChild(div({style:{textAlign:'right',flexShrink:0}},
         div({className:'num',style:{fontSize:14,fontWeight:700}}, fmtCur(net)),
         cut > 0 ? div({className:'num',style:{fontSize:11.5,color:'var(--muted)',marginTop:1}},

@@ -16,6 +16,9 @@ kept outside it and was lost when the machine running them was reset.
     STAYLOG_PG="-h /tmp -p 5432 -U postgres" node tests/test_ical_sql.js
                                       # setup.sql + ical.sql on a real Postgres: access rules and
                                       # supabase/ical-report.sql; skips without one
+    node tests/test_checkout_wage.js  # checkout-day wages: the rule, re-pricing, sync, her page
+    STAYLOG_PG="-h /tmp -p 5432 -U postgres" node tests/test_checkout_sql.js
+                                      # checkout-wage.sql after setup.sql + attendance.sql; skips without one
 
 `fixtures/sw-before-fix.js` is the service worker that cached the Supabase API.
 It is kept so `test_sw_upgrade.js` can prove the fix recovers from it.

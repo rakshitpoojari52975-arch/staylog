@@ -90,11 +90,13 @@
       up: (s, owner) => ({
         id: s.id, owner_id: owner, name: s.name, role: str(s.role), phone: str(s.phone),
         monthly_salary: num(s.monthlySalary), daily_wage: num(s.dailyWage),
+        checkout_wage: num(s.checkoutWage),     // added by checkout-wage.sql
         active: s.active !== false, joined_on: dat(s.joinedOn),
       }),
       down: r => ({
         id: r.id, name: r.name, role: r.role || '', phone: r.phone || '',
         monthlySalary: r.monthly_salary ?? '', dailyWage: r.daily_wage ?? '',
+        checkoutWage: r.checkout_wage ?? '',
         active: r.active, joinedOn: r.joined_on || '',
       }),
     },
@@ -152,15 +154,33 @@
         category: e.category || 'other', amount: num(e.amount) || 0,
         gross_amount: num(e.grossAmount), loan_deduction: num(e.loanDeduction) || 0,
         paid: !!e.paid, notes: str(e.notes),
+        // added by checkout-wage.sql: which rate the app used, and the amount it
+        // set, so a hand edit is recognised on any phone and after a restore
+        wage_kind: str(e.wageKind), auto_amount: num(e.autoAmount),
       }),
       down: r => ({
         id: r.id, propertyId: r.property_id || '', staffId: r.staff_id || '', loanId: r.loan_id || '',
         description: r.description, date: r.date, category: r.category,
         amount: Number(r.amount), grossAmount: r.gross_amount ?? undefined,
         loanDeduction: Number(r.loan_deduction || 0), paid: r.paid, notes: r.notes || '',
+        wageKind: r.wage_kind || '', autoAmount: r.auto_amount ?? undefined,
       }),
     },
   };
+
+  // Columns added after setup.sql, by a script run by hand. Until it has been
+  // run, Supabase refuses any row that names them, which would stop every sync.
+  // So a push that hits that refusal drops these columns and carries on, and
+  // the cloud panel says which script to run. Nothing local is lost: the
+  // phone keeps the values and sends them once the columns exist.
+  const LATER_COLUMNS = {
+    staff: { cols: ['checkout_wage'], script: 'supabase/checkout-wage.sql' },
+    expenses: { cols: ['wage_kind', 'auto_amount'], script: 'supabase/checkout-wage.sql' },
+  };
+  let schemaBehind = '';   // the script to run, while the database lacks its columns
+  const missingColumn = (err, cols) => !!err && cols.some(c =>
+    new RegExp(`'${c}'|"${c}"|\\b${c}\\b`).test(`${err.message || ''} ${err.details || ''}`)) &&
+    /column|schema cache|PGRST204|42703/i.test(`${err.code || ''} ${err.message || ''}`);
 
   // Parents before children: loans need staff, repayments need loans.
   const ORDER = ['properties', 'staff', 'loans', 'loan_repayments', 'expenses', 'bookings'];
@@ -310,26 +330,30 @@
         continue;
       }
       const st = (data.staff || []).find(x => x.id === m.staff_id);
-      const rate = Number(st && st.dailyWage);
+      // The day's rate: the checkout-day wage when a guest leaves that day
+      // (app.js wageFor, one rule for new days and re-pricing), else the daily.
+      const w = !st ? null : window.STAYLOG_WAGE_FOR
+        ? window.STAYLOG_WAGE_FOR(st, m.date, data.bookings || [])
+        : { kind: 'daily', amount: Number(st.dailyWage) };
       // No rate yet is not a reason to invent a figure, and not a reason to
       // drop the mark. It waits, and the cloud panel says how many are waiting.
-      if (!st || !(rate > 0)) { held++; continue; }
-      make.push({ mark: m, staff: st, rate });
+      if (!st || !(Number(w.amount) > 0)) { held++; continue; }
+      make.push({ mark: m, staff: st, rate: Number(w.amount), kind: w.kind });
     }
 
 
     if (make.length && window.STAYLOG_APPLY) {
       const ok = window.STAYLOG_APPLY(d => {
         d.attendance = d.attendance || [];
-        for (const { mark, staff, rate } of make) {
+        for (const { mark, staff, rate, kind } of make) {
           const eid = expenseIdFor(mark.id);
           if (!d.expenses.some(e => e.id === eid)) {
             d.expenses.push({
               id: eid,
               propertyId: (d.properties[0] || {}).id || '',
-              description: `Wage — ${staff.name} · ${prettyDate(mark.date)}`,
+              description: `Wage — ${staff.name} · ${prettyDate(mark.date)}${kind === 'checkout' ? ' · checkout day' : ''}`,
               date: mark.date, category: 'staff', staffId: staff.id,
-              amount: rate, grossAmount: rate,
+              amount: rate, grossAmount: rate, autoAmount: rate, wageKind: kind,
               loanId: '', loanDeduction: 0, paid: false,
               notes: 'From her attendance mark', fromAttendance: mark.id,
             });
@@ -738,10 +762,17 @@
       }
       brake = null; declinedSig = '';
 
+      let pushedWithout = false;
       for (const table of ORDER) {
-        const rows = up[table];
+        let rows = up[table];
         if (rows.length) {
-          const { error } = await c.from(table).upsert(rows, { onConflict: 'id' });
+          let { error } = await c.from(table).upsert(rows, { onConflict: 'id' });
+          const later = LATER_COLUMNS[table];
+          if (error && later && missingColumn(error, later.cols)) {
+            schemaBehind = later.script; pushedWithout = true;
+            rows = rows.map(r => { const x = { ...r }; later.cols.forEach(k => delete x[k]); return x; });
+            ({ error } = await c.from(table).upsert(rows, { onConflict: 'id' }));
+          }
           if (error) throw error;
         }
         // Anything the server still holds that this phone no longer has is gone.
@@ -751,6 +782,8 @@
         const { error: delErr } = await q;
         if (delErr) throw delErr;
       }
+      // A push that never needed the fallback means the columns are there.
+      if (!pushedWithout) schemaBehind = '';
       dirty = false;
       lastError = '';
       try { localStorage.setItem(LAST_SYNC, new Date().toISOString()); } catch {}
@@ -803,7 +836,7 @@
       email: session?.user?.email || '',
       userId: session?.user?.id || '',
       online: navigator.onLine,
-      dirty, pushing, lastSync: last, lastError, brake, icalLog, heldMarks: held, attError, attLog, attLast,
+      dirty, pushing, lastSync: last, lastError, brake, icalLog, schemaBehind, heldMarks: held, attError, attLog, attLast,
     };
   }
 

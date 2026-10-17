@@ -6,7 +6,7 @@
 // ─── Build ────────────────────────────────────────────────────────────────────
 // Bump BOTH of these together. This date sat at 28 Sept through a dozen
 // releases and was read, reasonably, as proof the upload had not landed.
-const APP_VERSION='v39', APP_BUILT='11 Oct 2026';
+const APP_VERSION='v40', APP_BUILT='17 Oct 2026';
 // The CACHE_NAME of the sw.js released with this app.js. Every release bumps
 // APP_VERSION and CACHE_NAME together, so one is derived from the other rather
 // than being a fourth thing to forget; the tests fail if they ever disagree.
@@ -99,7 +99,58 @@ let state={
   _loading:true,
 };
 function setState(p){Object.assign(state,typeof p==='function'?p(state):p);render();}
-function mutateData(fn){fn(state.data);saveData(state.data);render();}
+// Every change can move a wage: a booking added, moved or cancelled turns a day
+// into a checkout day or out of one. So every change re-prices (cheap, and a
+// no-op when nothing moved). See repriceWages.
+function mutateData(fn){fn(state.data);repriceWages(state.data);saveData(state.data);render();}
+
+// ─── Attendance wages ─────────────────────────────────────────────────────────
+// A marked day pays the daily wage, or the checkout-day wage if any booking
+// that is not cancelled checks out that day — one flat rate for the day,
+// however many checkouts, turnover days included. A blank (or non-positive)
+// checkout-day wage means the daily wage. cloud.js prices new days with this;
+// repriceWages keeps unpaid ones right as bookings change.
+const CHECKOUT_TAG=' · checkout day';
+const checkoutDates=bookings=>new Set((bookings||[]).filter(b=>b.status!=='cancelled'&&b.checkOut).map(b=>b.checkOut));
+function wageFor(staff,date,bookings,dates){
+  const daily=Number(staff&&staff.dailyWage)||0;
+  const co=Number(staff&&staff.checkoutWage);
+  const isCheckout=(dates||checkoutDates(bookings)).has(date);
+  return isCheckout?{kind:'checkout',amount:co>0?co:daily}:{kind:'daily',amount:daily};
+}
+window.STAYLOG_WAGE_FOR=wageFor;
+const withCheckoutTag=(desc,on)=>String(desc||'').replace(/ · checkout day$/,'')+(on?CHECKOUT_TAG:'');
+// A wage expense made from her mark. The id is the durable sign: fromAttendance
+// is a phone-side field and does not survive "Replace this phone from the cloud".
+const isAttendanceWage=e=>e.category==='staff'&&(!!e.fromAttendance||/^wag_/.test(String(e.id||'')));
+// "Still at the amount the app set". autoAmount records it (synced as
+// auto_amount). A day made before it existed was priced at the daily wage —
+// the only rate there was — so that is the only amount taken as the app's.
+// Anything else is a hand edit, and so is any loan cut taken on the expense.
+function isAppPriced(e,staff){
+  if(Number(e.loanDeduction||0)>0)return false;
+  if(e.autoAmount!==undefined&&e.autoAmount!==null&&e.autoAmount!=='')return Number(e.amount)===Number(e.autoAmount);
+  return Number(staff.dailyWage)>0&&Number(e.amount)===Number(staff.dailyWage);
+}
+// Unpaid, app-priced attendance days get the rate their date calls for now.
+// Paid days and hand-edited amounts are never touched. Returns how many
+// expenses it wrote to (including ones only given their autoAmount record).
+function repriceWages(d){
+  const dates=checkoutDates(d.bookings);
+  let touched=0;
+  for(const e of d.expenses||[]){
+    if(e.paid||!isAttendanceWage(e))continue;
+    const st=(d.staff||[]).find(s=>s.id===e.staffId);
+    if(!st||!isAppPriced(e,st))continue;
+    const w=wageFor(st,e.date,null,dates);
+    if(!(w.amount>0))continue;                 // never price a day to nothing
+    const desc=withCheckoutTag(e.description,w.kind==='checkout');
+    if(Number(e.amount)===w.amount&&e.wageKind===w.kind&&Number(e.autoAmount)===w.amount&&e.description===desc)continue;
+    touched++;
+    e.amount=w.amount; e.grossAmount=w.amount; e.autoAmount=w.amount; e.wageKind=w.kind; e.description=desc;
+  }
+  return touched;
+}
 
 // ─── DOM helpers ──────────────────────────────────────────────────────────────
 // Properties that legitimately take a bare number; everything else gets px appended,
@@ -1769,7 +1820,9 @@ function renderCloudModal(){
       borderRadius:'var(--radius-sm)',padding:'12px 13px'}},
       div({style:{fontSize:13.5,fontWeight:700,color:tone}},cloudMenuSub()),
       s.signedIn?div({style:{fontSize:12,color:'var(--muted)',marginTop:3}},s.email):null,
-      s.lastError?div({style:{fontSize:12,color:'var(--danger)',marginTop:5,lineHeight:1.45}},s.lastError):null
+      s.lastError?div({style:{fontSize:12,color:'var(--danger)',marginTop:5,lineHeight:1.45}},s.lastError):null,
+      s.schemaBehind?div({'data-schema-behind':'1',style:{fontSize:12,color:'var(--gold)',marginTop:5,lineHeight:1.45}},
+        `Run ${s.schemaBehind} in the Supabase SQL editor. Until then checkout-day wages sync without their new fields; this phone keeps them.`):null
     ));
 
     // ── Attendance ───────────────────────────────────────────────────────────
@@ -1914,7 +1967,7 @@ function renderCloudModal(){
         // ID photographs never left this phone, so carry them across by id
         const imgs={};state.data.bookings.forEach(b=>{if(b.idProofImage)imgs[b.id]=b.idProofImage;});
         fresh.bookings.forEach(b=>{if(imgs[b.id])b.idProofImage=imgs[b.id];});
-        state.data=normalizeData(fresh);saveData(state.data);
+        state.data=normalizeData(fresh);repriceWages(state.data);saveData(state.data);
         closeModal();
         alert(`Restored ${fresh.bookings.length} bookings, ${fresh.expenses.length} expenses and ${fresh.loans.length} loans.`);
       }catch(err){
@@ -2688,7 +2741,7 @@ function staffPanel(){
       div({style:{fontWeight:600,fontSize:14}},s.name,s.active===false?span({style:{fontSize:11,color:'var(--muted)',fontWeight:400,marginLeft:6}},'· inactive'):null),
       div({style:{fontSize:12,color:'var(--muted)',marginTop:2}},
         [s.role,s.monthlySalary?`${fmtCur(s.monthlySalary)}/mo`:null,
-         s.dailyWage?`${fmtCur(s.dailyWage)}/day`:null,s.phone].filter(Boolean).join(' · ')||'—'),
+         s.dailyWage?`${fmtCur(s.dailyWage)}/day`:null,Number(s.checkoutWage)>0?`${fmtCur(s.checkoutWage)} checkout day`:null,s.phone].filter(Boolean).join(' · ')||'—'),
       bal>0?div({style:{fontSize:12,color:'var(--gold)',fontWeight:600,marginTop:3}},`Loan outstanding: ${fmtCur(bal)}`):null,
       (()=>{const due=pendingWageTotal(data,s.id),n=pendingWages(data,s.id).length;
         return due>0?btn({className:'btn-ghost btn-sm',style:{marginTop:6,padding:'5px 10px',
@@ -3151,11 +3204,12 @@ function renderStaffModal(){
   const f=isEdit?{...editItem}:{name:'',role:'',phone:'',monthlySalary:'',dailyWage:'',active:true,joinedOn:today()};
   const content=()=>{
     const wrap=div({style:{display:'flex',flexDirection:'column',gap:11}});
-    [['name','Staff name *','text'],['role','Role (caretaker, cook…)','text'],['phone','Phone number','tel'],['monthlySalary','Monthly salary (₹)','number'],['dailyWage','Daily wage (₹)','number']].forEach(([k,ph,t])=>{
+    [['name','Staff name *','text'],['role','Role (caretaker, cook…)','text'],['phone','Phone number','tel'],['monthlySalary','Monthly salary (₹)','number'],['dailyWage','Daily wage (₹)','number'],['checkoutWage','Checkout-day wage (₹)','number']].forEach(([k,ph,t])=>{
       const inp=h('input',{type:t,placeholder:ph,value:f[k]??''});inp.addEventListener('input',e=>f[k]=e.target.value);wrap.appendChild(inp);
     });
     wrap.appendChild(div({style:{fontSize:12,color:'var(--muted)',marginTop:-4,lineHeight:'16px'}},
-      'The daily wage is what one attendance mark becomes. Leave it blank and her marks are held until you set it.'));
+      'The daily wage is what one attendance mark becomes. Leave it blank and her marks are held until you set it. '+
+      'On a day a guest checks out (turnover days too) the checkout-day wage is paid instead, once however many leave; leave it blank to pay the daily wage.'));
     const joinWrap=div({},div({className:'label'},'Joined on'));
     const joinInp=h('input',{type:'date',value:f.joinedOn||today()});joinInp.addEventListener('change',e=>f.joinedOn=e.target.value);joinWrap.appendChild(joinInp);wrap.appendChild(joinWrap);
     if(isEdit){
@@ -3691,7 +3745,11 @@ function render(){
 try{applyTheme(getTheme());}catch(e){}
 render();
 Promise.all([loadDataFromIDB(),loadAuth()]).then(([data,auth])=>{
-  state.data=data;state.auth=auth;state.loggedIn=false;state._loading=false;render();
+  state.data=data;state.auth=auth;state.loggedIn=false;state._loading=false;
+  // Once at every start, so unpaid days made before checkout-day wages (or
+  // while this phone was closed) are priced by the same rule as new ones.
+  if(repriceWages(state.data))saveData(state.data);
+  render();
   if(window.StayLogCloud){
     window.StayLogCloud.onChange(()=>{if(state.modal==='cloud'||state.modal==='menu')render();});
     // Opening the app is itself a reason to sync: her attendance marks arrive
