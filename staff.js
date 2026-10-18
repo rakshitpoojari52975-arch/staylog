@@ -12,7 +12,7 @@
 const CFG = window.STAYLOG_CLOUD || {};
 const CHECKIN_TIME = '1:00 PM', CHECKOUT_TIME = '11:00 AM';
 const CACHE_KEY = 'rv_staff_cache';
-const PAGE_VERSION = 'v9 · 17 Oct 2026';
+const PAGE_VERSION = 'v10 · 18 Oct 2026';
 
 const MONTH_SHORT = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 const DAYS = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
@@ -167,6 +167,72 @@ async function markToday(on) {
   }
 }
 
+// ── Utensil cleaning ─────────────────────────────────────────────────────────
+// Beside attendance, once a day, only on a day she is marked present, with the
+// same 15-minute undo (all enforced in SQL: supabase/utensils.sql). She uses it
+// only when Rakshit is paying her for it, not when a guest has.
+let markingUtensils = false;
+async function markUtensils(on) {
+  if (markingUtensils) return;
+  markingUtensils = true; render();
+  try {
+    const { data, error } = await client().rpc(on ? 'staff_mark_utensils_today' : 'staff_unmark_utensils_today');
+    if (error) throw error;
+    if (data && data.ok === false) {
+      alert(
+        data.reason === 'not_present'
+          ? 'Please mark yourself present first (I came in today).'
+        : data.reason === 'too_late'
+          ? 'This can only be removed within 15 minutes of marking it. '
+            + 'Please tell Rakshit if it needs changing.'
+        : data.reason === 'already_counted'
+          ? 'This has already been counted. Ask Rakshit if it needs changing.'
+          : 'Your access is not active. Please check with Rakshit.');
+    }
+  } catch (err) {
+    alert('Could not save that — check your internet and try again.');
+  } finally {
+    markingUtensils = false;
+    await refresh(true);
+  }
+}
+
+function utensilsBlock(st) {
+  const u = st && st.utensils;
+  if (!u) return null;                 // the database is older than this page: say nothing
+  const wrap = div({'data-utensils':'1',style:{marginTop:12,paddingTop:11,borderTop:'1px solid var(--border-soft)'}});
+  const hint = div({style:{fontSize:12,color:'var(--muted)',marginTop:6,textAlign:'center'}},
+    'Only if a guest didn\u2019t pay you for it.');
+  if (!u.marked) {
+    if (u.undone_at && u.available)
+      wrap.appendChild(div({style:{fontSize:12,color:'var(--text-mid)',marginBottom:8,textAlign:'center'}},
+        'Today\u2019s utensil cleaning was removed. Mark it again if that was a mistake.'));
+    wrap.appendChild(h('button',{className:'btn-quiet','data-ute-btn':'1',
+      disabled: markingUtensils || !u.available,
+      style:{opacity:u.available?1:.55},
+      onClick:()=>markUtensils(true)}, markingUtensils ? 'Saving…' : 'I cleaned the utensils today'));
+    wrap.appendChild(hint);
+    if (!u.available)
+      wrap.appendChild(div({style:{fontSize:11.5,color:'var(--light)',marginTop:3,textAlign:'center'}},
+        'Available once you have marked yourself present.'));
+    return wrap;
+  }
+  const at = u.marked_at ? new Date(u.marked_at) : null;
+  wrap.appendChild(div({style:{display:'flex',alignItems:'center',justifyContent:'space-between',gap:10}},
+    div({style:{minWidth:0}},
+      div({style:{fontWeight:700,fontSize:14}}, '✓ Utensils cleaned'),
+      div({style:{fontSize:12,color:'var(--muted)',marginTop:1}},
+        at ? 'at ' + at.toLocaleTimeString('en-IN',{hour:'numeric',minute:'2-digit'}) : 'today')),
+    u.can_undo === true
+      ? h('button',{className:'btn-quiet','data-ute-undo':'1',disabled:markingUtensils,
+          style:{width:'auto',minHeight:36,padding:'8px 14px',fontSize:12.5},
+          onClick:()=>{ if(confirm('Remove today\u2019s utensil cleaning? You can only do this '
+            + 'within 15 minutes of marking.')) markUtensils(false); }},
+          markingUtensils ? '…' : 'Undo')
+      : div({style:{fontSize:12,color:'var(--light)'}}, u.locked ? 'Counted' : 'Saved')));
+  return wrap;
+}
+
 function attendanceCard(st) {
   const a = (st && st.attendance) || {};
   const marked = !!a.marked;
@@ -188,6 +254,7 @@ function attendanceCard(st) {
     }
     card.appendChild(h('button',{className:'btn',disabled:marking,style:{marginTop:11},
       onClick:()=>markToday(true)}, marking ? 'Saving…' : 'I came in today'));
+    const ub = utensilsBlock(st); if (ub) card.appendChild(ub);
     if (a.this_month)
       card.appendChild(div({style:{fontSize:12,color:'var(--muted)',marginTop:9,textAlign:'center'}},
         `${a.this_month} ${a.this_month === 1 ? 'day' : 'days'} marked this month`));
@@ -203,6 +270,8 @@ function attendanceCard(st) {
       div({style:{fontWeight:700,fontSize:15}}, 'Marked present'),
       div({style:{fontSize:12,color:'var(--muted)',marginTop:1}},
         at ? 'at ' + at.toLocaleTimeString('en-IN',{hour:'numeric',minute:'2-digit'}) : 'today'))));
+
+  const ub = utensilsBlock(st); if (ub) card.appendChild(ub);
 
   card.appendChild(div({style:{display:'flex',alignItems:'center',justifyContent:'space-between',
     gap:10,marginTop:12,paddingTop:11,borderTop:'1px solid var(--border-soft)'}},
@@ -262,11 +331,16 @@ function wageCard(st) {
       const gross = Number(d.gross || 0), cut = Number(d.deducted || 0), net = Number(d.net || 0);
       const row = div({style:{display:'flex',alignItems:'baseline',justifyContent:'space-between',
         gap:10,padding:'8px 0',borderBottom:'1px solid var(--border-soft)'}});
-      // A guest left that day, so it is paid at the checkout-day rate. Said in
-      // words beside the date, so a higher figure on that day explains itself.
+      // Every line says what it is, so a wage and utensil cleaning on the same
+      // date read as two payments, not one counted twice; and a checkout day
+      // says so, so its higher figure explains itself. An older database sends
+      // no kind: those lines are wages.
+      const utensils = d.kind === 'utensils';
       row.appendChild(div({style:{fontSize:13.5,minWidth:0}}, fmtDate(d.date),
-        d.checkout ? div({'data-checkout-day':'1',style:{fontSize:11.5,color:'var(--accent)',fontWeight:600,marginTop:1}},
-          'Checkout day') : null));
+        div({'data-line-kind': utensils ? 'utensils' : 'wage',
+             style:{fontSize:11.5,color:utensils?'var(--text-mid)':'var(--accent)',fontWeight:600,marginTop:1}},
+          utensils ? 'Utensil cleaning' : 'Wage',
+          !utensils && d.checkout ? span({'data-checkout-day':'1'}, ' · Checkout day') : null)));
       row.appendChild(div({style:{textAlign:'right',flexShrink:0}},
         div({className:'num',style:{fontSize:14,fontWeight:700}}, fmtCur(net)),
         cut > 0 ? div({className:'num',style:{fontSize:11.5,color:'var(--muted)',marginTop:1}},

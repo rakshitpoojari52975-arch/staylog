@@ -96,6 +96,29 @@ also fetch from Supabase with `cache: 'no-store'` as a second layer.
   `attendance.sql` (which also defines `staff_standing`). Until it has run,
   `push()` sees Supabase refuse the columns, retries without them
   (`LATER_COLUMNS` in `cloud.js`) and the cloud panel names the script.
+- **Utensil cleaning** (`supabase/utensils.sql`, `drainUtensils()` in
+  `cloud.js`) sits beside attendance and changes nothing about it. Laxmi taps
+  "I cleaned the utensils today" (under "I came in today", with "Only if a
+  guest didn't pay you for it.") only when Rakshit pays her for it — guests
+  sometimes pay her directly, as the house notes say. Rules, all in SQL:
+  once a day (id `ute_<staffId>_<yyyymmdd>`, one row), only once she is
+  marked present that day, the same 15-minute undo, and undoing attendance
+  undoes that day's mark (a trigger on `attendance`; the attendance functions
+  are untouched). A mark already turned into an expense is not undone.
+- `utensil_marks` is **absent from `ORDER` and `MAP`** too; drained one way into
+  an unpaid staff expense "Utensil cleaning — <name> · <date>" whose id is
+  the mark id, then stamped. At `staff.utensilRate` (`utensil_rate`); blank →
+  held and reported in the cloud panel, never an invented amount. It is a
+  line of its own: a checkout day with utensils pays both, both show on the
+  Pay sheet, and `repriceWages()` never touches it (only `wag_` ids).
+- Her breakdown labels every line ("Wage", "Wage · Checkout day", "Utensil
+  cleaning") from a `kind` per pending day in `staff_standing()`, which also
+  carries today's `utensils` state. Its latest definition is now in
+  `utensils.sql`: run order is setup → attendance → checkout-wage → utensils.
+- **The house notes are guest-facing and stay as written**: "If you’d prefer,
+  our househelp can do this for you at a nominal charge of Rs. 100, payable
+  directly to her." `tests/test_utensils.js` checks it word for word and that
+  the whole `HOUSE_NOTES` block is byte-for-byte as on `main`.
 
 ## Calendar import (Booking.com / Airbnb)
 
@@ -209,6 +232,8 @@ also fetch from Supabase with `cache: 'no-store'` as a second layer.
     node tests/test_ical_function.js   # Node 22.18+ (strips the .ts types)
     node tests/test_ical_import.js
     node tests/test_checkout_wage.js
+    node tests/test_utensils.js
+    STAYLOG_PG="…" node tests/test_utensils_sql.js   # all four scripts in order; the once-a-day, present-first and undo rules
     STAYLOG_PG="…" node tests/test_checkout_sql.js   # setup.sql + attendance.sql + checkout-wage.sql; her staff_standing
     STAYLOG_PG="-h <socket dir> -p <port> -U postgres" node tests/test_ical_sql.js   # skips without a Postgres; loads setup.sql + ical.sql, checks access and the report
 
@@ -221,9 +246,16 @@ areas are changed.
 - Editing a wage re-prices every unpaid, app-priced attendance day to the new
   rate (re-pricing always uses current rates). Confirm that is wanted; if a
   rise should apply only from a date, rates need an effective-from date.
-- `staff_standing()` is defined in `setup.sql`, `attendance.sql` and
-  `checkout-wage.sql`; re-running an earlier one drops what a later one added.
-  Keep one definition (e.g. a `staff-functions.sql` run last) when next touched.
+- `staff_standing()` is now defined in four files (`setup.sql`,
+  `attendance.sql`, `checkout-wage.sql`, `utensils.sql`); re-running an earlier
+  one drops what a later one added — most recently the utensil state her page
+  needs. Consolidate into one `staff-functions.sql` run last.
+- Utensil cleaning has no owner-side "mark it for her": if she forgets, add the
+  expense by hand. And a mark already converted is not undone with her
+  attendance (the owner deletes the expense, as with a converted day).
+- The utensil rate is one figure per staff member. The house notes quote
+  Rs. 100 to guests; if Rakshit's rate differs, that is his choice, but the
+  two are not linked and changing one does not change the other.
 - The checkout-day rate looks at every property's bookings. Fine with one
   house help across Raaya Vasyam; revisit if staff ever belong to one property.
 
