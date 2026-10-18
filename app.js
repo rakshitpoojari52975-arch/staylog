@@ -6,7 +6,7 @@
 // ─── Build ────────────────────────────────────────────────────────────────────
 // Bump BOTH of these together. This date sat at 28 Sept through a dozen
 // releases and was read, reasonably, as proof the upload had not landed.
-const APP_VERSION='v40', APP_BUILT='17 Oct 2026';
+const APP_VERSION='v41', APP_BUILT='18 Oct 2026';
 // The CACHE_NAME of the sw.js released with this app.js. Every release bumps
 // APP_VERSION and CACHE_NAME together, so one is derived from the other rather
 // than being a fourth thing to forget; the tests fail if they ever disagree.
@@ -1822,7 +1822,7 @@ function renderCloudModal(){
       s.signedIn?div({style:{fontSize:12,color:'var(--muted)',marginTop:3}},s.email):null,
       s.lastError?div({style:{fontSize:12,color:'var(--danger)',marginTop:5,lineHeight:1.45}},s.lastError):null,
       s.schemaBehind?div({'data-schema-behind':'1',style:{fontSize:12,color:'var(--gold)',marginTop:5,lineHeight:1.45}},
-        `Run ${s.schemaBehind} in the Supabase SQL editor. Until then checkout-day wages sync without their new fields; this phone keeps them.`):null
+        `Run ${s.schemaBehind} in the Supabase SQL editor. Until then the newest wage fields are kept on this phone only, and sync once it has run.`):null
     ));
 
     // ── Attendance ───────────────────────────────────────────────────────────
@@ -1857,6 +1857,17 @@ function renderCloudModal(){
       else { line='Nothing waiting — every mark has become an expense.'; tone='var(--muted)'; }
 
       box.appendChild(div({style:{fontSize:12.5,color:tone,lineHeight:1.5,marginTop:6}},line));
+
+      // Utensil cleaning, reported beside attendance (cloud.js drainUtensils).
+      const ut=s.utensils||{};
+      if(ut.held>0){
+        const who=state.data.staff.filter(x=>!(Number(x.utensilRate)>0)).map(x=>x.name).join(', ');
+        box.appendChild(div({'data-ute-held':String(ut.held),style:{fontSize:12.5,color:'var(--gold)',lineHeight:1.5,marginTop:6}},
+          `${ut.held} utensil cleaning ${ut.held===1?'mark is':'marks are'} waiting — no utensil cleaning rate is set${who?` for ${who}`:''}. Set it in the staff screen and ${ut.held===1?'it converts':'they convert'} at the next sync.`));
+      }
+      if(ut.error)box.appendChild(div({style:{fontSize:12.5,color:'var(--danger)',lineHeight:1.5,marginTop:6}},ut.error));
+      if(ut.last&&ut.last.created>0)box.appendChild(div({'data-ute-last':'1',style:{fontSize:11.5,color:'var(--accent)',marginTop:6,lineHeight:1.45}},
+        `Utensil cleaning last added ${new Date(ut.last.at).toLocaleString('en-IN',{day:'numeric',month:'short',hour:'numeric',minute:'2-digit'})}: ${(ut.last.names||[]).join(', ')}`));
 
       // The durable answer to "did her mark become an expense?". A log is a
       // record of one moment and resets; these are the expenses themselves,
@@ -2741,7 +2752,8 @@ function staffPanel(){
       div({style:{fontWeight:600,fontSize:14}},s.name,s.active===false?span({style:{fontSize:11,color:'var(--muted)',fontWeight:400,marginLeft:6}},'· inactive'):null),
       div({style:{fontSize:12,color:'var(--muted)',marginTop:2}},
         [s.role,s.monthlySalary?`${fmtCur(s.monthlySalary)}/mo`:null,
-         s.dailyWage?`${fmtCur(s.dailyWage)}/day`:null,Number(s.checkoutWage)>0?`${fmtCur(s.checkoutWage)} checkout day`:null,s.phone].filter(Boolean).join(' · ')||'—'),
+         s.dailyWage?`${fmtCur(s.dailyWage)}/day`:null,Number(s.checkoutWage)>0?`${fmtCur(s.checkoutWage)} checkout day`:null,
+         Number(s.utensilRate)>0?`${fmtCur(s.utensilRate)} utensils`:null,s.phone].filter(Boolean).join(' · ')||'—'),
       bal>0?div({style:{fontSize:12,color:'var(--gold)',fontWeight:600,marginTop:3}},`Loan outstanding: ${fmtCur(bal)}`):null,
       (()=>{const due=pendingWageTotal(data,s.id),n=pendingWages(data,s.id).length;
         return due>0?btn({className:'btn-ghost btn-sm',style:{marginTop:6,padding:'5px 10px',
@@ -3204,12 +3216,13 @@ function renderStaffModal(){
   const f=isEdit?{...editItem}:{name:'',role:'',phone:'',monthlySalary:'',dailyWage:'',active:true,joinedOn:today()};
   const content=()=>{
     const wrap=div({style:{display:'flex',flexDirection:'column',gap:11}});
-    [['name','Staff name *','text'],['role','Role (caretaker, cook…)','text'],['phone','Phone number','tel'],['monthlySalary','Monthly salary (₹)','number'],['dailyWage','Daily wage (₹)','number'],['checkoutWage','Checkout-day wage (₹)','number']].forEach(([k,ph,t])=>{
+    [['name','Staff name *','text'],['role','Role (caretaker, cook…)','text'],['phone','Phone number','tel'],['monthlySalary','Monthly salary (₹)','number'],['dailyWage','Daily wage (₹)','number'],['checkoutWage','Checkout-day wage (₹)','number'],['utensilRate','Utensil cleaning rate (₹)','number']].forEach(([k,ph,t])=>{
       const inp=h('input',{type:t,placeholder:ph,value:f[k]??''});inp.addEventListener('input',e=>f[k]=e.target.value);wrap.appendChild(inp);
     });
     wrap.appendChild(div({style:{fontSize:12,color:'var(--muted)',marginTop:-4,lineHeight:'16px'}},
       'The daily wage is what one attendance mark becomes. Leave it blank and her marks are held until you set it. '+
-      'On a day a guest checks out (turnover days too) the checkout-day wage is paid instead, once however many leave; leave it blank to pay the daily wage.'));
+      'On a day a guest checks out (turnover days too) the checkout-day wage is paid instead, once however many leave; leave it blank to pay the daily wage. '+
+      'The utensil cleaning rate is paid on top, for a day she reports cleaning the utensils herself — only when a guest did not pay her for it. Leave it blank and those marks are held.'));
     const joinWrap=div({},div({className:'label'},'Joined on'));
     const joinInp=h('input',{type:'date',value:f.joinedOn||today()});joinInp.addEventListener('change',e=>f.joinedOn=e.target.value);joinWrap.appendChild(joinInp);wrap.appendChild(joinWrap);
     if(isEdit){

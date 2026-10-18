@@ -91,12 +91,13 @@
         id: s.id, owner_id: owner, name: s.name, role: str(s.role), phone: str(s.phone),
         monthly_salary: num(s.monthlySalary), daily_wage: num(s.dailyWage),
         checkout_wage: num(s.checkoutWage),     // added by checkout-wage.sql
+        utensil_rate: num(s.utensilRate),       // added by utensils.sql
         active: s.active !== false, joined_on: dat(s.joinedOn),
       }),
       down: r => ({
         id: r.id, name: r.name, role: r.role || '', phone: r.phone || '',
         monthlySalary: r.monthly_salary ?? '', dailyWage: r.daily_wage ?? '',
-        checkoutWage: r.checkout_wage ?? '',
+        checkoutWage: r.checkout_wage ?? '', utensilRate: r.utensil_rate ?? '',
         active: r.active, joinedOn: r.joined_on || '',
       }),
     },
@@ -173,14 +174,16 @@
   // So a push that hits that refusal drops these columns and carries on, and
   // the cloud panel says which script to run. Nothing local is lost: the
   // phone keeps the values and sends them once the columns exist.
+  // Per column, because one table can gain columns from more than one script.
   const LATER_COLUMNS = {
-    staff: { cols: ['checkout_wage'], script: 'supabase/checkout-wage.sql' },
-    expenses: { cols: ['wage_kind', 'auto_amount'], script: 'supabase/checkout-wage.sql' },
+    staff: { checkout_wage: 'supabase/checkout-wage.sql', utensil_rate: 'supabase/utensils.sql' },
+    expenses: { wage_kind: 'supabase/checkout-wage.sql', auto_amount: 'supabase/checkout-wage.sql' },
   };
-  let schemaBehind = '';   // the script to run, while the database lacks its columns
-  const missingColumn = (err, cols) => !!err && cols.some(c =>
-    new RegExp(`'${c}'|"${c}"|\\b${c}\\b`).test(`${err.message || ''} ${err.details || ''}`)) &&
-    /column|schema cache|PGRST204|42703/i.test(`${err.code || ''} ${err.message || ''}`);
+  let schemaBehind = '';   // the script(s) to run, while the database lacks their columns
+  // Supabase names one missing column per refusal; this says which, if any.
+  const missingColumn = (err, cols) => !err || !/column|schema cache|PGRST204|42703/i.test(`${err.code || ''} ${err.message || ''}`)
+    ? null
+    : cols.find(c => new RegExp(`'${c}'|"${c}"|\\b${c}\\b`).test(`${err.message || ''} ${err.details || ''}`)) || null;
 
   // Parents before children: loans need staff, repayments need loans.
   const ORDER = ['properties', 'staff', 'loans', 'loan_repayments', 'expenses', 'bookings'];
@@ -403,6 +406,78 @@
     attLog.pending = Math.max(0, stamp.length - attLog.stamped);
     saveLog(ATT_LOG_KEY, attLog);
     return attLog.stamped > 0;
+  }
+
+  // ── Utensil cleaning ───────────────────────────────────────────────────────
+  // Beside attendance, built the same way (supabase/utensils.sql): her
+  // "I cleaned the utensils today" writes public.utensil_marks through a
+  // SECURITY DEFINER function; the table is absent from ORDER and MAP; each
+  // mark is drained one way into an unpaid staff expense and stamped. The
+  // expense id is the mark id (ute_<staff>_<yyyymmdd>), so a re-run rewrites
+  // the same expense and a stamped mark whose expense was deleted stays gone.
+  // It is a line of its own beside the day's wage, at the staff member's
+  // utensil rate — never re-priced, and never given an invented amount: no
+  // rate, and the mark waits and is reported.
+  const UT_LAST_KEY = 'staylog_ute_last';
+  let utHeld = 0, utError = '', utSetUp = true;
+  let utLast = loadLog(UT_LAST_KEY) || { at: '', created: 0, names: [] };
+  async function drainUtensils(c, owner, data) {
+    try {
+      utHeld = 0; utError = '';
+      const { data: marks, error } = await c.from('utensil_marks').select('id,staff_id,date')
+        .eq('owner_id', owner).is('deleted_at', null).is('expense_id', null).order('date', { ascending: true });
+      if (error) {
+        // Before utensils.sql has been run the table is not there: a normal state.
+        utSetUp = !/does not exist|schema cache|PGRST205|42P01/i.test(`${error.code || ''} ${error.message || ''}`);
+        if (utSetUp) utError = 'Could not read the utensil marks — ' + (error.message || error);
+        return false;
+      }
+      utSetUp = true;
+      const have = id => (data.expenses || []).some(e => e.id === id);
+      const make = [], stamp = [];
+      for (const m of marks || []) {
+        if (have(m.id)) { stamp.push(m.id); continue; }
+        const st = (data.staff || []).find(x => x.id === m.staff_id);
+        const rate = Number(st && st.utensilRate);
+        if (!st || !(rate > 0)) { utHeld++; continue; }
+        make.push({ mark: m, staff: st, rate });
+      }
+      let made = 0;
+      if (make.length && window.STAYLOG_APPLY) {
+        const ok = window.STAYLOG_APPLY(d => {
+          for (const { mark, staff, rate } of make) {
+            if (d.expenses.some(e => e.id === mark.id)) continue;
+            d.expenses.push({
+              id: mark.id,
+              propertyId: (d.properties[0] || {}).id || '',
+              description: `Utensil cleaning — ${staff.name} · ${prettyDate(mark.date)}`,
+              date: mark.date, category: 'staff', staffId: staff.id,
+              amount: rate, grossAmount: rate,
+              loanId: '', loanDeduction: 0, paid: false,
+              notes: 'From her utensil mark', fromUtensils: mark.id,
+            });
+          }
+        });
+        if (!ok) { utError = 'The utensil cleaning could not be written to this phone. Nothing is lost in the cloud.'; return false; }
+        make.forEach(({ mark }) => stamp.push(mark.id));
+        made = make.length;
+        utLast = { at: new Date().toISOString(), created: made,
+          names: make.map(m => `${m.staff.name} · ${prettyDate(m.mark.date)}`) };
+        saveLog(UT_LAST_KEY, utLast);
+      }
+      // Stamp last, as attendance does: a failure leaves the expense here and
+      // the next drain finds it by id and only retries the stamp.
+      for (const id of stamp) {
+        const { data: hit, error: sErr } = await c.from('utensil_marks')
+          .update({ expense_id: id }).eq('id', id).eq('owner_id', owner).select('id');
+        if (sErr || !hit || !hit.length)
+          utError = 'Some utensil marks could not be ticked off in the cloud. The expenses are safe; it retries at the next sync.';
+      }
+      return made > 0;
+    } catch (err) {
+      utError = 'Could not read the utensil marks — ' + ((err && err.message) || err);
+      return false;
+    }
   }
 
   // ── Calendar import (Booking.com / Airbnb) ─────────────────────────────────
@@ -733,6 +808,8 @@
       // server has and this phone does not.
       const drained = await drainAttendance(c, owner, data).catch(() => false);
       if (drained) data = (window.STAYLOG_GET_DATA && window.STAYLOG_GET_DATA()) || data;
+      const utensils = await drainUtensils(c, owner, data).catch(() => false);
+      if (utensils) data = (window.STAYLOG_GET_DATA && window.STAYLOG_GET_DATA()) || data;
       // Same reason: imported bookings go up in this cycle, not after it.
       const imported = await drainIcal(c, owner, data).catch(() => false);
       if (imported) data = (window.STAYLOG_GET_DATA && window.STAYLOG_GET_DATA()) || data;
@@ -763,16 +840,21 @@
       brake = null; declinedSig = '';
 
       let pushedWithout = false;
+      const behind = [];
       for (const table of ORDER) {
         let rows = up[table];
         if (rows.length) {
           let { error } = await c.from(table).upsert(rows, { onConflict: 'id' });
-          const later = LATER_COLUMNS[table];
-          if (error && later && missingColumn(error, later.cols)) {
-            schemaBehind = later.script; pushedWithout = true;
-            rows = rows.map(r => { const x = { ...r }; later.cols.forEach(k => delete x[k]); return x; });
+          const later = LATER_COLUMNS[table] || {};
+          const scripts = new Set();
+          for (let tries = Object.keys(later).length; error && tries > 0; tries--) {
+            const col = missingColumn(error, Object.keys(later));
+            if (!col) break;
+            scripts.add(later[col]); pushedWithout = true;
+            rows = rows.map(r => { const x = { ...r }; delete x[col]; return x; });
             ({ error } = await c.from(table).upsert(rows, { onConflict: 'id' }));
           }
+          if (scripts.size) behind.push(...scripts);
           if (error) throw error;
         }
         // Anything the server still holds that this phone no longer has is gone.
@@ -783,7 +865,7 @@
         if (delErr) throw delErr;
       }
       // A push that never needed the fallback means the columns are there.
-      if (!pushedWithout) schemaBehind = '';
+      schemaBehind = pushedWithout ? [...new Set(behind)].join(' and ') : '';
       dirty = false;
       lastError = '';
       try { localStorage.setItem(LAST_SYNC, new Date().toISOString()); } catch {}
@@ -836,7 +918,8 @@
       email: session?.user?.email || '',
       userId: session?.user?.id || '',
       online: navigator.onLine,
-      dirty, pushing, lastSync: last, lastError, brake, icalLog, schemaBehind, heldMarks: held, attError, attLog, attLast,
+      dirty, pushing, lastSync: last, lastError, brake, icalLog, schemaBehind,
+      utensils: { held: utHeld, error: utError, setUp: utSetUp, last: utLast }, heldMarks: held, attError, attLog, attLast,
     };
   }
 
