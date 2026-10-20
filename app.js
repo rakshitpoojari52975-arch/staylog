@@ -6,7 +6,7 @@
 // ─── Build ────────────────────────────────────────────────────────────────────
 // Bump BOTH of these together. This date sat at 28 Sept through a dozen
 // releases and was read, reasonably, as proof the upload had not landed.
-const APP_VERSION='v43', APP_BUILT='20 Oct 2026';
+const APP_VERSION='v44', APP_BUILT='20 Oct 2026';
 // The CACHE_NAME of the sw.js released with this app.js. Every release bumps
 // APP_VERSION and CACHE_NAME together, so one is derived from the other rather
 // than being a fourth thing to forget; the tests fail if they ever disagree.
@@ -588,11 +588,28 @@ function vapidKeyBytes(){
   const b=atob(s.replace(/-/g,'+').replace(/_/g,'/')+'='.repeat((4-s.length%4)%4));
   return Uint8Array.from(b,c=>c.charCodeAt(0));
 }
+// A Home Screen app is resumed, not reloaded, so the cloud-config.js it
+// loaded can predate the key being added. When the key is blank, read the
+// deployed file once more, straight from the server, and take it from there.
+let configKeyCheck=null;
+function refreshConfigKey(){
+  if((window.STAYLOG_CLOUD||{}).vapidPublicKey)return Promise.resolve(true);
+  if(!configKeyCheck)configKeyCheck=fetch('cloud-config.js',{cache:'no-store'})
+    .then(r=>r.ok?r.text():'')
+    .then(t=>{
+      const k=(String(t).match(/vapidPublicKey:\s*['"]([^'"]*)['"]/)||[])[1]||'';
+      if(!/^B[A-Za-z0-9_-]{86}$/.test(k)){setTimeout(()=>{configKeyCheck=null;},60000);return false;}
+      (window.STAYLOG_CLOUD=window.STAYLOG_CLOUD||{}).vapidPublicKey=k;
+      pushUI.checked=false;              // the key is new: check the subscription again
+      pushRefresh(); return true;
+    }).catch(()=>{setTimeout(()=>{configKeyCheck=null;},60000);return false;});
+  return configKeyCheck;
+}
 // Why notifications cannot be on here, or '' if they can.
 function pushBlocker(){
   if(isIOS()&&!isStandalone())return 'safari';
   if(!('serviceWorker' in navigator)||!('PushManager' in window)||!('Notification' in window))return 'unsupported';
-  if(!(window.STAYLOG_CLOUD||{}).vapidPublicKey)return 'nokey';
+  if(!(window.STAYLOG_CLOUD||{}).vapidPublicKey){refreshConfigKey();return 'nokey';}
   const cs=cloudStatus();
   if(!cs.configured||!cs.signedIn)return 'signin';
   if(Notification.permission==='denied')return 'denied';
@@ -622,6 +639,7 @@ function pushRefresh(){ if(state.modal==='menu')render(); }
 // Every app open: quiet. Never prompts; only acts if permission was given.
 async function resubscribeQuietly(){
   try{
+    await refreshConfigKey();
     if(pushBlocker()||Notification.permission!=='granted'){pushUI.checked=true;return;}
     const sub=await currentSub(true);
     pushUI.sub=sub;
@@ -682,7 +700,7 @@ function notificationsSection(){
   const status=on?`On for this ${dev}`:
     why==='safari'?'Not available in a Safari tab':
     why==='unsupported'?(isIOS()?'Needs iOS 16.4 or later':'This browser cannot receive notifications'):
-    why==='nokey'?'Not set up yet — the public key is missing from cloud-config.js':
+    why==='nokey'?'Not set up yet — no public key in cloud-config.js':
     why==='signin'?'Sign in to Cloud sync first — reminders are sent from the cloud':
     why==='denied'?`Blocked for StayLog in the ${dev}’s Settings`:
     !pushUI.checked?'Checking…':`Off for this ${dev}`;
@@ -693,6 +711,7 @@ function notificationsSection(){
       ico(on?'bell-ringing':'bell-off',{style:{fontSize:16}}),status));
   const note=t=>wrap.appendChild(div({style:{fontSize:12,color:'var(--muted)',lineHeight:1.5,marginTop:6}},t));
   if(why==='safari')note('iPhone only sends notifications to StayLog opened from the Home Screen. In Safari tap Share (the square with an arrow), then Add to Home Screen. Open StayLog from that new icon and come back to this menu.');
+  if(why==='nokey')note('If you have just added it: the deployed file was checked too and had none yet. GitHub Pages takes a minute or two after a commit; close StayLog fully and open it again.');
   if(why==='denied')note(`Open Settings → Notifications → StayLog and allow notifications, then come back here.`);
   const row=div({style:{display:'flex',gap:8,marginTop:10}});
   const b=(label,onClick,attr,primary)=>btn({...attr,disabled:pushUI.busy,className:primary?'btn-primary btn-sm':'btn-ghost btn-sm',
