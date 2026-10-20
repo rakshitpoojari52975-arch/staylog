@@ -17,5 +17,5 @@ window.STAYLOG_CLOUD = {
   // half is a Supabase secret (VAPID_PRIVATE_KEY) and never goes here or
   // anywhere in this repository. Blank = the menu says notifications are not
   // set up yet.
-  vapidPublicKey: '',
+  vapidPublicKey: 'BK323IMnSHkhKGLf22615H2fOma9-qvhLb8ZKCRVPJvFZyJFv_IqY7MbCL0r-eTfWYVXcl19x9xIsb8ptbMCZPY',
 };
