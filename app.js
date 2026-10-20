@@ -6,7 +6,7 @@
 // ─── Build ────────────────────────────────────────────────────────────────────
 // Bump BOTH of these together. This date sat at 28 Sept through a dozen
 // releases and was read, reasonably, as proof the upload had not landed.
-const APP_VERSION='v41', APP_BUILT='18 Oct 2026';
+const APP_VERSION='v42', APP_BUILT='20 Oct 2026';
 // The CACHE_NAME of the sw.js released with this app.js. Every release bumps
 // APP_VERSION and CACHE_NAME together, so one is derived from the other rather
 // than being a fourth thing to forget; the tests fail if they ever disagree.
@@ -865,6 +865,8 @@ function bookingCard(b){   // dense row; expands into the full detail
     actions.appendChild(btn({className:'btn-ghost btn-sm',onClick:()=>setState({modal:'addBooking',editItem:b})},ico('edit',{style:{marginRight:4}}),'Edit'));
     if(waNumber(b.phone))actions.appendChild(btn({className:'btn-ghost btn-sm',style:{color:'var(--accent)',borderColor:'var(--accent-line)'},onClick:()=>setState({modal:'sendConfirm',editItem:b})},ico('brand-whatsapp',{style:{marginRight:4,fontSize:15}}),'Send'));
     actions.appendChild(btn({className:'btn-gold btn-sm',onClick:()=>downloadConfirmation(b)},ico('file-text',{style:{marginRight:4,fontSize:14}}),'PDF'));
+    if(canReceipt(b)&&b.status!=='cancelled'&&balanceDue(b)>0)actions.appendChild(btn({className:'btn-primary btn-sm','data-mark-paid':'1',
+      onClick:()=>markBookingPaid(b)},ico('circle-check',{style:{marginRight:4,fontSize:14}}),'Mark paid'));
     if(canReceipt(b))actions.appendChild(btn({className:'btn-gold btn-sm',onClick:()=>shareReceipt(b)},
       ico('receipt',{style:{marginRight:4,fontSize:14}}),b.receiptNo?'Receipt again':'Receipt'));
     actions.appendChild(btn({className:'btn-danger btn-sm',onClick:()=>{if(confirm('Delete this booking?')){mutateData(d=>d.bookings=d.bookings.filter(x=>x.id!==b.id));setState({expandedBooking:null});}}},ico('trash',{style:{marginRight:4}}),'Delete'));
@@ -1106,9 +1108,9 @@ function prepareSignature(file){
 // charged is the one way this feature could cause real trouble, so the document
 // cannot be mistaken for one.
 //
-// OTA stays get the same document worded differently. A Booking.com guest paid
-// the platform, not us; the receipt acknowledges the stay and points them at
-// the platform's own invoice rather than reading as a demand.
+// A Booking.com stay gets the same document with "Booked via Booking.com" on
+// it. Booking.com guests here pay at the property, exactly like direct guests,
+// so the money line reads "Amount received" for both.
 
 // Only these two. The guest pays us directly on both — a Booking.com booking
 // here is pay-at-property, so the money genuinely passes from guest to us and a
@@ -1118,6 +1120,47 @@ function prepareSignature(file){
 const RECEIPT_SOURCES = new Set(['Direct','Booking.com']);
 const bookingSource = b => String(b.source||'').trim();
 const canReceipt = b => RECEIPT_SOURCES.has(bookingSource(b));
+
+// ─── Who pays us, and what they still owe ─────────────────────────────────────
+// The one rule for anything about money in a guest message. Direct and
+// Booking.com guests pay us at the property; the guest messages were first
+// written assuming Booking.com collects payment and that its guests are never
+// told they owe money — that was wrong here, and it is gone. Airbnb and the
+// other platforms take payment themselves: their guests are never told a
+// balance and never sent payment details. A booking with no source is direct.
+const paysUsDirectly = b => RECEIPT_SOURCES.has(bookingSource(b)||'Direct');
+const balanceDue = b => Math.max(0, Math.round((Number(b.totalAmount||0)-Number(b.paid||0))*100)/100);
+// Payment details go out only when all of these hold: the guest pays us, the
+// booking is live, something is actually owed, and there is something to send.
+const hasPaymentDetails = p => !!(p && (p.upiId || p.bankDetails));
+function canAskForPayment(b){
+  const prop=state.data.properties.find(p=>p.id===b.propertyId);
+  return paysUsDirectly(b) && b.status!=='cancelled' && balanceDue(b)>0 && hasPaymentDetails(prop);
+}
+// The block every payment message carries. The UPI ID sits alone on its own
+// line, unformatted, so a long-press copies exactly the ID and nothing else.
+function paymentBlock(b){
+  if(!canAskForPayment(b))return [];
+  const prop=state.data.properties.find(p=>p.id===b.propertyId);
+  const L=[`*Balance due:* ${fmtCur(balanceDue(b))}`];
+  if(prop.upiId){
+    L.push('','*Pay by UPI* to this ID:',prop.upiId);
+    if(prop.upiPayee)L.push(`Payee name: ${prop.upiPayee}`);
+    if(prop.upiQr)L.push('A QR code to scan follows in the next message.');
+  }
+  if(prop.bankDetails)L.push('',prop.upiId?'*Or by bank transfer:*':'*Pay by bank transfer:*',String(prop.bankDetails).trim());
+  return L;
+}
+// A message just for this, sent from the Send sheet whenever it is needed.
+function paymentRequestText(b){
+  if(!canAskForPayment(b))return null;
+  const prop=state.data.properties.find(p=>p.id===b.propertyId);
+  const L=[`*Payment for your stay — ${prop?.name||'our homestay'}*`,''];
+  L.push(`Namaste ${firstNameOf(b)}, here are the details to settle the balance for your stay (${fmtDate(b.checkIn)} → ${fmtDate(b.checkOut)}).`,'');
+  L.push(...paymentBlock(b));
+  L.push('','Once it is done, just reply here and I will send your receipt. Thank you!');
+  return L.join('\n');
+}
 const bookedVia = b => bookingSource(b)==='Direct' ? '' : bookingSource(b);
 
 // Indian financial year, April to March: 4 Oct 2026 falls in 2026-27.
@@ -1434,9 +1477,10 @@ function whatsappText(b){
   const prop=state.data.properties.find(p=>p.id===b.propertyId);
   const nights=diffDays(b.checkIn,b.checkOut);
   const firstName=String(b.guestName||'').trim().split(/\s+/)[0]||'there';
-  // OTA guests pay the platform, so quoting a balance would be wrong at the door
-  const isDirect=(b.source||'Direct')==='Direct';
-  const total=Number(b.totalAmount||0), due=total-Number(b.paid||0);
+  // Direct and Booking.com guests pay us (paysUsDirectly); other platforms' guests
+  // paid the platform, so quoting them a balance would be wrong at the door.
+  const isDirect=paysUsDirectly(b);
+  const total=Number(b.totalAmount||0), due=balanceDue(b);
   const L=[];
   L.push(`*Booking confirmed — ${prop?.name||'our homestay'}*`,'');
   L.push(`Namaste ${firstName}, your stay is confirmed. We're looking forward to hosting you.`,'');
@@ -1525,8 +1569,9 @@ function stayText(b){
 function departureText(b){
   const prop=state.data.properties.find(p=>p.id===b.propertyId);
   const when=b.checkOut===today()?'today':b.checkOut===addDaysISO(today(),1)?'tomorrow':`on ${fmtDate(b.checkOut)}`;
-  const isDirect=(b.source||'Direct')==='Direct';
-  const due=Number(b.totalAmount||0)-Number(b.paid||0);
+  const isDirect=paysUsDirectly(b);
+  const due=balanceDue(b);
+  const pay=paymentBlock(b);
   const L=[];
   L.push(`*Checking out ${when}*`,'');
   L.push(`${firstNameOf(b)}, a small reminder that check-out is by ${CHECKOUT_TIME} ${when}.`,'');
@@ -1535,17 +1580,22 @@ function departureText(b){
   L.push('• Wash up anything used in the kitchen');
   L.push('• Pull the main door shut behind you');
   L.push('','Leave the keys where you found it.');
-  if(isDirect&&due>0)L.push('',`A balance of ${fmtCur(due)} is pending — you can settle it before you leave.`);
+  // With payment details set, the balance comes with how to pay it; without
+  // them, the same one-line reminder as before.
+  if(pay.length)L.push('',`A balance of ${fmtCur(due)} is pending — you can settle it before you leave:`,'',...pay);
+  else if(isDirect&&due>0&&b.status!=='cancelled')L.push('',`A balance of ${fmtCur(due)} is pending — you can settle it before you leave.`);
   L.push('','It has been lovely having you. If the stay was good to you, a review would mean a great deal — and do come back.');
   return L.join('\n');
 }
 
-const MSG_BUILDERS={confirm:whatsappText,arrival:arrivalText,stay:stayText,departure:departureText};
+const MSG_BUILDERS={confirm:whatsappText,arrival:arrivalText,stay:stayText,departure:departureText,payment:paymentRequestText};
 
 function sendMessage(b,kind){
   const num=waNumber(b.phone);
   if(!num){alert('This booking has no usable phone number. Add one and try again.');return;}
-  window.open(`https://wa.me/${num}?text=${encodeURIComponent(MSG_BUILDERS[kind](b))}`,'_blank');
+  const text=MSG_BUILDERS[kind](b);
+  if(!text)return;                     // a payment request with nothing owed, or to a platform guest: never sent
+  window.open(`https://wa.me/${num}?text=${encodeURIComponent(text)}`,'_blank');
   markMsgSent(b.id,kind);
 }
 
@@ -1570,6 +1620,59 @@ async function shareConfirmation(b){
   }
 }
 
+
+// The UPI QR goes through the share sheet, as the PDFs do: a wa.me link cannot
+// carry a file. Same guard as the message, so it can never reach a guest who
+// does not pay us or owes nothing.
+async function sharePaymentQR(b){
+  if(!canAskForPayment(b))return;
+  const prop=state.data.properties.find(p=>p.id===b.propertyId);
+  if(!prop||!prop.upiQr)return;
+  let blob;
+  try{ blob=await (await fetch(prop.upiQr)).blob(); }
+  catch(err){ alert('Could not read the QR image. Upload it again in the property settings.'); return; }
+  const name=`UPI-QR-${String(prop.name||'payment').replace(/[^A-Za-z0-9]+/g,'-')}.png`;
+  const file=new File([blob],name,{type:blob.type||'image/png'});
+  if(navigator.canShare&&navigator.canShare({files:[file]})){
+    try{ await navigator.share({files:[file],title:`Pay ${prop.upiPayee||prop.name||''}`.trim()}); }
+    catch(err){ if(err&&err.name!=='AbortError')alert('Could not share the QR code: '+(err.message||err)); }
+  } else {
+    const a=document.createElement('a');
+    a.href=URL.createObjectURL(blob); a.download=name; a.click();
+    setTimeout(()=>URL.revokeObjectURL(a.href),4000);
+    alert('Your browser cannot open the share sheet, so the QR code has been saved to Files. Attach it from there in WhatsApp.');
+  }
+}
+
+// ─── Paid → offer the receipt ─────────────────────────────────────────────────
+// After a booking is marked paid in full, the receipt is offered on a sheet of
+// its own, so the share starts from a fresh tap (a share sheet opened after a
+// confirm() and a PDF build can be refused by the browser).
+const justPaidInFull=b=>canReceipt(b)&&b.status!=='cancelled'&&Number(b.totalAmount||0)>0&&balanceDue(b)===0;
+function markBookingPaid(b){
+  const due=balanceDue(b);
+  if(!(due>0))return;
+  if(!confirm(`Record ${fmtCur(due)} received from ${b.guestName}? The booking will show as paid in full.`))return;
+  mutateData(d=>{const x=d.bookings.find(y=>y.id===b.id); if(x)x.paid=Number(x.totalAmount||0);});
+  const now=state.data.bookings.find(y=>y.id===b.id);
+  if(now&&justPaidInFull(now))setState({modal:'paidReceipt',editItem:{...now}});
+}
+function renderPaidReceiptModal(){
+  const b=state.editItem;
+  if(!b)return modal('Paid',()=>div({}));
+  return modal('Paid in full',()=>{
+    const wrap=div({style:{display:'flex',flexDirection:'column',gap:10}});
+    wrap.appendChild(div({style:{textAlign:'center',padding:'6px 4px 2px'}},
+      ico('circle-check',{style:{fontSize:38,color:'var(--accent)',display:'block',marginBottom:8}}),
+      div({style:{fontSize:15,fontWeight:700}},`${fmtCur(b.totalAmount)} received from ${b.guestName}`),
+      div({style:{fontSize:12.5,color:'var(--muted)',marginTop:4}},'Send the receipt now?')));
+    wrap.appendChild(btn({className:'btn-gold','data-offer-receipt':'1',style:{width:'100%',justifyContent:'center',display:'flex',
+      alignItems:'center',gap:7,minHeight:46},onClick:()=>{shareReceipt(b);closeModal();}},
+      ico('receipt',{style:{fontSize:16}}),'Send receipt'));
+    wrap.appendChild(btn({className:'btn-ghost',style:{width:'100%'},onClick:closeModal},'Not now'));
+    return wrap;
+  });
+}
 
 // ─── House notes — the document guests get once they are in ───────────────────
 const HOUSE_NOTES=[
@@ -2047,7 +2150,33 @@ function renderSendModal(){
         wrap.appendChild(hintLine('No Wi-Fi details on this property — the welcome message skips that line.'));
     });
 
+    // ── Payment request: any time, but only to a guest who pays us and owes ──
+    const askable=canAskForPayment(b);
+    if(askable){
+      const sent=msgSentOn(b,'payment');
+      const row=div({'data-pay-row':'1',style:{display:'flex',alignItems:'center',gap:11,padding:'11px 12px',
+        border:'1.5px solid var(--gold-line)',borderRadius:'var(--radius-sm)',background:'var(--gold-light)'}});
+      row.appendChild(div({style:{width:34,height:34,borderRadius:9,flexShrink:0,display:'flex',
+        alignItems:'center',justifyContent:'center',background:'var(--white)',border:'1px solid var(--border)'}},
+        ico('currency-rupee',{style:{fontSize:16,color:'var(--gold)'}})));
+      row.appendChild(div({style:{flex:1,minWidth:0}},
+        div({style:{fontSize:13.5,fontWeight:700}},'Payment request'),
+        div({style:{fontSize:11.5,color:'var(--muted)',marginTop:1}},
+          `${fmtCur(balanceDue(b))} due${sent?` · opened ${fmtDate(sent)}`:''}`)));
+      row.appendChild(btn({disabled:!num,'data-send':'payment',style:{flexShrink:0,minHeight:36,padding:'7px 13px',fontSize:12.5,
+        fontWeight:700,borderRadius:20,border:`1.5px solid ${num?'var(--gold)':'var(--border)'}`,background:'transparent',
+        color:num?'var(--gold)':'var(--light)'},onClick:()=>sendMessage(b,'payment')},sent?'Resend':'Send'));
+      wrap.appendChild(row);
+    } else if(!paysUsDirectly(b)){
+      wrap.appendChild(hintLine(`${bookingSource(b)} collects payment from the guest, so no balance or payment details are ever sent for this stay.`));
+    } else if(b.status!=='cancelled'&&balanceDue(b)>0){
+      wrap.appendChild(hintLine(`${fmtCur(balanceDue(b))} is due, but this property has no payment details yet. Add a UPI ID or bank details in the property settings to send a payment request.`));
+    }
+
     wrap.appendChild(div({className:'kicker',style:{marginTop:8,marginBottom:-2}},'Attachments'));
+    if(askable&&prop.upiQr)wrap.appendChild(btn({className:'btn-gold','data-pay-qr-share':'1',style:{width:'100%',justifyContent:'center',display:'flex',
+      alignItems:'center',gap:7,minHeight:46},onClick:()=>sharePaymentQR(b)},
+      ico('qrcode',{style:{fontSize:16}}),'UPI QR code'));
     wrap.appendChild(btn({className:'btn-gold',style:{width:'100%',justifyContent:'center',display:'flex',
       alignItems:'center',gap:7,minHeight:46},onClick:()=>shareConfirmation(b)},
       ico('file-text',{style:{fontSize:16}}),'Booking confirmation PDF'));
@@ -3356,10 +3485,38 @@ function renderRepaymentModal(){
   return modal('Record Repayment',content);
 }
 
+// A UPI ID: name@handle. Mirrors the check in payment-details.sql.
+const UPI_ID_RE=/^[A-Za-z0-9._-]{2,}@[A-Za-z0-9.-]{2,}$/;
+// The QR is kept as a PNG data: URL (like the signature), scaled down so it
+// syncs quickly but stays sharp enough to scan. PNG, not JPEG: JPEG blurs the
+// square edges a scanner relies on.
+function prepareQrImage(file){
+  return new Promise((res,rej)=>{
+    if(!/^image\//.test(file.type||''))return rej(new Error('Choose an image of the QR code.'));
+    const r=new FileReader();
+    r.onerror=()=>rej(new Error('Could not read that image.'));
+    r.onload=()=>{
+      const img=new Image();
+      img.onerror=()=>rej(new Error('Could not read that image.'));
+      img.onload=()=>{
+        const max=640, k=Math.min(1,max/Math.max(img.width,img.height));
+        const c=document.createElement('canvas');
+        c.width=Math.max(1,Math.round(img.width*k)); c.height=Math.max(1,Math.round(img.height*k));
+        const g=c.getContext('2d'); g.imageSmoothingEnabled=false;
+        g.fillStyle='#fff'; g.fillRect(0,0,c.width,c.height); g.drawImage(img,0,0,c.width,c.height);
+        res(c.toDataURL('image/png'));
+      };
+      img.src=r.result;
+    };
+    r.readAsDataURL(file);
+  });
+}
+
 function renderPropertyModal(){
   const{editItem}=state; const isEdit=!!editItem;
   const f=isEdit?{...editItem}:{name:'',location:'',rooms:'',pricePerNight:'',description:'',
-    mapsLink:'',wifiName:'',wifiPassword:'',signature:'',signatureRatio:''};
+    mapsLink:'',wifiName:'',wifiPassword:'',signature:'',signatureRatio:'',
+    upiId:'',upiPayee:'',upiQr:'',bankDetails:''};
   const content=()=>{
     const wrap=div({style:{display:'flex',flexDirection:'column',gap:11}});
     const field=(k,ph,t)=>{const inp=h('input',{type:t||'text',placeholder:ph,value:f[k]||''});
@@ -3379,6 +3536,48 @@ function renderPropertyModal(){
     wifi.appendChild(field('wifiName','Wi-Fi name'));
     wifi.appendChild(field('wifiPassword','Wi-Fi password'));
     wrap.appendChild(wifi);
+
+    // ── Payment details ──────────────────────────────────────────────────────
+    // For guests who pay at the property (Direct and Booking.com). Sent only to
+    // them, only with a balance, in the check-out reminder or a Payment request.
+    // Property data synced like the Wi-Fi — never in the code; the repo is public.
+    wrap.appendChild(heading('Payment details'));
+    wrap.appendChild(div({style:{fontSize:12,color:'var(--muted)',lineHeight:1.5,marginTop:-4}},
+      'Sent to Direct and Booking.com guests who still owe a balance — never to Airbnb or other platforms that collect payment themselves. Stored with your property, never in the app\u2019s code.'));
+    const upiRow=div({style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}});
+    const upiInp=field('upiId','UPI ID (name@bank)'); upiInp.setAttribute('data-pay','upiId');
+    upiInp.autocapitalize='none'; upiInp.spellcheck=false;
+    const payeeInp=field('upiPayee','Payee name'); payeeInp.setAttribute('data-pay','upiPayee');
+    upiRow.appendChild(upiInp); upiRow.appendChild(payeeInp);
+    wrap.appendChild(upiRow);
+    const bankTa=area('bankDetails','Bank details (optional) — account name, number, IFSC, bank',3);
+    bankTa.setAttribute('data-pay','bankDetails');
+    wrap.appendChild(bankTa);
+    const qrBox=div({'data-pay-qr':'1',style:{border:'1.5px solid var(--border)',borderRadius:'var(--radius-sm)',
+      padding:'12px',background:'var(--surface-2)'}});
+    const qrInput=h('input',{type:'file',accept:'image/*','data-pay-qr-input':'1',style:{display:'none'}});
+    function paintQr(){
+      qrBox.innerHTML='';
+      if(f.upiQr)qrBox.appendChild(h('img',{src:f.upiQr,alt:'UPI QR code',
+        style:{display:'block',maxWidth:'150px',maxHeight:'150px',margin:'0 auto 10px'}}));
+      else qrBox.appendChild(div({style:{fontSize:12.5,color:'var(--muted)',lineHeight:1.5,marginBottom:10,textAlign:'center'}},
+        'No UPI QR image (optional). With one set, the Send sheet offers it to share alongside the payment message.'));
+      const row=div({style:{display:'flex',gap:8,justifyContent:'center'}});
+      row.appendChild(btn({className:'btn-ghost btn-sm',onClick:()=>qrInput.click()},
+        ico('qrcode',{style:{marginRight:4,fontSize:14}}),f.upiQr?'Replace QR':'Upload QR'));
+      if(f.upiQr)row.appendChild(btn({className:'btn-danger btn-sm',onClick:()=>{f.upiQr='';paintQr();}},'Remove'));
+      qrBox.appendChild(row);
+    }
+    qrInput.addEventListener('change',async e=>{
+      const file=e.target.files&&e.target.files[0];
+      e.target.value='';
+      if(!file)return;
+      try{ f.upiQr=await prepareQrImage(file); paintQr(); }
+      catch(err){ alert(err.message||'Could not use that image.'); }
+    });
+    wrap.appendChild(qrInput);
+    paintQr();
+    wrap.appendChild(qrBox);
 
     // ── Signature ────────────────────────────────────────────────────────────
     wrap.appendChild(heading('Signature on receipts'));
@@ -3420,6 +3619,9 @@ function renderPropertyModal(){
 
     wrap.appendChild(btn({className:'btn-primary',style:{marginTop:4,width:'100%'},onClick:()=>{
       if(!f.name)return;
+      f.upiId=String(f.upiId||'').trim(); f.upiPayee=String(f.upiPayee||'').trim();
+      // A mistyped UPI ID sends a guest's money nowhere: refuse it here (SQL refuses it too).
+      if(f.upiId&&!UPI_ID_RE.test(f.upiId)){alert('That UPI ID does not look right. It should look like name@bank.');return;}
       mutateData(d=>{if(isEdit)d.properties=d.properties.map(p=>p.id===f.id?f:p);else d.properties.push({...f,id:uid()});});
       closeModal();
     }},isEdit?'Update Property':'Save Property'));
@@ -3520,8 +3722,11 @@ function renderBookingModal(){
       if(!f.guestName||!f.checkIn||!f.checkOut||!f.propertyId)return;
       if(hasConflict(f.propertyId,f.checkIn,f.checkOut,isEdit?f.id:null)){alert('These dates overlap with an existing booking. Please choose different dates.');return;}
       if(!isEdit)f.id=uid();
+      const owedBefore=isEdit?balanceDue(editItem):balanceDue({});
       mutateData(d=>{if(isEdit)d.bookings=d.bookings.map(b=>b.id===f.id?f:b);else d.bookings.push({...f});});
-      if(!isEdit&&waNumber(f.phone))setState({modal:'sendConfirm',editItem:{...f}});
+      // This save settled it: offer the receipt, as "Mark paid" does.
+      if(isEdit&&owedBefore>0&&justPaidInFull(f))setState({modal:'paidReceipt',editItem:{...f}});
+      else if(!isEdit&&waNumber(f.phone))setState({modal:'sendConfirm',editItem:{...f}});
       else closeModal();
     }},isEdit?'Update Booking':'Add Booking'));
     return wrap;
@@ -3752,6 +3957,7 @@ function render(){
   else if(state.modal==='propPicker'){currentModal=renderPropPickerModal();document.body.appendChild(currentModal);}
   else if(state.modal==='cloud')    {currentModal=renderCloudModal();     document.body.appendChild(currentModal);}
   else if(state.modal==='sendConfirm'){currentModal=renderSendModal();     document.body.appendChild(currentModal);}
+  else if(state.modal==='paidReceipt'){currentModal=renderPaidReceiptModal();document.body.appendChild(currentModal);}
 }
 
 // ─── Boot ─────────────────────────────────────────────────────────────────────
