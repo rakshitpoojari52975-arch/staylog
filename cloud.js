@@ -78,11 +78,15 @@
         description: str(p.description), maps_link: str(p.mapsLink),
         wifi_name: str(p.wifiName), wifi_password: str(p.wifiPassword),
         signature: str(p.signature), signature_ratio: num(p.signatureRatio),
+        // added by payment-details.sql. Property data, like the Wi-Fi: never in code.
+        upi_id: str(p.upiId), upi_payee: str(p.upiPayee), upi_qr: str(p.upiQr),
+        bank_details: str(p.bankDetails),
       }),
       down: r => ({
         id: r.id, name: r.name, location: r.location || '', rooms: r.rooms ?? '',
         pricePerNight: r.price_per_night ?? '', description: r.description || '',
         mapsLink: r.maps_link || '', wifiName: r.wifi_name || '', wifiPassword: r.wifi_password || '',
+        upiId: r.upi_id || '', upiPayee: r.upi_payee || '', upiQr: r.upi_qr || '', bankDetails: r.bank_details || '',
         signature: r.signature || '', signatureRatio: r.signature_ratio ?? '',
       }),
     },
@@ -176,6 +180,8 @@
   // phone keeps the values and sends them once the columns exist.
   // Per column, because one table can gain columns from more than one script.
   const LATER_COLUMNS = {
+    properties: { upi_id: 'supabase/payment-details.sql', upi_payee: 'supabase/payment-details.sql',
+                  upi_qr: 'supabase/payment-details.sql', bank_details: 'supabase/payment-details.sql' },
     staff: { checkout_wage: 'supabase/checkout-wage.sql', utensil_rate: 'supabase/utensils.sql' },
     expenses: { wage_kind: 'supabase/checkout-wage.sql', auto_amount: 'supabase/checkout-wage.sql' },
   };

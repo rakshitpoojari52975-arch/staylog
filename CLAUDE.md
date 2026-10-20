@@ -207,6 +207,37 @@ also fetch from Supabase with `cache: 'no-store'` as a second layer.
 - Numbering `RV/<FY>/<nnn>`, Indian financial year (April–March), assigned on
   first issue, never reused; unique per owner in SQL.
 - The stamp states what is true: PAID, PART PAID (with balance) or UNPAID.
+- After a booking is marked paid in full — the card's **Mark paid**, or typing
+  the full amount into the booking — a "Paid in full" sheet offers **Send
+  receipt**. A sheet of its own, so the share starts from a fresh tap.
+
+## Payment details and asking for the balance
+
+- **Booking.com guests pay at the property, like direct guests.** The guest
+  messages were first written assuming Booking.com collects payment, with a
+  rule (`isDirect = source==='Direct'`) that Booking.com guests were never
+  told they owe money. That was wrong here and is gone: `paysUsDirectly(b)`
+  (Direct or Booking.com, the same pair as receipts) is the one rule for
+  anything about money in a guest message. Airbnb and every other platform
+  collect payment themselves: their guests are never told a balance and never
+  sent payment details.
+- Payment details go out only through `canAskForPayment(b)`: pays us
+  directly, not cancelled, `balanceDue(b) > 0`, and the property has a UPI ID
+  or bank details. The check-out reminder carries them with the exact
+  balance; the Send sheet's **Payment request** sends the same any time;
+  `sendMessage` refuses a payment request that fails the check. Without
+  details set, the reminder keeps its one-line balance sentence.
+- The details are **property data** (`upiId`, `upiPayee`, `upiQr`,
+  `bankDetails` → `properties.upi_id`, `upi_payee`, `upi_qr`,
+  `bank_details`, added by `supabase/payment-details.sql`), synced like the
+  Wi-Fi. **Never in the code: the repo is public.** `tests/test_payment.js`
+  scans every file and every commit for UPI IDs on real bank handles, IFSC
+  codes and embedded images; only its own fake values are allowed. Run it
+  with `STAYLOG_REAL_UPI=<your id>` to also search for the real one by value.
+- The UPI ID goes alone on its own line, unformatted, so a long-press copies
+  just the ID. The QR (a PNG data: URL, like the signature) is shared through
+  the share sheet like the PDFs (`sharePaymentQR`, same guard); the message
+  says a QR follows only when one is set.
 
 ## Gotchas
 
@@ -233,6 +264,8 @@ also fetch from Supabase with `cache: 'no-store'` as a second layer.
     node tests/test_ical_import.js
     node tests/test_checkout_wage.js
     node tests/test_utensils.js
+    node tests/test_payment.js        # STAYLOG_REAL_UPI=… also searches the repo for your real UPI ID
+    STAYLOG_PG="…" node tests/test_payment_sql.js    # payment-details.sql: constraints, owner-only
     STAYLOG_PG="…" node tests/test_utensils_sql.js   # all four scripts in order; the once-a-day, present-first and undo rules
     STAYLOG_PG="…" node tests/test_checkout_sql.js   # setup.sql + attendance.sql + checkout-wage.sql; her staff_standing
     STAYLOG_PG="-h <socket dir> -p <port> -U postgres" node tests/test_ical_sql.js   # skips without a Postgres; loads setup.sql + ical.sql, checks access and the report
@@ -242,6 +275,14 @@ loans, PDFs, staff page, theme) did not and should be rebuilt here before those
 areas are changed.
 
 ## Open items
+
+- If a Booking.com booking is ever prepaid through Booking.com Payments, record
+  it as paid in the app: the app treats every Booking.com stay as
+  pay-at-property and would otherwise ask the guest for the balance.
+- Payment details travel in the app's own backup file (Back up data), as the
+  Wi-Fi password does. That file is yours; keep it out of the repo.
+- The confirmation message still says "(payable at check-in)"; Booking.com and
+  direct guests here may pay any time during the stay. Reword if it confuses.
 
 - Editing a wage re-prices every unpaid, app-priced attendance day to the new
   rate (re-pricing always uses current rates). Confirm that is wanted; if a
