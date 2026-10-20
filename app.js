@@ -6,7 +6,7 @@
 // ─── Build ────────────────────────────────────────────────────────────────────
 // Bump BOTH of these together. This date sat at 28 Sept through a dozen
 // releases and was read, reasonably, as proof the upload had not landed.
-const APP_VERSION='v42', APP_BUILT='20 Oct 2026';
+const APP_VERSION='v43', APP_BUILT='20 Oct 2026';
 // The CACHE_NAME of the sw.js released with this app.js. Every release bumps
 // APP_VERSION and CACHE_NAME together, so one is derived from the other rather
 // than being a fourth thing to forget; the tests fail if they ever disagree.
@@ -90,7 +90,7 @@ const addDaysISO =(iso,n)=>{const d=new Date(iso+'T00:00:00');d.setDate(d.getDat
 let state={
   data:{...defaultData}, auth:null, loggedIn:false,
   swMismatch:null, swBannerHidden:false,   // the running service worker is not this release's
-  tab:'dashboard', modal:null, editItem:null,
+  tab:'dashboard', modal:null, editItem:null, sendFocus:null,
   filterProp:'all', bookingFilter:'all', expandedBooking:null,
   loanFilter:'active', expandedLoan:null, showStaffPanel:false, expandedExpense:null,
   dashMonth:{year:new Date().getFullYear(),month:new Date().getMonth()},
@@ -255,7 +255,7 @@ function modal(title,contentFn){
   requestAnimationFrame(()=>{sheet.style.transition='transform .28s cubic-bezier(.32,.72,0,1)';sheet.style.transform='translateY(0)';});
   return overlay;
 }
-function closeModal(){setState({modal:null,editItem:null});}
+function closeModal(){setState({modal:null,editItem:null,sendFocus:null});}
 
 // ─── PIN Screen ───────────────────────────────────────────────────────────────
 function injectPinCSS(){
@@ -561,6 +561,199 @@ function themeRow(){
   );
 }
 
+// ─── Notifications ────────────────────────────────────────────────────────────
+// Reminders pushed by the notify Edge Function (supabase/functions/notify).
+// They are only reminders: nothing in the app depends on one arriving, and
+// everything a notification points at is on its card or Home anyway.
+//
+// iPhone rules (iOS 16.4+): push exists only in the Home Screen app, never in
+// a Safari tab, and the permission prompt may only come from a tap. iOS can
+// also drop a subscription without saying so, so every open quietly checks it
+// and re-saves it to the cloud.
+const PUSH_ALERTS=[
+  ['attendance','Laxmi marks attendance'],
+  ['utensils','Laxmi reports utensil cleaning'],
+  ['arrivals','Guests arriving tomorrow','9 AM, ready to send the arrival message'],
+  ['balances','Balance due at check-out tomorrow','9 AM · Direct and Booking.com only'],
+  ['stale','App not synced in 2 days','9 AM'],
+];
+const pushUI={sub:null,checked:false,busy:false,msg:'',msgBad:false,prefs:null,prefsErr:''};
+const isIOS=()=>/iPad|iPhone|iPod/.test(navigator.userAgent)||(navigator.platform==='MacIntel'&&navigator.maxTouchPoints>1);
+const isStandalone=()=>navigator.standalone===true||
+  !!(window.matchMedia&&window.matchMedia('(display-mode: standalone)').matches);
+const deviceName=()=>/iPad/.test(navigator.userAgent)?'iPad':isIOS()?'iPhone':'this device';
+function vapidKeyBytes(){
+  const s=String((window.STAYLOG_CLOUD||{}).vapidPublicKey||'').trim();
+  if(!s)return null;
+  const b=atob(s.replace(/-/g,'+').replace(/_/g,'/')+'='.repeat((4-s.length%4)%4));
+  return Uint8Array.from(b,c=>c.charCodeAt(0));
+}
+// Why notifications cannot be on here, or '' if they can.
+function pushBlocker(){
+  if(isIOS()&&!isStandalone())return 'safari';
+  if(!('serviceWorker' in navigator)||!('PushManager' in window)||!('Notification' in window))return 'unsupported';
+  if(!(window.STAYLOG_CLOUD||{}).vapidPublicKey)return 'nokey';
+  const cs=cloudStatus();
+  if(!cs.configured||!cs.signedIn)return 'signin';
+  if(Notification.permission==='denied')return 'denied';
+  return '';
+}
+const sameKey=(a,b)=>{
+  if(!a||!b)return false;
+  const x=new Uint8Array(a),y=new Uint8Array(b);
+  return x.length===y.length&&x.every((v,i)=>v===y[i]);
+};
+// The browser's subscription, made if permission is already given. A key
+// change (new VAPID pair) means the old subscription can never be sent to.
+async function currentSub(make){
+  // ready never settles when no worker is running; say so rather than hang.
+  const reg=await Promise.race([navigator.serviceWorker.ready,
+    new Promise((_,no)=>setTimeout(()=>no(new Error('the app’s service worker is not running — reopen StayLog')),5000))]);
+  let sub=await reg.pushManager.getSubscription();
+  const key=vapidKeyBytes();
+  if(sub&&key&&sub.options&&sub.options.applicationServerKey&&!sameKey(sub.options.applicationServerKey,key)){
+    const old=sub.endpoint; await sub.unsubscribe().catch(()=>{}); sub=null;
+    window.StayLogCloud.pushRemove(old).catch(()=>{});
+  }
+  if(!sub&&make)sub=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:key});
+  return sub;
+}
+function pushRefresh(){ if(state.modal==='menu')render(); }
+// Every app open: quiet. Never prompts; only acts if permission was given.
+async function resubscribeQuietly(){
+  try{
+    if(pushBlocker()||Notification.permission!=='granted'){pushUI.checked=true;return;}
+    const sub=await currentSub(true);
+    pushUI.sub=sub;
+    if(sub)await window.StayLogCloud.pushSave(sub.toJSON(),deviceName());
+  }catch(e){ /* a reminder that cannot be armed is reported in the menu, not here */ }
+  pushUI.checked=true; pushRefresh();
+}
+// From the button. requestPermission is the first thing the tap does: iOS
+// only shows the prompt when it comes straight from a user gesture.
+function turnOnPush(){
+  const ask=Notification.permission==='granted'?Promise.resolve('granted'):Notification.requestPermission();
+  pushUI.busy=true; pushUI.msg=''; pushRefresh();
+  return Promise.resolve(ask).then(async perm=>{
+    if(perm!=='granted'){pushUI.msg=perm==='denied'?'':'Not turned on — the iPhone asked and it was not allowed.';pushUI.msgBad=true;return;}
+    const sub=await currentSub(true);
+    await window.StayLogCloud.pushSave(sub.toJSON(),deviceName());
+    pushUI.sub=sub; pushUI.msg='On. Tap Send test to check one arrives.'; pushUI.msgBad=false;
+  }).catch(e=>{pushUI.msg='Could not turn on: '+(e.message||e);pushUI.msgBad=true;})
+    .finally(()=>{pushUI.busy=false;pushUI.checked=true;pushRefresh();});
+}
+async function turnOffPush(){
+  pushUI.busy=true; pushRefresh();
+  try{
+    const sub=pushUI.sub||await currentSub(false);
+    if(sub){const ep=sub.endpoint;await sub.unsubscribe();await window.StayLogCloud.pushRemove(ep);}
+    pushUI.sub=null; pushUI.msg=`Off for this ${deviceName()}.`; pushUI.msgBad=false;
+  }catch(e){pushUI.msg='Could not turn off: '+(e.message||e);pushUI.msgBad=true;}
+  pushUI.busy=false; pushRefresh();
+}
+async function sendTestPush(){
+  pushUI.busy=true; pushUI.msg='Sending…'; pushUI.msgBad=false; pushRefresh();
+  try{
+    const r=await window.StayLogCloud.pushTest();
+    if(r.sent)pushUI.msg=`Sent to ${r.sent} device${r.sent===1?'':'s'} — it should arrive in a few seconds.`;
+    else{pushUI.msg=r.gone?'Apple says this subscription has ended. Tap Turn on notifications again.':'No device is registered in the cloud yet. Tap Turn on notifications.';pushUI.msgBad=true;}
+  }catch(e){pushUI.msg='Test not sent: '+(e.message||e);pushUI.msgBad=true;}
+  pushUI.busy=false; pushRefresh();
+}
+function loadPushPrefs(){
+  if(pushUI.prefs||pushUI._loading)return;
+  pushUI._loading=true;
+  window.StayLogCloud.pushPrefs()
+    .then(p=>{pushUI.prefs=Object.fromEntries(PUSH_ALERTS.map(([k])=>[k,p[k]!==false]));pushUI.prefsErr='';})
+    .catch(e=>{pushUI.prefsErr=e.message||String(e);})
+    .finally(()=>{pushUI._loading=false;pushRefresh();});
+}
+function togglePushPref(k){
+  const was=pushUI.prefs, next={...was,[k]:!was[k]};
+  pushUI.prefs=next; pushRefresh();
+  window.StayLogCloud.savePushPrefs(next)
+    .catch(e=>{pushUI.prefs=was;pushUI.prefsErr='Not saved: '+(e.message||e);pushRefresh();});
+}
+function notificationsSection(){
+  const why=pushBlocker();
+  if(!why&&!pushUI.checked&&!pushUI._checking){pushUI._checking=true;resubscribeQuietly().finally(()=>{pushUI._checking=false;});}
+  const on=!why&&Notification.permission==='granted'&&!!pushUI.sub;
+  const dev=deviceName();
+  const status=on?`On for this ${dev}`:
+    why==='safari'?'Not available in a Safari tab':
+    why==='unsupported'?(isIOS()?'Needs iOS 16.4 or later':'This browser cannot receive notifications'):
+    why==='nokey'?'Not set up yet — the public key is missing from cloud-config.js':
+    why==='signin'?'Sign in to Cloud sync first — reminders are sent from the cloud':
+    why==='denied'?`Blocked for StayLog in the ${dev}’s Settings`:
+    !pushUI.checked?'Checking…':`Off for this ${dev}`;
+  const wrap=div({'data-push':'1',style:{padding:'10px 12px 4px'}},
+    div({className:'kicker',style:{marginBottom:6}},'Notifications'),
+    div({'data-push-status':'1',style:{display:'flex',alignItems:'center',gap:7,fontSize:13.5,fontWeight:600,
+      color:on?'var(--accent)':'var(--text-mid)'}},
+      ico(on?'bell-ringing':'bell-off',{style:{fontSize:16}}),status));
+  const note=t=>wrap.appendChild(div({style:{fontSize:12,color:'var(--muted)',lineHeight:1.5,marginTop:6}},t));
+  if(why==='safari')note('iPhone only sends notifications to StayLog opened from the Home Screen. In Safari tap Share (the square with an arrow), then Add to Home Screen. Open StayLog from that new icon and come back to this menu.');
+  if(why==='denied')note(`Open Settings → Notifications → StayLog and allow notifications, then come back here.`);
+  const row=div({style:{display:'flex',gap:8,marginTop:10}});
+  const b=(label,onClick,attr,primary)=>btn({...attr,disabled:pushUI.busy,className:primary?'btn-primary btn-sm':'btn-ghost btn-sm',
+    style:{flex:'1',minHeight:40},onClick},label);
+  if(!why&&!on)row.appendChild(b('Turn on notifications',turnOnPush,{'data-push-on':'1'},true));
+  if(on){
+    row.appendChild(b('Send test',sendTestPush,{'data-push-test':'1'},true));
+    row.appendChild(b('Turn off',turnOffPush,{'data-push-off':'1'}));
+  }
+  if(row.childNodes.length)wrap.appendChild(row);
+  if(pushUI.msg)wrap.appendChild(div({'data-push-msg':'1',style:{fontSize:12,marginTop:6,lineHeight:1.5,
+    color:pushUI.msgBad?'var(--danger)':'var(--muted)'}},pushUI.msg));
+  if(on){
+    loadPushPrefs();
+    if(pushUI.prefsErr)note(pushUI.prefsErr);
+    const p=pushUI.prefs;
+    if(p)PUSH_ALERTS.forEach(([k,label,sub])=>{
+      const yes=p[k]!==false;
+      wrap.appendChild(btn({'data-push-pref':k,role:'switch','aria-checked':String(yes),
+        style:{display:'flex',alignItems:'center',gap:10,width:'100%',textAlign:'left',padding:'9px 2px',
+          background:'transparent',color:'var(--text)',fontSize:13.5,fontWeight:600},onClick:()=>togglePushPref(k)},
+        div({style:{flex:1,minWidth:0}},label,
+          sub?div({style:{fontSize:11.5,fontWeight:400,color:'var(--muted)',marginTop:1}},sub):null),
+        div({style:{width:40,height:24,borderRadius:12,flexShrink:0,position:'relative',
+          background:yes?'var(--accent)':'var(--border)',transition:'background .15s'}},
+          div({style:{position:'absolute',top:3,left:yes?19:3,width:18,height:18,borderRadius:9,
+            background:'var(--white)',boxShadow:'var(--shadow)',transition:'left .15s'}}))));
+    });
+    note('Reminders only — everything they point at is on Home and on the booking anyway.');
+  }
+  return wrap;
+}
+
+// ─── Opening a booking or screen from a notification ─────────────────────────
+// A tap arrives as ./#open=<booking id>&send=arrival|payment, #open=cloud or
+// #open=menu — in the address when the app starts, or from the service worker
+// when it is already open. It waits behind the PIN.
+let pendingOpen=null;
+function parseOpen(hash){
+  const q=new URLSearchParams(String(hash||'').replace(/^#/,''));
+  const open=q.get('open');
+  return open?{open,send:q.get('send')||''}:null;
+}
+function takeOpen(hash){
+  const o=parseOpen(hash);
+  if(!o)return;
+  pendingOpen=o;
+  try{history.replaceState(null,'',location.pathname+location.search);}catch(e){}
+  if(state.loggedIn&&!state._loading)applyPendingOpen();
+}
+function applyPendingOpen(){
+  const o=pendingOpen; pendingOpen=null;
+  if(!o)return;
+  if(o.open==='menu'||o.open==='cloud'){setState({modal:o.open,editItem:null});return;}
+  const b=state.data.bookings.find(x=>x.id===o.open);
+  if(!b){setState({tab:'bookings',modal:null,editItem:null});return;}
+  const send=['arrival','payment'].includes(o.send)?o.send:'';
+  setState({tab:'bookings',bookingFilter:'all',expandedBooking:b.id,
+    modal:send?'sendConfirm':null,editItem:send?b:null,sendFocus:send?{id:b.id,kind:send}:null});
+}
+
 function renderMenuModal(){
   const{data}=state;
   const content=()=>div({style:{display:'flex',flexDirection:'column',gap:2}},
@@ -570,6 +763,7 @@ function renderMenuModal(){
     menuRow('cloud','Cloud sync',cloudMenuSub(),()=>setState({modal:'cloud'})),
     menuRow('notes','House notes PDF','The instructions guests get after check-in',()=>{
       downloadHouseNotes(data.properties.find(p=>p.id===state.filterProp)||data.properties[0]);closeModal();}),
+    notificationsSection(),
     themeRow(),
     div({style:{height:6}}),
     menuRow('lock','Lock app','Ask for the PIN again',()=>{state.modal=null;state.loggedIn=false;render();},true),
@@ -2111,6 +2305,9 @@ function renderSendModal(){
   const prop=state.data.properties.find(p=>p.id===b.propertyId);
   const num=waNumber(b.phone);
   const due=new Set(dueMessages([b]).map(x=>x.kind));
+  // Opened from a reminder: that message is the one waiting to be sent.
+  const focus=state.sendFocus&&state.sendFocus.id===b.id?state.sendFocus.kind:'';
+  if(focus)due.add(focus);
 
   const content=()=>{
     const wrap=div({style:{display:'flex',flexDirection:'column',gap:10}});
@@ -2126,7 +2323,7 @@ function renderSendModal(){
     MSG_KINDS.forEach(([kind,label,icon,when])=>{
       const sent=msgSentOn(b,kind);
       const isDue=due.has(kind);
-      const row=div({style:{display:'flex',alignItems:'center',gap:11,padding:'11px 12px',
+      const row=div({...(focus===kind?{'data-send-focus':'1'}:{}),style:{display:'flex',alignItems:'center',gap:11,padding:'11px 12px',
         border:`1.5px solid ${isDue?'var(--accent)':'var(--border)'}`,borderRadius:'var(--radius-sm)',
         background:isDue?'var(--accent-light)':'transparent'}});
       row.appendChild(div({style:{width:34,height:34,borderRadius:9,flexShrink:0,display:'flex',
@@ -2154,7 +2351,7 @@ function renderSendModal(){
     const askable=canAskForPayment(b);
     if(askable){
       const sent=msgSentOn(b,'payment');
-      const row=div({'data-pay-row':'1',style:{display:'flex',alignItems:'center',gap:11,padding:'11px 12px',
+      const row=div({'data-pay-row':'1',...(focus==='payment'?{'data-send-focus':'1'}:{}),style:{display:'flex',alignItems:'center',gap:11,padding:'11px 12px',
         border:'1.5px solid var(--gold-line)',borderRadius:'var(--radius-sm)',background:'var(--gold-light)'}});
       row.appendChild(div({style:{width:34,height:34,borderRadius:9,flexShrink:0,display:'flex',
         alignItems:'center',justifyContent:'center',background:'var(--white)',border:'1px solid var(--border)'}},
@@ -2191,6 +2388,8 @@ function renderSendModal(){
       border:'1px solid var(--warn-line)',borderRadius:'var(--radius-sm)',padding:'10px 12px'}},
       'WhatsApp links cannot carry a file. Send a message first, then tap an attachment above and pick the same chat from the share sheet. The house notes are the ones to send once they have checked in.'));
     wrap.appendChild(btn({className:'btn-ghost',style:{width:'100%'},onClick:closeModal},'Close'));
+    if(focus)setTimeout(()=>{const el=wrap.querySelector('[data-send-focus="1"]');
+      if(el&&el.scrollIntoView)el.scrollIntoView({block:'center'});},60);
     return wrap;
   };
   return modal('Send to guest',content);
@@ -3929,6 +4128,7 @@ function render(){
     return;
   }
   if(!state.loggedIn){renderLoginScreen();return;}
+  if(pendingOpen){setTimeout(applyPendingOpen,0);}
   state._clashes=bookingClashes(state.data.bookings);
   state._gaps=((cloudStatus().icalLog)||{}).gaps||{};
   app.innerHTML='';
@@ -3974,10 +4174,24 @@ Promise.all([loadDataFromIDB(),loadAuth()]).then(([data,auth])=>{
     // Opening the app is itself a reason to sync: her attendance marks arrive
     // while this phone is doing nothing, and they only become expenses here.
     window.StayLogCloud.restoreSession()
-      .then(()=>window.StayLogCloud.checkIn&&window.StayLogCloud.checkIn(true))
+      .then(()=>{resubscribeQuietly();return window.StayLogCloud.checkIn&&window.StayLogCloud.checkIn(true);})
       .catch(()=>{});
   }
   setTimeout(checkSwMatch,SW_CHECK_DELAY);
 });
+// A notification tapped while the app was closed opens it at #open=…; one
+// tapped while it is open is passed on by the service worker.
+takeOpen(location.hash);
+window.addEventListener('hashchange',()=>takeOpen(location.hash));
+try{navigator.serviceWorker&&navigator.serviceWorker.addEventListener('message',e=>{
+  if(e.data&&e.data.type==='open')try{takeOpen(new URL(e.data.url).hash);}catch(err){}
+});}catch(e){}
 // Coming back to the app is when an hourly update may have landed underneath it.
 document.addEventListener('visibilitychange',()=>{if(!document.hidden)setTimeout(checkSwMatch,SW_CHECK_DELAY);});
+// iOS can drop a subscription while the app sits in the background, and a
+// Home Screen app is usually resumed rather than reopened.
+let lastResub=0;
+document.addEventListener('visibilitychange',()=>{
+  if(document.hidden||Date.now()-lastResub<60000)return;
+  lastResub=Date.now(); resubscribeQuietly();
+});

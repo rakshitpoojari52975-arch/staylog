@@ -21,7 +21,7 @@
    must never be served from a cache, so live data is now never even looked at
    here — it is not on the list. */
 
-const CACHE_NAME = 'staylog-v42';
+const CACHE_NAME = 'staylog-v43';
 
 const ASSETS = [
   './',
@@ -134,5 +134,55 @@ self.addEventListener('message', e => {
     e.ports[0].postMessage({ cache: CACHE_NAME });
 });
 
+// ── Push notifications ──────────────────────────────────────────────────────
+// Nothing here touches the cache: these handlers only show and open.
+//
+// Every push shows a visible notification, even one that cannot be read. iOS
+// revokes a subscription after pushes that show nothing, so there is no
+// silent path. The payload ({title, body, url, tag}) is written by the Edge
+// Function supabase/functions/notify.
+function notificationFor(data) {
+  let m = null;
+  try { m = data && data.json(); } catch (e) { m = null; }
+  if (!m || typeof m !== 'object') m = {};
+  const title = String(m.title || 'StayLog');
+  return { title, options: {
+    body: String(m.body || 'Open StayLog to see what changed.'),
+    tag: m.tag ? String(m.tag) : undefined,
+    icon: './icons/icon-192.png',
+    data: { url: clickTarget(m.url) },
+  } };
+}
+
+// Only the app's own pages may be opened from a notification.
+function clickTarget(url) {
+  const scope = (self.registration && self.registration.scope) || (self.location.origin + '/');
+  try {
+    const u = new URL(url || './', scope);
+    if (u.origin === self.location.origin) return u.href;
+  } catch (e) { /* fall through */ }
+  return new URL('./', scope).href;
+}
+
+self.addEventListener('push', e => {
+  const n = notificationFor(e.data);
+  e.waitUntil(self.registration.showNotification(n.title, n.options));
+});
+
+// A tap opens the booking or screen it is about. An app already open is
+// brought forward and told where to go; otherwise it opens at that address.
+self.addEventListener('notificationclick', e => {
+  e.notification.close();
+  const url = clickTarget(e.notification.data && e.notification.data.url);
+  e.waitUntil(self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(list => {
+    const open = list.find(c => c.url && c.url.startsWith(new URL('./', url).href));
+    if (open) {
+      open.postMessage({ type: 'open', url });
+      return open.focus ? open.focus() : open;
+    }
+    return self.clients.openWindow(url);
+  }));
+});
+
 // Exposed for tests, which load this file outside a browser.
-if (typeof module !== 'undefined') module.exports = { routeFor, STATIC_HOSTS, CACHE_NAME };
+if (typeof module !== 'undefined') module.exports = { routeFor, STATIC_HOSTS, CACHE_NAME, notificationFor, clickTarget };

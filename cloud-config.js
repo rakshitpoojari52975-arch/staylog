@@ -12,4 +12,10 @@ window.STAYLOG_CLOUD = {
   publishableKey: 'sb_publishable_otiF0zEKxecVQh3SXvUdpQ_ZQb5VxnO',
   // Her login screen turns "sunitha" into "sunitha@staff.raayavasyam.invalid"
   staffEmailDomain: 'staff.raayavasyam.invalid',
+  // Push notifications: the PUBLIC half of the VAPID key pair (87 characters,
+  // starts with B). Public by design, like the publishable key. Its PRIVATE
+  // half is a Supabase secret (VAPID_PRIVATE_KEY) and never goes here or
+  // anywhere in this repository. Blank = the menu says notifications are not
+  // set up yet.
+  vapidPublicKey: '',
 };
