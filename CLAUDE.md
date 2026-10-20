@@ -175,6 +175,59 @@ also fetch from Supabase with `cache: 'no-store'` as a second layer.
 - A stay a platform moves keeps its old dates (`icalMovedFrom`); the card says
   so for 7 days.
 
+## Notifications (iPhone push)
+
+- **Reminders only.** Nothing in the app may depend on one arriving: whatever
+  a notification points at is already on Home and on the booking.
+- The Edge Function `supabase/functions/notify/index.ts` sends them. It is
+  one file with no imports, does Web Push by hand (RFC 8291 aes128gcm, RFC 8292
+  VAPID, via WebCrypto), and the tests run it in Node, decrypting each push with
+  the device's keys and verifying the signature. Setup is in the README
+  beside it: `push.sql`, four secrets, deploy with Verify JWT off, cron
+  `30 3 * * *` (9:00 AM IST) with `{"job":"daily"}`, and webhooks on
+  `attendance` and `utensil_marks`. Cron and webhooks prove themselves with the
+  `x-cron-secret` header. The app's **Send test** uses the owner's own JWT and
+  can do nothing else.
+- What fires (each alert has a toggle in the ⋯ menu, all on by default; a
+  missing pref means on):
+  - `attendance` / `utensils`: a **fresh** mark only — an INSERT, or an UPDATE
+    that brings back a mark that was undone. The app stamping it and her undo
+    are not news. Once per mark id (`push_log`), so marking again after an
+    undo is not announced twice.
+  - `arrivals`: check-in **tomorrow** (IST), not cancelled. Opens
+    `#open=<id>&send=arrival`.
+  - `balances`: check-out **tomorrow**, `source` Direct (or blank) or
+    Booking.com, not cancelled, balance > 0. Never on the day itself, never
+    Airbnb or other platforms (the same pair as `paysUsDirectly`). Opens
+    `#open=<id>&send=payment`.
+  - `stale`: `sync_status.last_sync_at` older than 2 days (written by
+    `push()` after every good sync; no row means no warning). Opens
+    `#open=cloud`.
+  Each reminder is claimed in `push_log` before sending, so a cron that fires
+  twice notifies once; it is un-claimed if no device took it.
+- **The VAPID private key is a Supabase secret, never in the repo.** Only the
+  public key goes in `cloud-config.js` (`vapidPublicKey`; blank = the menu says
+  not set up). `tools/vapid-keys.html` makes a pair in the browser and sends
+  nothing. `tests/test_push_keys.js` scans every file, every commit and the
+  history bundle, and tries every 43-character token against the public key.
+- `push.sql`: `push_subscriptions`, `notification_prefs`, `sync_status`
+  (owner full access) and `push_log` (owner reads; only the function writes).
+  All revoke Supabase's default `ALL` first.
+- **iOS rules.** Push exists only in the Home Screen app (iOS 16.4+), never in
+  a Safari tab: the menu explains Add to Home Screen there. The permission
+  prompt comes only from the **Turn on notifications** tap, and
+  `requestPermission` is the first thing that tap does. iOS drops
+  subscriptions, so every open (and every return after a minute) quietly
+  re-subscribes if permission is granted and re-saves the row; it never
+  prompts. A subscription made under a different public key is replaced.
+- **Every push shows a notification** (`sw.js` `push` handler), even an
+  unreadable one: iOS revokes a subscription after silent pushes. A tap opens
+  the URL it carries, which must be the app's own origin: focused and told by
+  `postMessage({type:'open'})` if open, `openWindow` if not. The app takes
+  `#open=…` from the address or that message, waits behind the PIN, clears
+  the hash, and opens the Send sheet with that message highlighted
+  (`state.sendFocus`). The handlers touch no cache; the allowlist is unchanged.
+
 ## Privacy and access — do not loosen these
 
 - The house help reads **only** through `SECURITY DEFINER` functions with fixed
@@ -265,6 +318,10 @@ also fetch from Supabase with `cache: 'no-store'` as a second layer.
     node tests/test_checkout_wage.js
     node tests/test_utensils.js
     node tests/test_payment.js        # STAYLOG_REAL_UPI=… also searches the repo for your real UPI ID
+    node tests/test_notify_function.js   # Node 22.18+; every alert's condition, decrypts each push, checks VAPID
+    node tests/test_push_app.js          # menu, subscribe/unsubscribe, quiet re-subscribe, deep links, sw.js handlers
+    node tests/test_push_keys.js         # STAYLOG_REAL_VAPID_PRIVATE=… also searches for your real private key
+    STAYLOG_PG="…" node tests/test_push_sql.js       # push.sql: twice; owner-only; no TRUNCATE
     STAYLOG_PG="…" node tests/test_payment_sql.js    # payment-details.sql: constraints, owner-only
     STAYLOG_PG="…" node tests/test_utensils_sql.js   # all four scripts in order; the once-a-day, present-first and undo rules
     STAYLOG_PG="…" node tests/test_checkout_sql.js   # setup.sql + attendance.sql + checkout-wage.sql; her staff_standing
@@ -275,6 +332,20 @@ loans, PDFs, staff page, theme) did not and should be rebuilt here before those
 areas are changed.
 
 ## Open items
+
+- **Push notifications have not met a real iPhone or the real project yet.**
+  After setup, Send test from the Home Screen app; if it never arrives,
+  read the function's logs. Apple's endpoint is the only one targeted;
+  the encryption is standard and was checked against its RFCs, not a device.
+- Notifications go to every device the owner has turned them on for; there
+  is no per-device choice of alerts. Fine for one iPhone.
+- The 9 AM run uses the bookings in the cloud, so a booking made offline and
+  not yet synced gets no reminder (the stale-sync warning covers a long gap).
+- The attendance webhook shows Laxmi's mark even before the phone turns it
+  into a wage; that is the point, but it means a mark she undoes within the
+  15 minutes was still announced.
+- `push_log` grows by a few rows a day and is never pruned. Harmless for
+  years; delete rows older than a month in SQL if it ever matters.
 
 - If a Booking.com booking is ever prepaid through Booking.com Payments, record
   it as paid in the app: the app treats every Booking.com stay as

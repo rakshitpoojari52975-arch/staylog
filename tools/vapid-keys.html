@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VAPID Key Generator</title>
+<!-- Makes the key pair for StayLog's push notifications, in this browser.
+     Nothing is sent anywhere and nothing is stored: close the tab and the
+     keys are gone. Same format as `npx web-push generate-vapid-keys`.
+     The PRIVATE key goes only into Supabase (Edge Functions → Secrets →
+     VAPID_PRIVATE_KEY). Never into cloud-config.js, a commit, or a chat. -->
+<style>
+  :root{--bg:#faf7f2;--card:#fff;--text:#2b2620;--muted:#7a7066;--line:#e6dfd4;--accent:#8a5a2b;--warn:#a33a2a;color-scheme:light}
+  @media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--bg:#1b1916;--card:#25221e;--text:#efe9e1;--muted:#a69c90;--line:#3a352f;--accent:#d9a066;--warn:#ef8a78;color-scheme:dark}}
+  :root[data-theme="dark"]{--bg:#1b1916;--card:#25221e;--text:#efe9e1;--muted:#a69c90;--line:#3a352f;--accent:#d9a066;--warn:#ef8a78;color-scheme:dark}
+  body{margin:0;background:var(--bg);color:var(--text);font:15px/1.55 system-ui,-apple-system,sans-serif}
+  main{max-width:640px;margin:0 auto;padding:24px 16px 48px}
+  h1{font-size:22px;margin:0 0 6px}
+  p{color:var(--muted);margin:0 0 14px}
+  button{font:inherit;font-weight:600;padding:10px 16px;border-radius:10px;border:1px solid var(--accent);background:var(--accent);color:var(--bg);cursor:pointer}
+  button.ghost{background:transparent;color:var(--accent);padding:6px 12px;font-size:13px}
+  .key{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin-top:14px}
+  .key b{display:block;margin-bottom:2px}
+  .key small{display:block;color:var(--muted);margin-bottom:8px}
+  .key.secret b{color:var(--warn)}
+  code{display:block;word-break:break-all;font:13px/1.45 ui-monospace,Menlo,monospace;background:var(--bg);padding:8px 10px;border-radius:8px;margin-bottom:8px}
+</style>
+</head>
+<body>
+<main>
+  <h1>StayLog notification keys</h1>
+  <p>Makes a VAPID key pair in this browser. Nothing leaves this page and nothing is saved, so copy both before closing it. Make one pair, once; a new pair means every device turns notifications on again.</p>
+  <button id="go">Make a key pair</button>
+  <div id="out" hidden>
+    <div class="key">
+      <b>Public key</b>
+      <small>Public by design. Goes in <em>cloud-config.js</em> as <em>vapidPublicKey</em>, and in Supabase as the secret <em>VAPID_PUBLIC_KEY</em>.</small>
+      <code id="pub"></code>
+      <button class="ghost" data-copy="pub">Copy</button>
+    </div>
+    <div class="key secret">
+      <b>Private key: keep it secret</b>
+      <small>Only in Supabase, as the secret <em>VAPID_PRIVATE_KEY</em>. Never in cloud-config.js, the repository, a message or a screenshot. Anyone holding it can send notifications as StayLog.</small>
+      <code id="priv"></code>
+      <button class="ghost" data-copy="priv">Copy</button>
+    </div>
+  </div>
+</main>
+<script>
+const b64u=b=>btoa(String.fromCharCode(...new Uint8Array(b))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+document.getElementById('go').onclick=async()=>{
+  const kp=await crypto.subtle.generateKey({name:'ECDSA',namedCurve:'P-256'},true,['sign','verify']);
+  document.getElementById('pub').textContent=b64u(await crypto.subtle.exportKey('raw',kp.publicKey));
+  document.getElementById('priv').textContent=(await crypto.subtle.exportKey('jwk',kp.privateKey)).d;
+  document.getElementById('out').hidden=false;
+};
+document.querySelectorAll('[data-copy]').forEach(b=>b.onclick=()=>{
+  navigator.clipboard.writeText(document.getElementById(b.dataset.copy).textContent)
+    .then(()=>{b.textContent='Copied';setTimeout(()=>b.textContent='Copy',1500);});
+});
+</script>
+</body>
+</html>

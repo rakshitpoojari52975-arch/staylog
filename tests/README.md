@@ -25,6 +25,12 @@ kept outside it and was lost when the machine running them was reset.
     node tests/test_payment.js        # payment details: who gets them, the balance, QR, receipt offer, repo scan
     STAYLOG_PG="-h /tmp -p 5432 -U postgres" node tests/test_payment_sql.js
                                       # payment-details.sql after setup.sql; skips without one
+    node tests/test_notify_function.js   # the notify Edge Function in Node: each alert only when its condition holds,
+                                         # pushes decrypted (RFC 8291) and VAPID-verified (RFC 8292)
+    node tests/test_push_app.js       # menu, subscribe/unsubscribe, quiet re-subscribe, deep links, sw.js push handlers
+    node tests/test_push_keys.js      # the VAPID private key is in no file, commit or bundle
+    STAYLOG_PG="-h /tmp -p 5432 -U postgres" node tests/test_push_sql.js
+                                      # push.sql after setup.sql: twice, owner-only, no TRUNCATE; skips without one
 
 `fixtures/sw-before-fix.js` is the service worker that cached the Supabase API.
 It is kept so `test_sw_upgrade.js` can prove the fix recovers from it.

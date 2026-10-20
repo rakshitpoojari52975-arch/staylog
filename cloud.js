@@ -875,6 +875,10 @@
       dirty = false;
       lastError = '';
       try { localStorage.setItem(LAST_SYNC, new Date().toISOString()); } catch {}
+      // The cloud's note of it, for the "not synced in 2 days" reminder. Until
+      // push.sql has run the table is missing; that is not a sync failure.
+      await c.from('sync_status').upsert({ owner_id: owner, last_sync_at: new Date().toISOString() },
+        { onConflict: 'owner_id' }).then(() => {}, () => {});
     } catch (err) {
       lastError = err.message || String(err);
       throw err;
@@ -909,6 +913,59 @@
       properties: out.properties, bookings: out.bookings, expenses: out.expenses,
       staff: out.staff, loans: out.loans,
     };
+  }
+
+  // ── Push notifications ─────────────────────────────────────────────────────
+  // The browser makes the subscription; these keep the cloud's copy, which is
+  // what the notify Edge Function sends to. Reminders only: nothing in the app
+  // waits on one arriving. Tables come from supabase/push.sql.
+  const PUSH_SQL = 'supabase/push.sql';
+  const explain = e => {
+    const t = `${(e && e.code) || ''} ${(e && e.message) || e}`;
+    return /PGRST205|42P01|does not exist|schema cache/i.test(t)
+      ? `the notification tables are not set up — run ${PUSH_SQL} in Supabase` : (e && e.message) || String(e);
+  };
+
+  async function pushSave(sub, device) {
+    if (!session) throw new Error('not signed in');
+    const k = (sub && sub.keys) || {};
+    if (!sub || !sub.endpoint || !k.p256dh || !k.auth) throw new Error('the browser gave no usable subscription');
+    const c = await client();
+    const { error } = await c.from('push_subscriptions').upsert({
+      endpoint: sub.endpoint, owner_id: session.user.id, p256dh: k.p256dh, auth: k.auth,
+      device: device || null, last_seen_at: new Date().toISOString() }, { onConflict: 'endpoint' });
+    if (error) throw new Error(explain(error));
+  }
+  async function pushRemove(endpoint) {
+    if (!session || !endpoint) return;
+    const c = await client();
+    const { error } = await c.from('push_subscriptions').delete().eq('endpoint', endpoint);
+    if (error) throw new Error(explain(error));
+  }
+  async function pushPrefs() {
+    if (!session) throw new Error('not signed in');
+    const c = await client();
+    const { data, error } = await c.from('notification_prefs').select('prefs').eq('owner_id', session.user.id);
+    if (error) throw new Error(explain(error));
+    return (data && data[0] && data[0].prefs) || {};
+  }
+  async function savePushPrefs(prefs) {
+    if (!session) throw new Error('not signed in');
+    const c = await client();
+    const { error } = await c.from('notification_prefs').upsert({
+      owner_id: session.user.id, prefs, updated_at: new Date().toISOString() }, { onConflict: 'owner_id' });
+    if (error) throw new Error(explain(error));
+  }
+  async function pushTest() {
+    if (!session) throw new Error('not signed in');
+    const c = await client();
+    const { data, error } = await c.functions.invoke('notify', { body: { job: 'test' } });
+    if (error) {
+      let detail = '';
+      try { detail = (await error.context.json()).error || ''; } catch {}
+      throw new Error(detail || (/404|not found/i.test(error.message) ? 'the notify function is not deployed' : error.message));
+    }
+    return data || {};
   }
 
   // ── Scheduling ─────────────────────────────────────────────────────────────
@@ -969,6 +1026,7 @@
   window.StayLogCloud = {
     restoreSession, signIn, signOut, push, pull, status, markDirty, checkIn,
     listFeeds, saveFeed, importNow,
+    pushSave, pushRemove, pushPrefs, savePushPrefs, pushTest,
     _planIcal: planIcal, _icalBookingId: icalBookingId, _coverageGaps: coverageGaps,   // for the tests
     onChange: fn => listeners.push(fn),
     staffEmail: u => `${String(u || '').trim().toLowerCase()}@${CFG.staffEmailDomain}`,
