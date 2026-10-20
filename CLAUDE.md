@@ -15,6 +15,13 @@ anything.
   in `app.js`, and `CACHE_NAME` in `sw.js`. Also `PAGE_VERSION` in `staff.js`
   when that file changes. `APP_BUILT` once sat at "28 Sept" for a dozen
   releases and was read, reasonably, as proof uploads were not landing.
+- **Editing `cloud-config.js` is a release too.** The VAPID key was once
+  committed on its own: `sw.js` was unchanged, so no new worker, no reload,
+  and the resumed Home Screen app kept the blank key it had loaded. Since v44
+  the worker fetches the app's files with `cache: 'no-cache'` (so a GitHub
+  Pages copy up to 10 minutes old is never served), and when the key is blank
+  the menu re-reads the deployed `cloud-config.js` (`refreshConfigKey()`).
+  Still bump the versions.
 - The ⋯ menu footer shows the app version and the running service worker's
   cache name. If they disagree with what was shipped, an upload did not land.
 - `app.js` expects the worker `'staylog-'+APP_VERSION` (`SW_CACHE`), so

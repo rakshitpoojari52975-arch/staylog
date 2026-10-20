@@ -81,8 +81,12 @@ const open=async(o={},hash='')=>{
   for(const g of ['**://*.supabase.co/**','**fonts.googleapis.com**','**cdn.jsdelivr.net**'])await ctx.route(g,r=>r.abort());
   await ctx.route('**vendor/supabase.umd.js',r=>r.fulfill({contentType:'text/javascript',body:STUB}));
   const cfg=fs.readFileSync(path.join(ROOT,'cloud-config.js'),'utf8')
-    .replace(/vapidPublicKey:\s*'[^']*'/,`vapidPublicKey: '${o.noKey?'':KEY}'`);
-  await ctx.route('**/cloud-config.js',r=>r.fulfill({contentType:'text/javascript',body:cfg}));
+    .replace(/vapidPublicKey:\s*'[^']*'/,`vapidPublicKey: '${o.noKey||o.keyLater?'':KEY}'`);
+  // o.keyLater: the page loads a copy from before the key was added, the
+  // server has it since (a resumed Home Screen app, a stale HTTP cache).
+  let served=0;
+  const cfgNow=fs.readFileSync(path.join(ROOT,'cloud-config.js'),'utf8').replace(/vapidPublicKey:\s*'[^']*'/,`vapidPublicKey: '${KEY}'`);
+  await ctx.route('**/cloud-config.js',r=>r.fulfill({contentType:'text/javascript',body:o.keyLater&&served++>0?cfgNow:cfg}));
   const page=await ctx.newPage(); const errs=[];
   page.on('pageerror',e=>errs.push(e.message)); page.on('dialog',d=>d.accept());
   await page.addInitScript(([s,o,fp])=>{localStorage.setItem('staylog_v2',JSON.stringify(s));
@@ -166,6 +170,15 @@ for(const [label,o,re] of [
 ]){ const {ctx,page}=await open(o); const t=await menu(page);
   ok(`${label}: “${(t.match(re)||[''])[0].split('\n')[0]}”`, re.test(t)&&await page.locator('[data-push-on]').count()===0, t);
   await ctx.close(); }
+{ const {ctx,page,errs}=await open({keyLater:true,permission:'granted'});
+  const t=await menu(page);
+  ok('a key added after the app loaded is picked up from the deployed file', /On for this iPhone/.test(t)&&!/Not set up/.test(t), t);
+  ok('and the dropped subscription is remade under it, without a prompt', (await P(page)).subscribed.length===1&&(await P(page)).requested===0, await P(page));
+  ok('no page errors', errs.length===0, errs);
+  await ctx.close(); }
+{ const {ctx,page}=await open({noKey:true}); const t=await menu(page);
+  ok('with no key anywhere, it says how to make a new one show up', /checked too/.test(t)&&/close StayLog fully/.test(t), t);
+  await ctx.close(); }
 { const {ctx,page,errs}=await open({});
   await page.evaluate(()=>{window.__server.missing=true;});
   await menu(page); await page.click('[data-push-on]'); await page.waitForTimeout(300);
@@ -220,6 +233,11 @@ console.log('\n— the service worker shows every push and opens on tap —');
   clientsList=[{url:'https://rakshitpoojari52975-arch.github.io/staylog/index.html',postMessage:m=>posted.push(m),focus:async()=>{focused++;}}];
   await run('notificationclick',note('https://rakshitpoojari52975-arch.github.io/staylog/#open=cloud'));
   ok('a tap with the app open brings it forward and tells it where', focused===1&&posted[0]&&posted[0].type==='open'&&/#open=cloud$/.test(posted[0].url)&&opened.length===1, posted);
+  const inits=[]; sb.fetch=(r,i)=>{inits.push(i||{});return Promise.resolve({ok:true,clone(){return this;}});};
+  sb.caches={open:async()=>({put(){}}),match:async()=>null};
+  let resp; L.fetch({request:{method:'GET',url:'https://rakshitpoojari52975-arch.github.io/staylog/cloud-config.js',mode:'no-cors',headers:{get:()=>null}},
+    respondWith:p=>{resp=p;}}); await resp;
+  ok('the app\'s own files are re-checked with the server, not the browser\'s HTTP cache', inits[0]&&inits[0].cache==='no-cache', inits);
   ok('the caching rules are untouched', typeof sb.module.exports.routeFor==='function'&&sb.module.exports.routeFor({method:'GET',url:'https://fnpuswexdaeqebrordvv.supabase.co/rest/v1/bookings',headers:{get:()=>null}})===null); }
 
 await br.close(); srv.close();

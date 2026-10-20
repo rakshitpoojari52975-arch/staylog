@@ -21,7 +21,7 @@
    must never be served from a cache, so live data is now never even looked at
    here — it is not on the list. */
 
-const CACHE_NAME = 'staylog-v43';
+const CACHE_NAME = 'staylog-v44';
 
 const ASSETS = [
   './',
@@ -92,7 +92,10 @@ self.addEventListener('activate', e => {
 });
 
 function networkFirst(req) {
-  return fetch(req)
+  // 'no-cache' asks the server every time (a 304 when nothing changed). Without
+  // it the browser's own HTTP cache could answer: GitHub Pages allows 10
+  // minutes, and a release that changed only cloud-config.js was not seen.
+  return fetch(req, { cache: 'no-cache' })
     .then(res => {
       if (res && res.ok) {
         const copy = res.clone();
