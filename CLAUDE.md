@@ -204,7 +204,8 @@ also fetch from Supabase with `cache: 'no-store'` as a second layer.
   - `arrivals`: check-in **tomorrow** (IST), not cancelled. Opens
     `#open=<id>&send=arrival`.
   - `balances`: check-out **tomorrow**, `source` Direct (or blank) or
-    Booking.com, not cancelled, balance > 0. Never on the day itself, never
+    Booking.com, not cancelled, balance ≥ ₹1 (its own `balanceDue`, the
+    app's rule). Never on the day itself, never
     Airbnb or other platforms (the same pair as `paysUsDirectly`). Opens
     `#open=<id>&send=payment`.
   - `stale`: `sync_status.last_sync_at` older than 2 days (written by
@@ -267,6 +268,15 @@ also fetch from Supabase with `cache: 'no-store'` as a second layer.
 - Numbering `RV/<FY>/<nnn>`, Indian financial year (April–March), assigned on
   first issue, never reused; unique per owner in SQL.
 - The stamp states what is true: PAID, PART PAID (with balance) or UNPAID.
+- **Under ₹1 is paid.** `balanceDue(b)` is the one balance: if total − paid
+  is below ₹1 it is 0. Paise left over from a rounded payment once showed as
+  PART PAID and "₹0.5 due". The card, Home's Today lines, `receiptStamp`
+  (PAID = total > 0 and `balanceDue` 0), `buildReceiptPDF`, Mark paid, the
+  CSV's Balance Due and the notify function all use it; never subtract on
+  your own. Stored amounts are never rounded, and a real balance keeps its
+  paise: `fmtCur`/`fmtCurPdf` show two places whenever there are paise
+  (₹250.50). `tests/test_balance.js` checks every place and that no other
+  line of `app.js` subtracts paid from total.
 - After a booking is marked paid in full — the card's **Mark paid**, or typing
   the full amount into the booking — a "Paid in full" sheet offers **Send
   receipt**. A sheet of its own, so the share starts from a fresh tap.
@@ -282,7 +292,8 @@ also fetch from Supabase with `cache: 'no-store'` as a second layer.
   collect payment themselves: their guests are never told a balance and never
   sent payment details.
 - Payment details go out only through `canAskForPayment(b)`: pays us
-  directly, not cancelled, `balanceDue(b) > 0`, and the property has a UPI ID
+  directly, not cancelled, `balanceDue(b) > 0` (under ₹1 counts as paid, see
+  Receipts), and the property has a UPI ID
   or bank details. The check-out reminder carries them with the exact
   balance; the Send sheet's **Payment request** sends the same any time;
   `sendMessage` refuses a payment request that fails the check. Without
@@ -325,6 +336,7 @@ also fetch from Supabase with `cache: 'no-store'` as a second layer.
     node tests/test_checkout_wage.js
     node tests/test_utensils.js
     node tests/test_payment.js        # STAYLOG_REAL_UPI=… also searches the repo for your real UPI ID
+    node tests/test_balance.js           # under ₹1 is paid: card, Home, stamp, PDF, CSV, requests, notify
     node tests/test_notify_function.js   # Node 22.18+; every alert's condition, decrypts each push, checks VAPID
     node tests/test_push_app.js          # menu, subscribe/unsubscribe, quiet re-subscribe, deep links, sw.js handlers
     node tests/test_push_keys.js         # STAYLOG_REAL_VAPID_PRIVATE=… also searches for your real private key

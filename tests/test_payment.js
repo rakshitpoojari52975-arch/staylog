@@ -69,7 +69,7 @@ console.log('\n— the message states the right balance —');
   ok('the rest of the reminder is still there', /check-out is by 11:00 AM/.test(t)&&/review would mean a great deal/.test(t));
   const r=await msg(page,'request');
   ok('a Payment request states the same balance', /\*Balance due:\* ₹4,000/.test(r)&&r.split('\n').includes(FAKE.upi), r);
-  ok('a balance with paise is stated exactly', /\*Balance due:\* ₹3,999\.5\b/.test(await msg(page,'request','bk2')), await msg(page,'request','bk2'));
+  ok('a balance with paise is stated exactly', /\*Balance due:\* ₹3,999\.50\b/.test(await msg(page,'request','bk2')), await msg(page,'request','bk2'));
   ok('no QR line when no QR is set', !/QR code/.test(t));
   ok('no page errors', errs.length===0, errs);
   await ctx.close(); }

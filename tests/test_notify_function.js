@@ -160,6 +160,19 @@ console.log('\n— 9 AM: a balance due at check-out tomorrow —');
   ok('a booking with no source counts as Direct, as in the app', urls.includes('./#open=blank&send=payment'), urls);
   ok('so exactly three', ms.length===3, urls); }
 
+{ // paise left over are not a debt: under ₹1 counts as paid, as in the app
+  const W=world({...base(),bookings:[B({id:'half',check_out:'2026-10-21',total_amount:4999.5,paid:4999}),
+    B({id:'p99',check_out:'2026-10-21',total_amount:1000,paid:999.01}),
+    B({id:'overp',check_out:'2026-10-21',total_amount:1000,paid:1000.4}),
+    B({id:'one',check_out:'2026-10-21',total_amount:1000,paid:999}),
+    B({id:'real',check_out:'2026-10-21',total_amount:1000,paid:749.5})]});
+  await F.handle(post({job:'daily'},CRON),ENV,W.fetch,NOW);
+  const ms=(await pushesFor(W,iphone)).filter(m=>/^Balance/.test(m.title));
+  const urls=ms.map(m=>m.url);
+  ok('no alert for ₹4,999.50 with ₹4,999 paid, ₹0.99, or paise overpaid', !urls.some(u=>/half|p99|overp/.test(u)), urls);
+  ok('₹1.00 and ₹250.50 still alert', urls.includes('./#open=one&send=payment')&&urls.includes('./#open=real&send=payment'), urls);
+  ok('stating ₹250.50 with its paise', ms.some(m=>/owes ₹250\.50/.test(m.body)), ms.map(m=>m.body)); }
+
 { // the evening before is still "tomorrow" in IST: 20 Oct 19:00 UTC is 21 Oct 00:30 IST
   const W=world({...base(),bookings:[B({id:'d21',check_out:'2026-10-21'}),B({id:'d22',check_out:'2026-10-22'})]});
   await F.handle(post({job:'daily'},CRON),ENV,W.fetch,Date.parse('2026-10-20T19:00:00Z'));

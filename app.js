@@ -6,7 +6,7 @@
 // ─── Build ────────────────────────────────────────────────────────────────────
 // Bump BOTH of these together. This date sat at 28 Sept through a dozen
 // releases and was read, reasonably, as proof the upload had not landed.
-const APP_VERSION='v44', APP_BUILT='20 Oct 2026';
+const APP_VERSION='v45', APP_BUILT='21 Oct 2026';
 // The CACHE_NAME of the sw.js released with this app.js. Every release bumps
 // APP_VERSION and CACHE_NAME together, so one is derived from the other rather
 // than being a fourth thing to forget; the tests fail if they ever disagree.
@@ -80,7 +80,9 @@ const MONTH_SHORT=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','
 const DAY_SHORT  =['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
 const fmtDate    =s=>s?new Date(s+'T00:00:00').toLocaleDateString('en-IN',{day:'2-digit',month:'short',year:'numeric'}):'—';
 const fmtDateLong=s=>s?new Date(s+'T00:00:00').toLocaleDateString('en-IN',{weekday:'long',day:'numeric',month:'long',year:'numeric'}):'—';
-const fmtCur     =n=>'₹'+Number(n||0).toLocaleString('en-IN');
+// Whole rupees as they are; an amount with paise always shows two places (₹250.50).
+const moneyDigits=n=>Number(n)%1?{minimumFractionDigits:2,maximumFractionDigits:2}:{};
+const fmtCur     =n=>'₹'+Number(n||0).toLocaleString('en-IN',moneyDigits(n||0));
 const diffDays   =(a,b)=>Math.max(0,Math.ceil((new Date(b)-new Date(a))/86400000));
 const isoOf      =d=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
 const today      =()=>isoOf(new Date());          // local, not UTC
@@ -988,7 +990,7 @@ function bookingCard(b){   // dense row; expands into the full detail
   const prop=state.data.properties.find(p=>p.id===b.propertyId);
   const nights=diffDays(b.checkIn,b.checkOut);
   const isExpanded=state.expandedBooking===b.id;
-  const paid=Number(b.paid||0),total=Number(b.totalAmount||0),due=total-paid;
+  const paid=Number(b.paid||0),total=Number(b.totalAmount||0),due=balanceDue(b);
   const card=div({className:'card',style:{marginBottom:8,overflow:'hidden'}});
 
   const row=div({style:{display:'flex',alignItems:'center',gap:11,padding:'10px 12px',cursor:'pointer',
@@ -1342,7 +1344,16 @@ const canReceipt = b => RECEIPT_SOURCES.has(bookingSource(b));
 // other platforms take payment themselves: their guests are never told a
 // balance and never sent payment details. A booking with no source is direct.
 const paysUsDirectly = b => RECEIPT_SOURCES.has(bookingSource(b)||'Direct');
-const balanceDue = b => Math.max(0, Math.round((Number(b.totalAmount||0)-Number(b.paid||0))*100)/100);
+// THE balance of a booking; every balance shown, stamped, exported or asked
+// for comes from here. Under ₹1 counts as fully paid: paise left over from a
+// rounded payment are not a debt, and showed as PART PAID / "₹0.5 due".
+// Stored amounts are never rounded; a real balance keeps its paise (₹250.50).
+// supabase/functions/notify/index.ts has the same rule for its 9 AM alert.
+const PAID_UNDER = 1;
+const balanceDue = b => {
+  const d = Math.round((Number(b.totalAmount||0)-Number(b.paid||0))*100)/100;
+  return d < PAID_UNDER ? 0 : d;
+};
 // Payment details go out only when all of these hold: the guest pays us, the
 // booking is live, something is actually owed, and there is something to send.
 const hasPaymentDetails = p => !!(p && (p.upiId || p.bankDetails));
@@ -1418,15 +1429,15 @@ function ensureReceiptNo(b){
 
 // jsPDF's built-in fonts are WinAnsi encoded and have no rupee glyph, so a
 // bare ₹ comes out as a blank box. Spelled out instead.
-const fmtCurPdf=n=>'Rs. '+Number(n||0).toLocaleString('en-IN',{maximumFractionDigits:2});
+const fmtCurPdf=n=>'Rs. '+Number(n||0).toLocaleString('en-IN',moneyDigits(n||0));
 
 // Which stamp a booking earns. Kept out of the PDF builder so it can be
 // checked directly: rotated, letter-spaced text does not survive extraction
 // from a PDF reliably enough to assert on.
 const STAMP_INK={green:[47,107,79],deep:[32,74,55],gold:[168,118,44],red:[166,58,52]};
 function receiptStamp(b){
-  const total=round2(b.totalAmount), paid=round2(b.paid), due=round2(Math.max(0,total-paid));
-  if(total>0&&paid>=total)    return {line:'PAID',      sub:'with thanks',            tone:'green'};
+  const total=round2(b.totalAmount), paid=round2(b.paid), due=balanceDue(b);
+  if(total>0&&due===0)        return {line:'PAID',      sub:'with thanks',            tone:'green'};
   if(paid>0)                  return {line:'PART PAID', sub:fmtCurPdf(due)+' due',    tone:'gold'};
   return                             {line:'UNPAID',    sub:'balance due',            tone:'red'};
 }
@@ -1439,7 +1450,7 @@ async function buildReceiptPDF(b){
   const jsPDF=await loadJsPDF();
   const prop=state.data.properties.find(p=>p.id===b.propertyId);
   const nights=diffDays(b.checkIn,b.checkOut);
-  const total=round2(b.totalAmount), paid=round2(b.paid), due=round2(Math.max(0,total-paid));
+  const total=round2(b.totalAmount), paid=round2(b.paid), due=balanceDue(b);
   const via=bookedVia(b);
   const no=ensureReceiptNo(b)||'—';
   const issued=b.receiptOn||today();
@@ -2553,7 +2564,7 @@ function renderDashboard(){
       div({style:{fontSize:11,color:'var(--muted)',fontWeight:600}},`${todayIn.length+todayOut.length} to handle`)));
     const line=(b,kind)=>{
       const prop=data.properties.find(p=>p.id===b.propertyId);
-      const due=Number(b.totalAmount||0)-Number(b.paid||0);
+      const due=balanceDue(b);
       return div({style:{display:'flex',alignItems:'center',gap:11,padding:'9px 13px',borderTop:'1px solid var(--border-soft)'}},
         dateBlock(t,'accent'),
         div({style:{flex:1,minWidth:0}},
@@ -2845,7 +2856,7 @@ function downloadReport(bookings,expenses,periodLabel){
   const totalExp=expenses.reduce((s,e)=>s+Number(e.amount||0),0);
   let csv=`StayLog Report,${esc(periodLabel)}\nGenerated,${esc(new Date().toLocaleString('en-IN'))}\n\nSUMMARY\nTotal Revenue,${totalRev}\nTotal Expenses,${totalExp}\nNet Profit,${totalRev-totalExp}\n\nINCOME DETAILS\nDate,Guest Name,Property,Check-in,Check-out,Nights,Guests,Source,Total Amount,Amount Paid,Balance Due,Status\n`;
   [...bookings].filter(b=>b.status!=='cancelled').sort((a,b)=>new Date(a.checkIn)-new Date(b.checkIn)).forEach(b=>{
-    const nights=diffDays(b.checkIn,b.checkOut),due=Number(b.totalAmount||0)-Number(b.paid||0);
+    const nights=diffDays(b.checkIn,b.checkOut),due=balanceDue(b);
     csv+=[esc(b.checkIn),esc(b.guestName),esc(propName(b.propertyId)),esc(fmtDate(b.checkIn)),esc(fmtDate(b.checkOut)),nights,b.guests||1,esc(b.source||'Direct'),Number(b.totalAmount||0),Number(b.paid||0),due,esc(b.status)].join(',')+'\n';
   });
   csv+='\nEXPENDITURE DETAILS\nDate,Description,Property,Category,Paid To,Gross Payout,Loan Deduction,Net Amount,Status,Notes\n';
