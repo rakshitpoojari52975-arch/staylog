@@ -41,6 +41,12 @@ const STALE_DAYS = 2;
 // Who pays at the property (as in the app: paysUsDirectly). Others never get a
 // balance alert.
 const PAYS_US = new Set(['Direct', 'Booking.com']);
+// The app's balanceDue(): under ₹1 counts as fully paid (paise left over are
+// not a debt); a real balance keeps its paise. Stored amounts are not rounded.
+export const balanceDue = (b: { total_amount?: unknown; paid?: unknown }) => {
+  const d = Math.round((Number(b.total_amount || 0) - Number(b.paid || 0)) * 100) / 100;
+  return d < 1 ? 0 : d;
+};
 
 // ── bytes ────────────────────────────────────────────────────────────────────
 const enc = new TextEncoder();
@@ -147,7 +153,7 @@ const sameSecret = (a: string, b: string) => {
 };
 const istDate = (ms: number, addDays = 0) => new Date(ms + 5.5 * 3600e3 + addDays * 86400e3).toISOString().slice(0, 10);
 const istTime = (iso: string) => new Date(iso).toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit', timeZone: 'Asia/Kolkata' });
-const rupees = (n: number) => '₹' + Number(n).toLocaleString('en-IN');
+const rupees = (n: number) => '₹' + Number(n).toLocaleString('en-IN', Number(n) % 1 ? { minimumFractionDigits: 2, maximumFractionDigits: 2 } : {});
 const fmtDay = (iso: string) => new Date(iso + 'T00:00:00Z').toLocaleDateString('en-IN', { day: 'numeric', month: 'short', timeZone: 'UTC' });
 
 async function prefsOf(d: ReturnType<typeof db>, owner: string): Promise<Record<string, boolean>> {
@@ -197,7 +203,7 @@ export async function dailyPushes(owner: string, d: ReturnType<typeof db>, nowMs
   // Booking.com only; and only with money actually owed.
   const leaving = await d.get(`bookings?owner_id=eq.${owner}&deleted_at=is.null&status=neq.cancelled&check_out=eq.${tomorrow}&select=${cols}`) || [];
   for (const b of leaving) {
-    const due = Math.round((Number(b.total_amount || 0) - Number(b.paid || 0)) * 100) / 100;
+    const due = balanceDue(b);
     if (!PAYS_US.has((String(b.source || '').trim() || 'Direct')) || !(due > 0)) continue;
     out.push({ alert: 'balances', key: `balance:${b.id}:${b.check_out}`, push: {
       title: `Balance due at check-out tomorrow`,
