@@ -25,6 +25,7 @@ kept outside it and was lost when the machine running them was reset.
     node tests/test_payment.js        # payment details: who gets them, the balance, QR, receipt offer, repo scan
     STAYLOG_PG="-h /tmp -p 5432 -U postgres" node tests/test_payment_sql.js
                                       # payment-details.sql after setup.sql; skips without one
+    node tests/test_faceid.js         # Face ID unlock: PIN-gated setup and off, cancel falls back, Reset PIN clears it
     node tests/test_balance.js        # under ₹1 is paid: one balanceDue() everywhere, the notify alert too
     node tests/test_notify_function.js   # the notify Edge Function in Node: each alert only when its condition holds,
                                          # pushes decrypted (RFC 8291) and VAPID-verified (RFC 8292)

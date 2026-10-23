@@ -6,7 +6,7 @@
 // ─── Build ────────────────────────────────────────────────────────────────────
 // Bump BOTH of these together. This date sat at 28 Sept through a dozen
 // releases and was read, reasonably, as proof the upload had not landed.
-const APP_VERSION='v45', APP_BUILT='21 Oct 2026';
+const APP_VERSION='v46', APP_BUILT='23 Oct 2026';
 // The CACHE_NAME of the sw.js released with this app.js. Every release bumps
 // APP_VERSION and CACHE_NAME together, so one is derived from the other rather
 // than being a fourth thing to forget; the tests fail if they ever disagree.
@@ -259,6 +259,98 @@ function modal(title,contentFn){
 }
 function closeModal(){setState({modal:null,editItem:null,sendFocus:null});}
 
+// ─── Face ID ──────────────────────────────────────────────────────────────────
+// A second key to the same local lock as the PIN, never a replacement for it.
+// WebAuthn with the phone's own authenticator: Face ID (or Touch ID) has to
+// succeed for navigator.credentials.get to return, and the assertion must say
+// the user was verified. Nothing goes to a server — there is none to check a
+// signature against, exactly as the PIN is checked on the phone — so only the
+// credential id is kept, in this browser's storage, never in data or backups.
+//
+// The relying party is the full host: github.io is a public suffix, so it
+// cannot be the RP ID. Anywhere else (a Safari tab on another host, a local
+// copy) the option is hidden; a credential made for one RP never works on
+// another.
+const FACEID_KEY='staylog_faceid', FACEID_RP='rakshitpoojari52975-arch.github.io';
+let faceIdAvail=null;            // null until asked; then true / false
+let faceIdAuto=true;             // one automatic prompt per lock screen
+let faceIdBusy=null;             // the AbortController of a prompt in flight
+const b64uBytes=b=>btoa(String.fromCharCode(...new Uint8Array(b))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+const bytesB64u=s=>Uint8Array.from(atob(s.replace(/-/g,'+').replace(/_/g,'/')+'='.repeat((4-s.length%4)%4)),c=>c.charCodeAt(0));
+function faceIdId(){try{const v=JSON.parse(localStorage.getItem(FACEID_KEY)||'null');return v&&v.id||'';}catch(e){return '';}}
+function faceIdSet(id){try{id?localStorage.setItem(FACEID_KEY,JSON.stringify({id})):localStorage.removeItem(FACEID_KEY);}catch(e){}}
+const faceIdOn=()=>!!(faceIdAvail&&state.auth&&faceIdId());
+function checkFaceId(){
+  if(faceIdAvail!==null)return Promise.resolve(faceIdAvail);
+  const P=window.PublicKeyCredential;
+  if(location.hostname!==FACEID_RP||!P||!navigator.credentials||!navigator.credentials.get||
+     typeof P.isUserVerifyingPlatformAuthenticatorAvailable!=='function'){faceIdAvail=false;return Promise.resolve(false);}
+  const ask=P.isUserVerifyingPlatformAuthenticatorAvailable()
+    .then(v=>{faceIdAvail=!!v;},()=>{faceIdAvail=false;})
+    .then(()=>faceIdAvail);
+  // The PIN screen never waits on this for long. A late answer still counts
+  // from the next lock and in the menu.
+  return Promise.race([ask,new Promise(r=>setTimeout(()=>r(false),1500))]);
+}
+const challenge=()=>crypto.getRandomValues(new Uint8Array(32));
+// Called straight from the tap that confirmed the PIN: iOS wants a gesture.
+function faceIdCreate(){
+  return navigator.credentials.create({publicKey:{
+    challenge:challenge(), rp:{id:FACEID_RP,name:'StayLog'},
+    user:{id:crypto.getRandomValues(new Uint8Array(16)),name:'StayLog',displayName:'StayLog'},
+    pubKeyCredParams:[{type:'public-key',alg:-7},{type:'public-key',alg:-257}],
+    authenticatorSelection:{authenticatorAttachment:'platform',userVerification:'required',residentKey:'discouraged'},
+    attestation:'none', timeout:60000,
+  }}).then(c=>{if(!c||!c.rawId)throw new Error('no credential');faceIdSet(b64uBytes(c.rawId));return true;});
+}
+// True only for an assertion from this credential with user verification
+// (flag UV, bit 2 of the authenticator data's flags byte).
+function faceIdVerify(){
+  const id=faceIdId();
+  if(!id)return Promise.resolve(false);
+  const ac=window.AbortController?new AbortController():null;
+  faceIdBusy=ac;
+  return navigator.credentials.get({publicKey:{challenge:challenge(),rpId:FACEID_RP,
+      allowCredentials:[{type:'public-key',id:bytesB64u(id),transports:['internal']}],
+      userVerification:'required',timeout:60000},...(ac?{signal:ac.signal}:{})})
+    .then(a=>{
+      if(!a||!a.response||b64uBytes(a.rawId)!==id)return false;
+      const ad=new Uint8Array(a.response.authenticatorData||[]);
+      return ad.length>32&&!!(ad[32]&0x04);
+    },()=>false)
+    .finally(()=>{if(faceIdBusy===ac)faceIdBusy=null;});
+}
+function faceIdCancel(){ if(faceIdBusy){try{faceIdBusy.abort();}catch(e){} faceIdBusy=null;} }
+function lockApp(){ faceIdAuto=true; state.modal=null; state.loggedIn=false; render(); }
+
+// Menu → Unlock with Face ID: the PIN first, both to turn it on and off.
+function renderFaceIdModal(){
+  const on=!!faceIdId();
+  const content=()=>{
+    const wrap=div({style:{display:'flex',flexDirection:'column',gap:12}});
+    wrap.appendChild(div({style:{fontSize:13.5,color:'var(--text-mid)',lineHeight:1.55}},
+      on?'Enter your PIN to turn Face ID off. The PIN keeps working as before.'
+        :'Enter your PIN, then confirm with Face ID. The PIN stays as the fallback, and nothing leaves this phone.'));
+    const inp=h('input',{type:'password',inputmode:'numeric',pattern:'[0-9]*',maxlength:String(PIN_LENGTH),
+      autocomplete:'off','data-faceid-pin':'1',placeholder:'Current PIN',style:{fontSize:18,letterSpacing:'0.3em',textAlign:'center'}});
+    const msg=div({'data-faceid-msg':'1',style:{fontSize:12.5,color:'var(--danger)',minHeight:18}});
+    const go=btn({className:'btn-primary','data-faceid-go':'1',style:{width:'100%',minHeight:46},onClick:()=>{
+      if(inp.value!==(state.auth&&state.auth.pin)){msg.textContent='That is not your PIN.';inp.value='';inp.focus();return;}
+      if(on){faceIdSet('');closeModal();return;}
+      msg.style.color='var(--muted)';msg.textContent='Look at your iPhone…';go.disabled=true;
+      faceIdCreate().then(()=>closeModal(),()=>{
+        go.disabled=false;msg.style.color='var(--danger)';
+        msg.textContent='Face ID was not set up. You can try again, or keep using the PIN.';});
+    }},on?'Turn off Face ID':'Turn on Face ID');
+    inp.addEventListener('keydown',e=>{if(e.key==='Enter')go.click();});
+    wrap.appendChild(inp); wrap.appendChild(msg); wrap.appendChild(go);
+    wrap.appendChild(btn({className:'btn-ghost',style:{width:'100%'},onClick:closeModal},'Cancel'));
+    setTimeout(()=>inp.focus(),80);
+    return wrap;
+  };
+  return modal('Unlock with Face ID',content);
+}
+
 // ─── PIN Screen ───────────────────────────────────────────────────────────────
 function injectPinCSS(){
   if(document.getElementById('pin-style'))return;
@@ -347,10 +439,11 @@ function renderLoginScreen(){
       if(phase==='enter'){
         if(next===state.auth.pin){
           updateCells(next,'success');
+          faceIdCancel();
           setTimeout(()=>{state.loggedIn=true;render();},380);
         } else {
           updateCells(next,'error');
-          msgEl.textContent='Incorrect PIN — please try again';
+          msgEl.style.color='var(--danger)';msgEl.textContent='Incorrect PIN — please try again';
           setTimeout(()=>{pinEntry='';updateCells('');msgEl.textContent='';},700);
         }
       } else if(phase==='create'){
@@ -391,10 +484,28 @@ function renderLoginScreen(){
   });
   wrap.appendChild(padWrap);
 
+  // Face ID, when set up: asked once as the screen opens. A tap on the button
+  // asks again — needed when Safari will not prompt without one. A cancel or a
+  // failure only says so; the PIN pad never stops working.
+  if(!isSetup&&faceIdOn()){
+    const tryFaceId=()=>{
+      if(faceIdBusy||state.loggedIn)return;
+      faceIdVerify().then(yes=>{
+        if(state.loggedIn)return;
+        if(yes){updateCells('0'.repeat(PIN_LENGTH),'success');setTimeout(()=>{state.loggedIn=true;render();},300);}
+        else{msgEl.style.color='var(--muted)';msgEl.textContent='Face ID did not unlock — enter your PIN';}
+      });
+    };
+    wrap.appendChild(btn({'data-faceid-unlock':'1',style:{marginTop:24,display:'flex',alignItems:'center',gap:8,
+      padding:'10px 18px',minHeight:44,borderRadius:22,border:'1.5px solid var(--accent)',background:'transparent',
+      color:'var(--accent)',fontSize:14,fontWeight:600},onClick:()=>{msgEl.textContent='';tryFaceId();}},
+      ico('face-id',{style:{fontSize:18}}),'Unlock with Face ID'));
+    if(faceIdAuto){faceIdAuto=false;setTimeout(tryFaceId,250);}
+  }
   if(!isSetup){
-    wrap.appendChild(div({style:{marginTop:32}},
+    wrap.appendChild(div({style:{marginTop:faceIdOn()?14:32}},
       btn({style:{background:'none',border:'none',color:'var(--muted)',fontSize:13,cursor:'pointer',textDecoration:'underline'},
-        onClick:()=>{if(confirm('Reset PIN? You will need to create a new one.')){state.auth=null;state.loggedIn=false;saveAuth(null);renderLoginScreen();}}
+        onClick:()=>{if(confirm('Reset PIN? You will need to create a new one.')){faceIdCancel();faceIdSet('');state.auth=null;state.loggedIn=false;saveAuth(null);renderLoginScreen();}}
       },'Forgot / Reset PIN')
     ));
   }
@@ -787,7 +898,9 @@ function renderMenuModal(){
     notificationsSection(),
     themeRow(),
     div({style:{height:6}}),
-    menuRow('lock','Lock app','Ask for the PIN again',()=>{state.modal=null;state.loggedIn=false;render();},true),
+    faceIdAvail&&state.auth?menuRow('face-id','Unlock with Face ID',faceIdId()?'On · the PIN still works':'Off · uses this iPhone’s Face ID',
+      ()=>setState({modal:'faceId'})):null,
+    menuRow('lock','Lock app','Ask for the PIN again',lockApp,true),
     div({style:{textAlign:'center',fontSize:11.5,color:'var(--muted)',padding:'14px 0 2px',
       borderTop:'1px solid var(--border-soft)',marginTop:6}},
       `StayLog ${APP_VERSION} · built ${APP_BUILT}`,
@@ -4188,12 +4301,13 @@ function render(){
   else if(state.modal==='cloud')    {currentModal=renderCloudModal();     document.body.appendChild(currentModal);}
   else if(state.modal==='sendConfirm'){currentModal=renderSendModal();     document.body.appendChild(currentModal);}
   else if(state.modal==='paidReceipt'){currentModal=renderPaidReceiptModal();document.body.appendChild(currentModal);}
+  else if(state.modal==='faceId')   {currentModal=renderFaceIdModal();    document.body.appendChild(currentModal);}
 }
 
 // ─── Boot ─────────────────────────────────────────────────────────────────────
 try{applyTheme(getTheme());}catch(e){}
 render();
-Promise.all([loadDataFromIDB(),loadAuth()]).then(([data,auth])=>{
+Promise.all([loadDataFromIDB(),loadAuth(),checkFaceId()]).then(([data,auth])=>{
   state.data=data;state.auth=auth;state.loggedIn=false;state._loading=false;
   // Once at every start, so unpaid days made before checkout-day wages (or
   // while this phone was closed) are priced by the same rule as new ones.

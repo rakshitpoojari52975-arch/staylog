@@ -236,6 +236,34 @@ also fetch from Supabase with `cache: 'no-store'` as a second layer.
   the hash, and opens the Send sheet with that message highlighted
   (`state.sendFocus`). The handlers touch no cache; the allowlist is unchanged.
 
+## Face ID unlock
+
+- **A second key to the same local lock, never a replacement.** The PIN
+  always works. WebAuthn with the phone's own authenticator
+  (`authenticatorAttachment: 'platform'`, `userVerification: 'required'`).
+  Unlock = `navigator.credentials.get` for the stored credential returns an
+  assertion whose authenticator data has the UV flag (bit 2 of byte 32). No
+  server and nothing in Supabase, as with the PIN, so the signature is not
+  checked against a public key: the phone's own lock is the trust, as it is
+  for the PIN.
+- **Only the credential id is kept**, in localStorage `staylog_faceid`: not in
+  `state.data`, backups or the cloud.
+- **RP ID is the full host `rakshitpoojari52975-arch.github.io`** (github.io is
+  a public suffix). On any other host the option is hidden: a credential is
+  bound to its RP. A custom domain would need a new setup.
+- Menu → **Unlock with Face ID** (shown only if
+  `isUserVerifyingPlatformAuthenticatorAvailable()` says yes) asks for the
+  current PIN, then calls `create()` straight from that tap. The same row turns
+  it off, also behind the PIN. Turning off forgets the id; the passkey itself
+  stays in the iPhone's Passwords app until deleted there.
+- **Lock screen:** one automatic prompt when it opens (`faceIdAuto`, re-armed by
+  Lock app and each start), plus an "Unlock with Face ID" button for when
+  Safari refuses a prompt without a tap. Cancel or failure shows "enter your
+  PIN" and asks nothing more; the pad works throughout, and a PIN unlock
+  aborts a pending prompt. **Forgot / Reset PIN clears the Face ID setup.**
+- No WebAuthn (old iOS, a Safari tab where it fails), or the check takes over
+  1.5 s at start: no option, and the PIN screen is never held up.
+
 ## Privacy and access — do not loosen these
 
 - The house help reads **only** through `SECURITY DEFINER` functions with fixed
@@ -336,6 +364,7 @@ also fetch from Supabase with `cache: 'no-store'` as a second layer.
     node tests/test_checkout_wage.js
     node tests/test_utensils.js
     node tests/test_payment.js        # STAYLOG_REAL_UPI=… also searches the repo for your real UPI ID
+    node tests/test_faceid.js            # Face ID: setup behind the PIN, unlock, cancel → PIN, off, Reset PIN, no WebAuthn
     node tests/test_balance.js           # under ₹1 is paid: card, Home, stamp, PDF, CSV, requests, notify
     node tests/test_notify_function.js   # Node 22.18+; every alert's condition, decrypts each push, checks VAPID
     node tests/test_push_app.js          # menu, subscribe/unsubscribe, quiet re-subscribe, deep links, sw.js handlers
