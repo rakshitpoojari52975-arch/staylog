@@ -21,7 +21,7 @@
    must never be served from a cache, so live data is now never even looked at
    here — it is not on the list. */
 
-const CACHE_NAME = 'staylog-v46';
+const CACHE_NAME = 'staylog-v47';
 
 const ASSETS = [
   './',

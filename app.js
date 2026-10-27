@@ -6,7 +6,7 @@
 // ─── Build ────────────────────────────────────────────────────────────────────
 // Bump BOTH of these together. This date sat at 28 Sept through a dozen
 // releases and was read, reasonably, as proof the upload had not landed.
-const APP_VERSION='v46', APP_BUILT='23 Oct 2026';
+const APP_VERSION='v47', APP_BUILT='27 Oct 2026';
 // The CACHE_NAME of the sw.js released with this app.js. Every release bumps
 // APP_VERSION and CACHE_NAME together, so one is derived from the other rather
 // than being a fourth thing to forget; the tests fail if they ever disagree.
@@ -686,6 +686,7 @@ function themeRow(){
 const PUSH_ALERTS=[
   ['attendance','Laxmi marks attendance'],
   ['utensils','Laxmi reports utensil cleaning'],
+  ['newBookings','New bookings','From the Airbnb and Booking.com calendars'],
   ['arrivals','Guests arriving tomorrow','9 AM, ready to send the arrival message'],
   ['balances','Balance due at check-out tomorrow','9 AM · Direct and Booking.com only'],
   ['stale','App not synced in 2 days','9 AM'],
@@ -866,7 +867,31 @@ let pendingOpen=null;
 function parseOpen(hash){
   const q=new URLSearchParams(String(hash||'').replace(/^#/,''));
   const open=q.get('open');
-  return open?{open,send:q.get('send')||''}:null;
+  return open?{open,send:q.get('send')||'',prop:q.get('prop')||'',in:q.get('in')||'',out:q.get('out')||''}:null;
+}
+// "New booking": the stay came in through the calendar import, which only
+// becomes a booking on the phone at its next sync. So sync first (the drain
+// runs inside it), then open the booking. Not there yet (no signal, or the
+// import linked it differently): the bookings list at that check-in date.
+const ISO_DAY=/^\d{4}-\d{2}-\d{2}$/;
+const findStay=o=>state.data.bookings.find(b=>b.propertyId===o.prop&&b.checkIn===o.in&&b.checkOut===o.out&&b.status!=='cancelled');
+async function openStay(o){
+  if(!ISO_DAY.test(o.in)||!ISO_DAY.test(o.out)){setState({tab:'bookings',modal:null,editItem:null});return;}
+  let b=findStay(o);
+  if(!b&&window.StayLogCloud){
+    setState({tab:'bookings',bookingFilter:'all',filterProp:'all',modal:null,editItem:null,stayHint:'Fetching the new booking…'});
+    try{
+      await window.StayLogCloud.checkIn(true);
+      for(let i=0;i<60&&window.StayLogCloud.status().pushing;i++)await new Promise(r=>setTimeout(r,250));
+    }catch(e){}
+    b=findStay(o);
+  }
+  if(b){setState({tab:'bookings',bookingFilter:'all',filterProp:'all',expandedBooking:b.id,modal:null,editItem:null,stayHint:null});return;}
+  setState({tab:'bookings',bookingFilter:'all',filterProp:'all',modal:null,editItem:null,expandedBooking:null,
+    stayHint:`The new booking for ${fmtDate(o.in)} is not on this phone yet. It is added at the next sync with a connection.`});
+  // The list runs newest check-in first: scroll to where that date falls.
+  setTimeout(()=>{const at=[...document.querySelectorAll('[data-checkin]')].find(el=>el.dataset.checkin<=o.in);
+    if(at&&at.scrollIntoView)at.scrollIntoView({block:'start'});},60);
 }
 function takeOpen(hash){
   const o=parseOpen(hash);
@@ -879,6 +904,7 @@ function applyPendingOpen(){
   const o=pendingOpen; pendingOpen=null;
   if(!o)return;
   if(o.open==='menu'||o.open==='cloud'){setState({modal:o.open,editItem:null});return;}
+  if(o.open==='stay'){openStay(o);return;}
   const b=state.data.bookings.find(x=>x.id===o.open);
   if(!b){setState({tab:'bookings',modal:null,editItem:null});return;}
   const send=['arrival','payment'].includes(o.send)?o.send:'';
@@ -1104,7 +1130,7 @@ function bookingCard(b){   // dense row; expands into the full detail
   const nights=diffDays(b.checkIn,b.checkOut);
   const isExpanded=state.expandedBooking===b.id;
   const paid=Number(b.paid||0),total=Number(b.totalAmount||0),due=balanceDue(b);
-  const card=div({className:'card',style:{marginBottom:8,overflow:'hidden'}});
+  const card=div({className:'card','data-checkin':b.checkIn,style:{marginBottom:8,overflow:'hidden'}});
 
   const row=div({style:{display:'flex',alignItems:'center',gap:11,padding:'10px 12px',cursor:'pointer',
     opacity:b.status==='cancelled'?.6:1},
@@ -2762,7 +2788,7 @@ function renderBookings(){
   wrap.appendChild(div({style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:11}},
     h('div',{className:'display',style:{fontSize:21}},'Bookings'),
     div({style:{display:'flex',gap:7}},
-      btn({className:'btn-ghost btn-sm','aria-label':'Calendar',onClick:()=>setState({tab:'calendar'})},
+      btn({className:'btn-ghost btn-sm','aria-label':'Calendar',onClick:()=>setState({tab:'calendar',stayHint:null})},
         ico('calendar-month',{style:{fontSize:16}})),
       btn({className:'btn-primary btn-sm',onClick:()=>setState({modal:'addBooking',editItem:null})},
         ico('plus',{style:{marginRight:4}}),'Add'))
@@ -2777,6 +2803,9 @@ function renderBookings(){
       onClick:()=>setState({bookingFilter:s})},`${l} ${counts(s)}`));
   });
   wrap.appendChild(chips);
+  if(state.stayHint)wrap.appendChild(div({'data-stay-hint':'1',style:{fontSize:12.5,color:'var(--text-mid)',lineHeight:1.5,
+    background:'var(--surface-2)',border:'1px solid var(--border)',borderRadius:'var(--radius-sm)',padding:'9px 12px',marginBottom:12}},
+    state.stayHint));
   if(sorted.length===0)wrap.appendChild(div({style:{textAlign:'center',padding:'40px 20px',color:'var(--muted)',fontSize:14}},'No bookings found'));
   else sorted.forEach(b=>wrap.appendChild(bookingCard(b)));
   return wrap;
@@ -4272,6 +4301,7 @@ function render(){
   }
   if(!state.loggedIn){renderLoginScreen();return;}
   if(pendingOpen){setTimeout(applyPendingOpen,0);}
+  if(state.tab!=='bookings')state.stayHint=null;
   state._clashes=bookingClashes(state.data.bookings);
   state._gaps=((cloudStatus().icalLog)||{}).gaps||{};
   app.innerHTML='';

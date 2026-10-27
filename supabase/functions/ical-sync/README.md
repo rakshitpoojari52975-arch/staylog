@@ -1,5 +1,9 @@
 # ical-sync — setting it up
 
+Once notifications are set up (`supabase/functions/notify/README.md`), this
+function also hands each **new** reservation to `notify` for a "New booking"
+push, using the `PUSH_CRON_SECRET` secret it already sees. Nothing else to do.
+
 Reads the Booking.com and Airbnb calendar export links every 30 minutes and
 records what is in them in `public.ical_events`. The phone turns new stays into
 bookings at its next sync. The app works the same whether or not this is set up.

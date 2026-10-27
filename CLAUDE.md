@@ -201,6 +201,27 @@ also fetch from Supabase with `cache: 'no-store'` as a second layer.
     that brings back a mark that was undone. The app stamping it and her undo
     are not news. Once per mark id (`push_log`), so marking again after an
     undo is not announced twice.
+  - `newBookings`: a reservation the **calendar import** finds — Airbnb
+    "Reserved" or any Booking.com stay; Airbnb blocks never (as `planIcal()`).
+    Server side, no app needed: `ical-sync` collects events whose uid its feed
+    had never shown **on a feed that already had a good read** (`last_ok_at`
+    set before this read — a first read finds everything and announces
+    nothing) and POSTs `{"job":"new-bookings","events":[{feed_id,uid}]}` to
+    notify with `PUSH_CRON_SECRET` (function secrets are project-wide; without
+    it, nothing is sent and the import is unaffected). Not a webhook on
+    `ical_events`: the feed's `last_ok_at` is stamped after its events are
+    written, so a webhook could not tell a first read from a later one.
+    notify re-reads each event and skips blocks, `gone_at`, check-in before
+    today (IST), and dates that already match a live booking (one Rakshit made).
+    Key `stay:<property>:<check-in>:<check-out>`, so the other feed's echo of
+    the same stay is not announced again; Airbnb rows go first, so a stay in
+    both feeds at once is named Airbnb, else the first feed to show it names
+    the platform. Title "New Airbnb booking" / "New Booking.com booking", body
+    "12 → 14 Nov · 2 nights · <property>" (no guest name: the feed has none).
+    Moved dates (same uid) and "No longer on …" are updates, never new.
+    Opens `#open=stay&prop=&in=&out=`: the app runs a sync (the import
+    drain), then opens the booking with those dates; if it is still not on the
+    phone, Bookings scrolled to that check-in with a note saying so.
   - `arrivals`: check-in **tomorrow** (IST), not cancelled. Opens
     `#open=<id>&send=arrival`.
   - `balances`: check-out **tomorrow**, `source` Direct (or blank) or
@@ -365,6 +386,7 @@ also fetch from Supabase with `cache: 'no-store'` as a second layer.
     node tests/test_utensils.js
     node tests/test_payment.js        # STAYLOG_REAL_UPI=… also searches the repo for your real UPI ID
     node tests/test_faceid.js            # Face ID: setup behind the PIN, unlock, cancel → PIN, off, Reset PIN, no WebAuthn
+    node tests/test_new_bookings.js      # ical-sync + notify together: new stays announced once, echoes/blocks/first reads never; the tap
     node tests/test_balance.js           # under ₹1 is paid: card, Home, stamp, PDF, CSV, requests, notify
     node tests/test_notify_function.js   # Node 22.18+; every alert's condition, decrypts each push, checks VAPID
     node tests/test_push_app.js          # menu, subscribe/unsubscribe, quiet re-subscribe, deep links, sw.js handlers
@@ -392,6 +414,10 @@ areas are changed.
 - The attendance webhook shows Laxmi's mark even before the phone turns it
   into a wage; that is the point, but it means a mark she undoes within the
   15 minutes was still announced.
+- "New booking" trusts the feed's uid: if a platform ever re-issues a changed
+  reservation under a new uid, its new dates read as a new stay and notify.
+  Dates Rakshit closes by hand on Booking.com also arrive as a "stay" and
+  notify, unless a booking with exactly those dates is already in the cloud.
 - `push_log` grows by a few rows a day and is never pruned. Harmless for
   years; delete rows older than a month in SQL if it ever matters.
 

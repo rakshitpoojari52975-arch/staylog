@@ -3,6 +3,8 @@
 Sends the owner's iPhone push notifications:
 
 - when Laxmi marks attendance, or reports utensil cleaning (database webhooks);
+- when the calendar import finds a new Airbnb or Booking.com reservation
+  ("New booking": the `ical-sync` function hands it over, no webhook);
 - at 9:00 AM IST: guests arriving tomorrow, a balance due at check-out
   tomorrow (Direct and Booking.com only), and a warning if the app has not
   synced for 2 days (a cron job);
@@ -52,6 +54,11 @@ Do these in order, once.
    the app stamping it, her undo, or marking again after an undo send nothing.
 
    (`supabase/push.sql` has steps 5 and 6 as SQL snippets at the bottom.)
+
+   **New bookings need no webhook.** `ical-sync` calls `notify` itself with
+   the same `PUSH_CRON_SECRET` (secrets are shared by every function in the
+   project). Just redeploy `ical-sync` (paste its new `index.ts`) after this
+   release. A feed's first read never notifies; only stays it shows after that.
 
 7. **Put the public key in the app.** `cloud-config.js` → `vapidPublicKey`.
    Commit, merge, let GitHub Pages deploy.
