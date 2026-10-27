@@ -6,7 +6,7 @@
 // ─── Build ────────────────────────────────────────────────────────────────────
 // Bump BOTH of these together. This date sat at 28 Sept through a dozen
 // releases and was read, reasonably, as proof the upload had not landed.
-const APP_VERSION='v47', APP_BUILT='27 Oct 2026';
+const APP_VERSION='v48', APP_BUILT='29 Oct 2026';
 // The CACHE_NAME of the sw.js released with this app.js. Every release bumps
 // APP_VERSION and CACHE_NAME together, so one is derived from the other rather
 // than being a fourth thing to forget; the tests fail if they ever disagree.
@@ -1483,14 +1483,30 @@ const canReceipt = b => RECEIPT_SOURCES.has(bookingSource(b));
 // other platforms take payment themselves: their guests are never told a
 // balance and never sent payment details. A booking with no source is direct.
 const paysUsDirectly = b => RECEIPT_SOURCES.has(bookingSource(b)||'Direct');
+// ─── The money rule ───────────────────────────────────────────────────────────
+// Round off, for guests who pay us directly: signed rupees settled without
+// being paid. Positive = what we let go (₹4,632.47 billed, ₹4,630 taken),
+// negative = what the guest paid over (₹4,995 billed, ₹5,000 taken). A
+// difference of up to ROUND_OFF_LIMIT either way is filled in automatically;
+// above it, it is a real balance. Airbnb and the rest collect payment
+// themselves: their round off is always 0.
+const ROUND_OFF_LIMIT = 5;
+const r2 = n => Math.round(Number(n)*100)/100;
+const roundOffOf = b => paysUsDirectly(b) ? (Number(b.roundOff)||0) : 0;
+// The round off for this total and payment, or null when the gap is a balance.
+const autoRoundOff = (total,received) => { const gap=r2(Number(total||0)-Number(received||0));
+  return Math.abs(gap) <= ROUND_OFF_LIMIT ? gap : null; };
+// What a stay earns: the total, less what we let go (plus what was paid over).
+const bookingRevenue = b => r2(Number(b.totalAmount||0) - roundOffOf(b));
+const sumRevenue = list => r2(list.reduce((s,b)=>s+bookingRevenue(b),0));
 // THE balance of a booking; every balance shown, stamped, exported or asked
-// for comes from here. Under ₹1 counts as fully paid: paise left over from a
-// rounded payment are not a debt, and showed as PART PAID / "₹0.5 due".
+// for comes from here: total − paid − round off. Under ₹1 still counts as
+// fully paid, a safety net for bookings made before round off existed.
 // Stored amounts are never rounded; a real balance keeps its paise (₹250.50).
-// supabase/functions/notify/index.ts has the same rule for its 9 AM alert.
+// supabase/functions/notify/index.ts has the same formula for its 9 AM alert.
 const PAID_UNDER = 1;
 const balanceDue = b => {
-  const d = Math.round((Number(b.totalAmount||0)-Number(b.paid||0))*100)/100;
+  const d = r2(Number(b.totalAmount||0)-Number(b.paid||0)-roundOffOf(b));
   return d < PAID_UNDER ? 0 : d;
 };
 // Payment details go out only when all of these hold: the guest pays us, the
@@ -1700,6 +1716,13 @@ async function buildReceiptPDF(b){
   doc.setDrawColor(...LINE); doc.setLineWidth(.4); doc.line(M,y,W-M,y);
   doc.setLineWidth(1.0); doc.line(M,y+2.5,W-M,y+2.5);
   y+=20;
+  const ro=roundOffOf(b);
+  if(ro){                                     // what we let go reads as a deduction
+    doc.setFont('helvetica','normal'); doc.setFontSize(10.5); doc.setTextColor(...GREY);
+    doc.text('Round off',M,y);
+    doc.text((ro>0?'-':'+')+fmtCurPdf(Math.abs(ro)),W-M,y,{align:'right'});   // built-in fonts have no U+2212
+    y+=19;
+  }
   money('Amount received',paid,{bold:true,color:DEEP,size:13});
   if(due>0)money('Balance outstanding',due,{bold:true,color:RED,size:11});
 
@@ -2015,8 +2038,15 @@ const justPaidInFull=b=>canReceipt(b)&&b.status!=='cancelled'&&Number(b.totalAmo
 function markBookingPaid(b){
   const due=balanceDue(b);
   if(!(due>0))return;
-  if(!confirm(`Record ${fmtCur(due)} received from ${b.guestName}? The booking will show as paid in full.`))return;
-  mutateData(d=>{const x=d.bookings.find(y=>y.id===b.id); if(x)x.paid=Number(x.totalAmount||0);});
+  const ans=prompt(`Amount received? (balance ${fmtCur(due)})`,String(due));
+  if(ans==null)return;
+  const amt=r2(String(ans).replace(/[₹,\s]/g,''));
+  if(!(amt>0)){alert('Enter the amount received, in rupees.');return;}
+  mutateData(d=>{const x=d.bookings.find(y=>y.id===b.id); if(!x)return;
+    x.paid=r2(Number(x.paid||0)+amt);
+    // The same ₹5 round off as the booking form, unless one was typed by hand.
+    const ro=x.roundOffHand?null:autoRoundOff(x.totalAmount,x.paid);
+    if(ro!==null)x.roundOff=ro;});
   const now=state.data.bookings.find(y=>y.id===b.id);
   if(now&&justPaidInFull(now))setState({modal:'paidReceipt',editItem:{...now}});
 }
@@ -2027,7 +2057,7 @@ function renderPaidReceiptModal(){
     const wrap=div({style:{display:'flex',flexDirection:'column',gap:10}});
     wrap.appendChild(div({style:{textAlign:'center',padding:'6px 4px 2px'}},
       ico('circle-check',{style:{fontSize:38,color:'var(--accent)',display:'block',marginBottom:8}}),
-      div({style:{fontSize:15,fontWeight:700}},`${fmtCur(b.totalAmount)} received from ${b.guestName}`),
+      div({style:{fontSize:15,fontWeight:700}},`${fmtCur(b.paid)} received from ${b.guestName}`),
       div({style:{fontSize:12.5,color:'var(--muted)',marginTop:4}},'Send the receipt now?')));
     wrap.appendChild(btn({className:'btn-gold','data-offer-receipt':'1',style:{width:'100%',justifyContent:'center',display:'flex',
       alignItems:'center',gap:7,minHeight:46},onClick:()=>{shareReceipt(b);closeModal();}},
@@ -2599,7 +2629,7 @@ function nightsInMonth(b,y,m){
 function monthTotals(bookings,expenses,y,m){
   const rev=bookings.filter(b=>b.status!=='cancelled').filter(b=>{
     const d=new Date(b.checkIn+'T00:00:00');return d.getFullYear()===y&&d.getMonth()===m;
-  }).reduce((s,b)=>s+Number(b.totalAmount||0),0);
+  }).reduce((s,b)=>s+bookingRevenue(b),0);
   const exp=expenses.filter(e=>{
     const d=new Date(e.date+'T00:00:00');return d.getFullYear()===y&&d.getMonth()===m;
   }).reduce((s,e)=>s+Number(e.amount||0),0);
@@ -2630,7 +2660,7 @@ function renderDashboard(){
   // ── Hero: one figure, with the trend behind it ─────────────────────────────
   const bookings=filterByMonth(allB,'checkIn',dashMonth);
   const expenses=filterByMonth(allE,'date',dashMonth);
-  const revenue=bookings.filter(b=>b.status!=='cancelled').reduce((s,b)=>s+Number(b.totalAmount||0),0);
+  const revenue=sumRevenue(bookings.filter(b=>b.status!=='cancelled'));
   const spend=expenses.reduce((s,e)=>s+Number(e.amount||0),0);
   const net=revenue-spend;
 
@@ -2916,7 +2946,7 @@ function renderReports(){
   expenses=filterByMonth(expenses,'date',reportMonth);
   const yr=reportMonth?reportMonth.year:new Date().getFullYear();
   const monthlyRev=Array(12).fill(0),monthlyExp=Array(12).fill(0);
-  bookings.filter(b=>b.status!=='cancelled'&&new Date(b.checkIn).getFullYear()===yr).forEach(b=>monthlyRev[new Date(b.checkIn).getMonth()]+=Number(b.totalAmount||0));
+  bookings.filter(b=>b.status!=='cancelled'&&new Date(b.checkIn).getFullYear()===yr).forEach(b=>monthlyRev[new Date(b.checkIn).getMonth()]+=bookingRevenue(b));
   expenses.filter(e=>new Date(e.date).getFullYear()===yr).forEach(e=>monthlyExp[new Date(e.date).getMonth()]+=Number(e.amount||0));
   const maxVal=Math.max(...monthlyRev,...monthlyExp,1);
   const totalRev=monthlyRev.reduce((a,b)=>a+b,0),totalExp=monthlyExp.reduce((a,b)=>a+b,0);
@@ -2954,7 +2984,7 @@ function renderReports(){
   if(data.properties.length===0)perfCard.appendChild(div({style:{color:'var(--muted)',fontSize:13}},'No properties yet'));
   else data.properties.forEach((p,i)=>{
     const bks=bookings.filter(b=>b.propertyId===p.id&&b.status!=='cancelled');
-    const rev=bks.reduce((s,b)=>s+Number(b.totalAmount||0),0);
+    const rev=sumRevenue(bks);
     const nights=bks.reduce((s,b)=>s+diffDays(b.checkIn,b.checkOut),0);
     const row=div({style:{paddingBottom:i<data.properties.length-1?12:0,marginBottom:i<data.properties.length-1?12:0,borderBottom:i<data.properties.length-1?'1px solid var(--border-soft)':'none'}});
     row.appendChild(div({style:{display:'flex',justifyContent:'space-between',marginBottom:4}},div({style:{fontWeight:600,fontSize:14}},p.name),div({style:{fontWeight:700,color:'var(--accent)',fontSize:14}},fmtCur(rev))));
@@ -2963,7 +2993,7 @@ function renderReports(){
   });
   wrap.appendChild(perfCard);
   const bySource={};
-  bookings.filter(b=>b.status!=='cancelled').forEach(b=>{const s=b.source||'Direct';bySource[s]=(bySource[s]||0)+Number(b.totalAmount||0);});
+  bookings.filter(b=>b.status!=='cancelled').forEach(b=>{const s=b.source||'Direct';bySource[s]=r2((bySource[s]||0)+bookingRevenue(b));});
   if(Object.keys(bySource).length>0){
     const srcCard=div({className:'card',style:{padding:'16px',marginBottom:14}});
     const srcTotal=Object.values(bySource).reduce((a,b)=>a+b,0);
@@ -2994,12 +3024,12 @@ function downloadReport(bookings,expenses,periodLabel){
   const{data}=state;
   const propName=pid=>data.properties.find(p=>p.id===pid)?.name||'—';
   const esc=s=>`"${String(s||'').replace(/"/g,'""')}"`;
-  const totalRev=bookings.filter(b=>b.status!=='cancelled').reduce((s,b)=>s+Number(b.totalAmount||0),0);
+  const totalRev=sumRevenue(bookings.filter(b=>b.status!=='cancelled'));
   const totalExp=expenses.reduce((s,e)=>s+Number(e.amount||0),0);
-  let csv=`StayLog Report,${esc(periodLabel)}\nGenerated,${esc(new Date().toLocaleString('en-IN'))}\n\nSUMMARY\nTotal Revenue,${totalRev}\nTotal Expenses,${totalExp}\nNet Profit,${totalRev-totalExp}\n\nINCOME DETAILS\nDate,Guest Name,Property,Check-in,Check-out,Nights,Guests,Source,Total Amount,Amount Paid,Balance Due,Status\n`;
+  let csv=`StayLog Report,${esc(periodLabel)}\nGenerated,${esc(new Date().toLocaleString('en-IN'))}\n\nSUMMARY\nTotal Revenue,${totalRev}\nTotal Expenses,${totalExp}\nNet Profit,${totalRev-totalExp}\n\nINCOME DETAILS\nDate,Guest Name,Property,Check-in,Check-out,Nights,Guests,Source,Total Amount,Amount Paid,Round Off,Balance Due,Status\n`;
   [...bookings].filter(b=>b.status!=='cancelled').sort((a,b)=>new Date(a.checkIn)-new Date(b.checkIn)).forEach(b=>{
     const nights=diffDays(b.checkIn,b.checkOut),due=balanceDue(b);
-    csv+=[esc(b.checkIn),esc(b.guestName),esc(propName(b.propertyId)),esc(fmtDate(b.checkIn)),esc(fmtDate(b.checkOut)),nights,b.guests||1,esc(b.source||'Direct'),Number(b.totalAmount||0),Number(b.paid||0),due,esc(b.status)].join(',')+'\n';
+    csv+=[esc(b.checkIn),esc(b.guestName),esc(propName(b.propertyId)),esc(fmtDate(b.checkIn)),esc(fmtDate(b.checkOut)),nights,b.guests||1,esc(b.source||'Direct'),Number(b.totalAmount||0),Number(b.paid||0),roundOffOf(b),due,esc(b.status)].join(',')+'\n';
   });
   csv+='\nEXPENDITURE DETAILS\nDate,Description,Property,Category,Paid To,Gross Payout,Loan Deduction,Net Amount,Status,Notes\n';
   [...expenses].sort((a,b)=>new Date(a.date)-new Date(b.date)).forEach(e=>{
@@ -4028,22 +4058,52 @@ function renderBookingModal(){
         }
       }
     }
+    // Total, Payment received and, for guests who pay us, Round off: a gap of
+    // up to ROUND_OFF_LIMIT either way fills Round off; once it is typed by
+    // hand (roundOffHand, kept on the booking) it is never filled again.
     const amtRow=div({style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}});
-    const amtInp=h('input',{type:'number',placeholder:'Total (₹)',value:f.totalAmount||''});amtInp.addEventListener('input',e=>f.totalAmount=e.target.value);
-    const paidInp=h('input',{type:'number',placeholder:'Paid (₹)',value:f.paid||''});paidInp.addEventListener('input',e=>f.paid=e.target.value);
-    amtRow.appendChild(amtInp);amtRow.appendChild(paidInp);wrap.appendChild(amtRow);
+    const amtInp=h('input',{type:'number',step:'any',placeholder:'Total (₹)','data-total':'1',value:f.totalAmount||''});
+    const paidInp=h('input',{type:'number',step:'any',placeholder:'Payment received (₹)','data-received':'1',value:f.paid||''});
+    amtRow.appendChild(div({},div({className:'label'},'Total'),amtInp));
+    amtRow.appendChild(div({},div({className:'label'},'Payment received'),paidInp));
+    wrap.appendChild(amtRow);
+    const roInp=h('input',{type:'number',step:'any',placeholder:'0.00','data-round-off':'1',
+      value:Number(f.roundOff)?r2(f.roundOff).toFixed(2):''});
+    const roWrap=div({'data-round-off-row':'1'},div({className:'label'},'Round off'),roInp,
+      div({style:{fontSize:11.5,color:'var(--muted)',marginTop:3,lineHeight:1.45}},
+        `A gap of up to ₹${ROUND_OFF_LIMIT} either way fills in by itself. + is what you let go, − what the guest paid over.`));
+    const moneyLine=div({'data-money-line':'1',style:{fontSize:13,fontWeight:600,minHeight:18}});
+    wrap.appendChild(roWrap); wrap.appendChild(moneyLine);
+    const showMoney=()=>{
+      const direct=paysUsDirectly(f);
+      roWrap.style.display=direct?'':'none'; moneyLine.style.display=direct?'':'none';
+      if(!direct)return;
+      const due=balanceDue(f);
+      moneyLine.style.color=due>0?'var(--warn)':'var(--accent)';
+      moneyLine.textContent=Number(f.totalAmount)>0?(due>0?`Balance due ${fmtCur(due)}`:'Fully paid'):'';
+    };
+    const autoFill=()=>{
+      if(f.roundOffHand||!paysUsDirectly(f)||f.paid===''||f.paid==null)return;
+      const ro=autoRoundOff(f.totalAmount,f.paid);
+      if(ro===null)return;                     // a real balance: leave Round off as it is
+      f.roundOff=ro; roInp.value=ro?ro.toFixed(2):'';
+    };
+    amtInp.addEventListener('input',e=>{f.totalAmount=e.target.value;autoFill();showMoney();});
+    paidInp.addEventListener('input',e=>{f.paid=e.target.value;autoFill();showMoney();});
+    roInp.addEventListener('input',e=>{f.roundOffHand=true;f.roundOff=e.target.value===''?0:r2(e.target.value);showMoney();});
     function autoCalc(){
       if(f.checkIn&&f.checkOut&&!isEdit){
         const n=diffDays(f.checkIn,f.checkOut);
         const prop=data.properties.find(p=>p.id===f.propertyId);
-        if(n>0&&prop?.pricePerNight){const s=n*Number(prop.pricePerNight);f.totalAmount=s;amtInp.value=s;nightsInfo.textContent=`${n} nights · Suggested: ₹${s.toLocaleString('en-IN')}`;}
+        if(n>0&&prop?.pricePerNight){const s=n*Number(prop.pricePerNight);f.totalAmount=s;amtInp.value=s;autoFill();showMoney();nightsInfo.textContent=`${n} nights · Suggested: ₹${s.toLocaleString('en-IN')}`;}
         else if(n>0)nightsInfo.textContent=`${n} nights`;
       }
     }
     const guestsInp=h('input',{type:'number',placeholder:'No. of guests',value:f.guests||1});guestsInp.addEventListener('input',e=>f.guests=e.target.value);wrap.appendChild(guestsInp);
     const srcSel=h('select');
     ['Direct','Airbnb','Booking.com','MakeMyTrip','Goibibo','OYO','Other'].forEach(s=>srcSel.appendChild(h('option',{value:s,selected:f.source===s},s)));
-    srcSel.addEventListener('change',e=>f.source=e.target.value);wrap.appendChild(srcSel);
+    srcSel.addEventListener('change',e=>{f.source=e.target.value;autoFill();showMoney();});wrap.appendChild(srcSel);
+    showMoney();
     const stSel=h('select');
     [['confirmed','Confirmed'],['checkedin','Checked In'],['checkedout','Checked Out'],['cancelled','Cancelled']].forEach(([v,l])=>stSel.appendChild(h('option',{value:v,selected:f.status===v},l)));
     stSel.addEventListener('change',e=>f.status=e.target.value);wrap.appendChild(stSel);
@@ -4093,6 +4153,7 @@ function renderBookingModal(){
       if(!f.guestName||!f.checkIn||!f.checkOut||!f.propertyId)return;
       if(hasConflict(f.propertyId,f.checkIn,f.checkOut,isEdit?f.id:null)){alert('These dates overlap with an existing booking. Please choose different dates.');return;}
       if(!isEdit)f.id=uid();
+      f.roundOff=paysUsDirectly(f)?r2(f.roundOff||0):0;   // never for platforms that collect payment
       const owedBefore=isEdit?balanceDue(editItem):balanceDue({});
       mutateData(d=>{if(isEdit)d.bookings=d.bookings.map(b=>b.id===f.id?f:b);else d.bookings.push({...f});});
       // This save settled it: offer the receipt, as "Mark paid" does.

@@ -41,10 +41,12 @@ const STALE_DAYS = 2;
 // Who pays at the property (as in the app: paysUsDirectly). Others never get a
 // balance alert.
 const PAYS_US = new Set(['Direct', 'Booking.com']);
-// The app's balanceDue(): under ₹1 counts as fully paid (paise left over are
-// not a debt); a real balance keeps its paise. Stored amounts are not rounded.
-export const balanceDue = (b: { total_amount?: unknown; paid?: unknown }) => {
-  const d = Math.round((Number(b.total_amount || 0) - Number(b.paid || 0)) * 100) / 100;
+// The app's balanceDue(): total − paid − round off (signed; only for guests
+// who pay us, Direct or Booking.com), and under ₹1 still counts as fully paid
+// for bookings from before round off. A real balance keeps its paise.
+export const balanceDue = (b: { total_amount?: unknown; paid?: unknown; round_off?: unknown; source?: unknown }) => {
+  const ro = PAYS_US.has(String(b.source || '').trim() || 'Direct') ? Number(b.round_off || 0) : 0;
+  const d = Math.round((Number(b.total_amount || 0) - Number(b.paid || 0) - ro) * 100) / 100;
   return d < 1 ? 0 : d;
 };
 
@@ -201,7 +203,9 @@ export async function dailyPushes(owner: string, d: ReturnType<typeof db>, nowMs
 
   // The day before check-out only — never on the day itself; Direct and
   // Booking.com only; and only with money actually owed.
-  const leaving = await d.get(`bookings?owner_id=eq.${owner}&deleted_at=is.null&status=neq.cancelled&check_out=eq.${tomorrow}&select=${cols}`) || [];
+  // round_off arrives with supabase/round-off.sql; until it has run, ask without it.
+  const leavingQ = `bookings?owner_id=eq.${owner}&deleted_at=is.null&status=neq.cancelled&check_out=eq.${tomorrow}&select=${cols}`;
+  const leaving = await d.get(leavingQ + ',round_off').catch(() => d.get(leavingQ)) || [];
   for (const b of leaving) {
     const due = balanceDue(b);
     if (!PAYS_US.has((String(b.source || '').trim() || 'Direct')) || !(due > 0)) continue;
