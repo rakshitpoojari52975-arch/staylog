@@ -346,6 +346,16 @@ also fetch from Supabase with `cache: 'no-store'` as a second layer.
   show two places whenever there are paise (₹250.50). `tests/test_balance.js`
   checks every place and that no other line of `app.js` subtracts paid from
   total; `tests/test_round_off.js` covers round off.
+- **Mark paid, by source.** Direct and Booking.com: **Mark paid**
+  (`data-mark-paid`) asks "Amount received?" with the ₹5 round off, then
+  offers the receipt. Airbnb and every other platform (not `paysUsDirectly`):
+  **Mark payout received** (`data-mark-payout`, `markPayoutReceived`) on any
+  booking not cancelled with `balanceDue(b) > 0` — one tap sets
+  `paid = totalAmount` and `roundOff = 0`, since the platform pays the full
+  amount: no amount sheet, no round off, no receipt, no message. A "Marked
+  paid · Undo" toast (`showToast`, outside `#app`, `UNDO_MS` 5 s) restores the
+  previous `paid`. **Receipts, the payment request, the checkout-tomorrow
+  balance alert and the receipt offer stay Direct and Booking.com only.**
 - After a booking is marked paid in full — the card's **Mark paid**, or typing
   the full amount into the booking — a "Paid in full" sheet offers **Send
   receipt**. A sheet of its own, so the share starts from a fresh tap.
@@ -374,6 +384,9 @@ also fetch from Supabase with `cache: 'no-store'` as a second layer.
   scans every file and every commit for UPI IDs on real bank handles, IFSC
   codes and embedded images; only its own fake values are allowed. Run it
   with `STAYLOG_REAL_UPI=<your id>` to also search for the real one by value.
+- Platform bookings are settled with one-tap **Mark payout received** (full
+  amount, no round off; see Receipts); that never sends the guest anything,
+  and receipts and payment requests remain Direct and Booking.com only.
 - The UPI ID goes alone on its own line, unformatted, so a long-press copies
   just the ID. The QR (a PNG data: URL, like the signature) is shared through
   the share sheet like the PDFs (`sharePaymentQR`, same guard); the message
@@ -407,6 +420,7 @@ also fetch from Supabase with `cache: 'no-store'` as a second layer.
     node tests/test_payment.js        # STAYLOG_REAL_UPI=… also searches the repo for your real UPI ID
     node tests/test_faceid.js            # Face ID: setup behind the PIN, unlock, cancel → PIN, off, Reset PIN, no WebAuthn
     node tests/test_new_bookings.js      # ical-sync + notify together: new stays announced once, echoes/blocks/first reads never; the tap
+    node tests/test_payout.js            # platform bookings: one-tap Mark payout received + Undo; Direct/Booking.com unchanged
     node tests/test_round_off.js         # round off ≤ ₹5: form, Mark paid, receipt, revenue, CSV, sync, notify (+ round-off.sql with STAYLOG_PG)
     node tests/test_balance.js           # under ₹1 is paid: card, Home, stamp, PDF, CSV, requests, notify
     node tests/test_notify_function.js   # Node 22.18+; every alert's condition, decrypts each push, checks VAPID
