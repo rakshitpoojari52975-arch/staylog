@@ -12,9 +12,11 @@
 //
 // Environment (Supabase provides the first two to every function):
 //   SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, ICAL_CRON_SECRET (you add this one)
+//   PUSH_CRON_SECRET (notify's; optional) — with it, new reservations are handed
+//   to the notify function for a "New booking" push
 // ─────────────────────────────────────────────────────────────────────────────
 
-export type Env = { SUPABASE_URL?: string; SUPABASE_SERVICE_ROLE_KEY?: string; ICAL_CRON_SECRET?: string };
+export type Env = { SUPABASE_URL?: string; SUPABASE_SERVICE_ROLE_KEY?: string; ICAL_CRON_SECRET?: string; PUSH_CRON_SECRET?: string };
 export type IcsEvent = { uid: string; start: string; end: string; summary: string; description: string; status: string };
 type Fetch = (input: string, init?: Record<string, unknown>) => Promise<Response>;
 
@@ -147,9 +149,9 @@ async function readFeed(url: string, fetchImpl: Fetch): Promise<string> {
   } finally { clearTimeout(timer); }
 }
 
-type Feed = { id: string; owner_id: string; property_id: string; platform: string; url: string };
+type Feed = { id: string; owner_id: string; property_id: string; platform: string; url: string; last_ok_at?: string | null };
 
-async function syncFeed(feed: Feed, d: ReturnType<typeof db>, fetchImpl: Fetch, now: string) {
+async function syncFeed(feed: Feed, d: ReturnType<typeof db>, fetchImpl: Fetch, now: string, fresh: { feed_id: string; uid: string }[] = []) {
   const report: Record<string, unknown> = { id: feed.id, platform: feed.platform, property_id: feed.property_id };
   try {
     const events = parseIcs(await readFeed(feed.url, fetchImpl));
@@ -165,6 +167,14 @@ async function syncFeed(feed: Feed, d: ReturnType<typeof db>, fetchImpl: Fetch, 
     // Gone from the feed: flagged, never deleted. An empty answer where there
     // used to be several stays looks like a glitch at their end, not a wave of
     // cancellations, so it flags nothing and says so.
+    // Reservations this feed shows for the first time, for the "New booking"
+    // push. Not on its first good read: that finds everything already there.
+    // Blocks are not stays; moved dates keep their uid, so they are not new.
+    if (feed.last_ok_at) {
+      const seen = new Set(known.map(k => k.uid));
+      for (const e of events)
+        if (!seen.has(e.uid) && kindOf(feed.platform, e.summary) === 'reserved') fresh.push({ feed_id: feed.id, uid: e.uid });
+    }
     const present = new Set(events.map(e => e.uid));
     const vanished = known.filter(k => !k.gone_at && !present.has(k.uid));
     let warning = '';
@@ -189,6 +199,20 @@ async function syncFeed(feed: Feed, d: ReturnType<typeof db>, fetchImpl: Fetch, 
   return report;
 }
 
+// Hands new reservations to the notify function, which decides and sends.
+// Function secrets are shared across a project, so PUSH_CRON_SECRET is here
+// too once notifications are set up; without it, nothing is announced. A
+// reminder only: a failure here never fails the import.
+async function announce(fresh: { feed_id: string; uid: string }[], env: Env, fetchImpl: Fetch) {
+  if (!fresh.length || !env.PUSH_CRON_SECRET) return 0;
+  try {
+    const res = await fetchImpl(`${String(env.SUPABASE_URL).replace(/\/+$/, '')}/functions/v1/notify`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'x-cron-secret': env.PUSH_CRON_SECRET },
+      body: JSON.stringify({ job: 'new-bookings', events: fresh }) });
+    return res.ok ? fresh.length : 0;
+  } catch { return 0; }
+}
+
 // ── The handler ──────────────────────────────────────────────────────────────
 export async function handle(req: Request, env: Env, fetchImpl: Fetch = fetch as unknown as Fetch): Promise<Response> {
   if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS });
@@ -198,12 +222,13 @@ export async function handle(req: Request, env: Env, fetchImpl: Fetch = fetch as
   if (!who) return json({ error: 'not allowed' }, 401);
   const d = db(env, fetchImpl);
   const feeds: Feed[] = await d.get('owner' in who
-    ? `ical_feeds?owner_id=eq.${who.owner}&select=id,owner_id,property_id,platform,url`
-    : 'ical_feeds?select=id,owner_id,property_id,platform,url') || [];
+    ? `ical_feeds?owner_id=eq.${who.owner}&select=id,owner_id,property_id,platform,url,last_ok_at`
+    : 'ical_feeds?select=id,owner_id,property_id,platform,url,last_ok_at') || [];
   const now = new Date().toISOString();
-  const results = [];
-  for (const f of feeds) results.push(await syncFeed(f, d, fetchImpl, now));   // a handful of feeds; one at a time is polite
-  return json({ ok: true, at: now, feeds: results });
+  const results = [], fresh: { feed_id: string; uid: string }[] = [];
+  for (const f of feeds) results.push(await syncFeed(f, d, fetchImpl, now, fresh));   // a handful of feeds; one at a time is polite
+  const announced = await announce(fresh, env, fetchImpl);
+  return json({ ok: true, at: now, feeds: results, ...(announced ? { announced } : {}) });
 }
 
 // deno-lint-ignore no-explicit-any
@@ -213,5 +238,6 @@ if (typeof Deno !== 'undefined' && Deno.serve) {
     SUPABASE_URL: Deno.env.get('SUPABASE_URL'),
     SUPABASE_SERVICE_ROLE_KEY: Deno.env.get('SUPABASE_SERVICE_ROLE_KEY'),
     ICAL_CRON_SECRET: Deno.env.get('ICAL_CRON_SECRET'),
+    PUSH_CRON_SECRET: Deno.env.get('PUSH_CRON_SECRET'),
   }));
 }

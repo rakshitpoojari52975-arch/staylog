@@ -36,7 +36,7 @@ const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { ...CORS, 'Content-Type': 'application/json' } });
 
 // The alert types, each with an on/off in notification_prefs. Missing = on.
-export const ALERTS = ['attendance', 'utensils', 'arrivals', 'balances', 'stale'] as const;
+export const ALERTS = ['attendance', 'utensils', 'newBookings', 'arrivals', 'balances', 'stale'] as const;
 const STALE_DAYS = 2;
 // Who pays at the property (as in the app: paysUsDirectly). Others never get a
 // balance alert.
@@ -244,6 +244,53 @@ export async function eventPush(payload: Record<string, any>, d: ReturnType<type
         url: './#open=cloud', tag: `ute-${rec.id}` } };
 }
 
+// New stays from the calendar import. ical-sync names the events it has just
+// seen for the first time on a feed it had already read once (so a feed's
+// first read, which finds everything, announces nothing). Each is re-read
+// here rather than trusted from the caller, and only a live, upcoming
+// reservation counts: never an Airbnb block, a stay already begun before
+// today, or dates that already match a booking (one Rakshit made himself).
+// One push per stay, keyed by property and dates, so the same stay echoed in
+// the other platform's feed is not announced twice; Airbnb "Reserved" goes
+// first, as in the phone's planIcal(), so it names the platform when both
+// arrive together.
+const nightsBetween = (a: string, b: string) => Math.round((Date.parse(b + 'T00:00:00Z') - Date.parse(a + 'T00:00:00Z')) / 86400e3);
+export function stayDates(ci: string, co: string) {
+  const [y1, m1] = ci.split('-'), [y2, m2] = co.split('-');
+  const from = y1 === y2 && m1 === m2 ? String(Number(ci.slice(8, 10))) : fmtDay(ci);
+  return `${from} → ${fmtDay(co)}`;
+}
+export async function newBookingPushes(list: unknown, d: ReturnType<typeof db>, nowMs: number) {
+  const out: { owner: string; key: string; alert: string; push: Push; skipped?: string }[] = [];
+  const today = istDate(nowMs);
+  const rows: Record<string, any>[] = [];
+  for (const e of (Array.isArray(list) ? list : []).slice(0, 50) as Record<string, unknown>[]) {
+    if (!e || typeof e.feed_id !== 'string' || typeof e.uid !== 'string') continue;
+    const r = (await d.get(`ical_events?feed_id=eq.${encodeURIComponent(e.feed_id)}&uid=eq.${encodeURIComponent(e.uid)}` +
+      '&select=owner_id,property_id,platform,start_date,end_date,kind,gone_at') || [])[0];
+    if (r) rows.push(r);
+  }
+  rows.sort((a, b) => (a.platform === 'Airbnb' ? 0 : 1) - (b.platform === 'Airbnb' ? 0 : 1));
+  for (const r of rows) {
+    const key = `stay:${r.property_id}:${r.start_date}:${r.end_date}`;
+    const skip = (why: string) => out.push({ owner: r.owner_id, key, alert: 'newBookings', push: null as unknown as Push, skipped: why });
+    if (r.kind !== 'reserved') { skip('a block, not a stay'); continue; }
+    if (r.gone_at) { skip('already gone from the feed'); continue; }
+    if (r.start_date < today) { skip('check-in has passed'); continue; }
+    const known = await d.get(`bookings?owner_id=eq.${r.owner_id}&property_id=eq.${encodeURIComponent(r.property_id)}` +
+      `&check_in=eq.${r.start_date}&check_out=eq.${r.end_date}&deleted_at=is.null&status=neq.cancelled&select=id`) || [];
+    if (known.length) { skip('already a booking'); continue; }
+    const prop = (await d.get(`properties?id=eq.${encodeURIComponent(r.property_id)}&select=name`) || [])[0];
+    const n = nightsBetween(r.start_date, r.end_date);
+    out.push({ owner: r.owner_id, key, alert: 'newBookings', push: {
+      title: `New ${r.platform} booking`,
+      body: [stayDates(r.start_date, r.end_date), `${n} night${n === 1 ? '' : 's'}`, prop && prop.name].filter(Boolean).join(' · '),
+      url: `./#open=stay&prop=${encodeURIComponent(r.property_id)}&in=${r.start_date}&out=${r.end_date}`,
+      tag: `stay-${r.property_id}-${r.start_date}` } });
+  }
+  return out;
+}
+
 // ── the handler ──────────────────────────────────────────────────────────────
 export async function handle(req: Request, env: Env, fetchImpl: Fetch = fetch as unknown as Fetch, nowMs = Date.now()): Promise<Response> {
   if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS });
@@ -267,6 +314,15 @@ export async function handle(req: Request, env: Env, fetchImpl: Fetch = fetch as
         }
       }
       return json({ ok: true, job: 'daily', report });
+    }
+    if (body && body.job === 'new-bookings') {
+      const report: unknown[] = [];
+      for (const item of await newBookingPushes(body.events, d, nowMs)) {
+        if (item.skipped) { report.push({ key: item.key, skipped: item.skipped }); continue; }
+        if (!(await prefsOf(d, item.owner))[item.alert]) { report.push({ key: item.key, skipped: 'turned off' }); continue; }
+        report.push({ key: item.key, ...(await deliver(item.owner, item.key, item.push, d, env, fetchImpl, nowMs)) });
+      }
+      return json({ ok: true, job: 'new-bookings', report });
     }
     if (body && body.table) {
       const ev = await eventPush(body, d);
