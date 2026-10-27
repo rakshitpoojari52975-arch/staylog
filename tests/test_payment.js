@@ -45,7 +45,7 @@ const open=async seed=>{
   for(const g of ['**://*.supabase.co/**','**fonts.googleapis.com**','**cdn.jsdelivr.net**'])await ctx.route(g,r=>r.abort());
   await ctx.route('**vendor/supabase.umd.js',r=>r.fulfill({contentType:'text/javascript',body:STUB}));
   const page=await ctx.newPage(); const errs=[], dialogs=[];
-  page.on('pageerror',e=>errs.push(e.message)); page.on('dialog',async d=>{dialogs.push(d.message());await d.accept();});
+  page.on('pageerror',e=>errs.push(e.message)); page.on('dialog',async d=>{dialogs.push(d.message());await d.accept(d.type()==='prompt'?d.defaultValue():undefined);});
   await page.addInitScript(s=>{localStorage.setItem('staylog_v2',JSON.stringify(s));
     window.__opened=[]; window.open=u=>{window.__opened.push(u);return null;};
     window.__shared=[]; navigator.canShare=()=>true;
@@ -157,7 +157,7 @@ console.log('\n— paid, then the receipt is offered —');
   await page.evaluate(()=>{window.__receipts=[];window.shareReceipt=b=>{window.__receipts.push(b.id);};
     state.tab='bookings';state.expandedBooking='bk1';render();}); await page.waitForTimeout(200);
   await page.locator('[data-mark-paid]').click(); await page.waitForTimeout(250);
-  ok('Mark paid asks first, naming the amount', dialogs.some(d=>/Record ₹4,000 received from Anita Rao/.test(d)), dialogs);
+  ok('Mark paid asks the amount received, offering the balance', dialogs.some(d=>/Amount received\? \(balance ₹4,000\)/.test(d)), dialogs);
   ok('the booking is then paid in full', (await page.evaluate(()=>state.data.bookings[0].paid))===6000);
   ok('and the receipt is offered', await page.locator('[data-offer-receipt]').count()===1
      &&/₹6,000 received from Anita Rao/.test(await page.locator('body').innerText()));
@@ -168,11 +168,11 @@ console.log('\n— paid, then the receipt is offered —');
 
 { const {ctx,page}=await open(SEED([PROP()],[BK({source:'Booking.com'})]));
   await page.evaluate(()=>{state.modal='addBooking';state.editItem=state.data.bookings[0];render();}); await page.waitForTimeout(200);
-  await page.locator('input[placeholder="Paid (₹)"]').fill('5000');
+  await page.locator('input[placeholder="Payment received (₹)"]').fill('5000');
   await page.locator('button',{hasText:'Update Booking'}).click(); await page.waitForTimeout(200);
   ok('a part payment typed in offers no receipt', await page.locator('[data-offer-receipt]').count()===0);
   await page.evaluate(()=>{state.modal='addBooking';state.editItem=state.data.bookings[0];render();}); await page.waitForTimeout(200);
-  await page.locator('input[placeholder="Paid (₹)"]').fill('6000');
+  await page.locator('input[placeholder="Payment received (₹)"]').fill('6000');
   await page.locator('button',{hasText:'Update Booking'}).click(); await page.waitForTimeout(200);
   ok('typing in the full amount offers the receipt (Booking.com too)', await page.locator('[data-offer-receipt]').count()===1);
   await ctx.close(); }

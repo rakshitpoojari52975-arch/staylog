@@ -226,7 +226,8 @@ also fetch from Supabase with `cache: 'no-store'` as a second layer.
     `#open=<id>&send=arrival`.
   - `balances`: check-out **tomorrow**, `source` Direct (or blank) or
     Booking.com, not cancelled, balance ≥ ₹1 (its own `balanceDue`, the
-    app's rule). Never on the day itself, never
+    app's rule: total − paid − `round_off`; it asks without `round_off` if
+    `round-off.sql` has not run). Never on the day itself, never
     Airbnb or other platforms (the same pair as `paysUsDirectly`). Opens
     `#open=<id>&send=payment`.
   - `stale`: `sync_status.last_sync_at` older than 2 days (written by
@@ -317,15 +318,34 @@ also fetch from Supabase with `cache: 'no-store'` as a second layer.
 - Numbering `RV/<FY>/<nnn>`, Indian financial year (April–March), assigned on
   first issue, never reused; unique per owner in SQL.
 - The stamp states what is true: PAID, PART PAID (with balance) or UNPAID.
-- **Under ₹1 is paid.** `balanceDue(b)` is the one balance: if total − paid
-  is below ₹1 it is 0. Paise left over from a rounded payment once showed as
-  PART PAID and "₹0.5 due". The card, Home's Today lines, `receiptStamp`
-  (PAID = total > 0 and `balanceDue` 0), `buildReceiptPDF`, Mark paid, the
-  CSV's Balance Due and the notify function all use it; never subtract on
-  your own. Stored amounts are never rounded, and a real balance keeps its
-  paise: `fmtCur`/`fmtCurPdf` show two places whenever there are paise
-  (₹250.50). `tests/test_balance.js` checks every place and that no other
-  line of `app.js` subtracts paid from total.
+- **Round off (Direct and Booking.com only).** `roundOff` (synced as
+  `round_off`, added by `supabase/round-off.sql`; `LATER_COLUMNS` until it has
+  run) is signed rupees settled without being paid: + what we let go
+  (₹4,632.47 billed, ₹4,630 taken → 2.47), − what the guest paid over
+  (₹4,995 billed, ₹5,000 taken → −5.00). `roundOffOf(b)` is 0 for Airbnb and
+  every other platform whatever is stored; the form never shows the field for
+  them and saving makes it 0. **The limit is one constant,
+  `ROUND_OFF_LIMIT = 5`, inclusive.** In the booking form (Total, Payment
+  received, Round off, and a live "Balance due ₹X" / "Fully paid") and in
+  **Mark paid** (now "Amount received?", prefilled with the balance, added to
+  `paid`), a gap total − received of ₹5.00 or less either way fills Round off
+  (`autoRoundOff`); above it Round off is left as it is. Typing in Round off
+  sets `roundOffHand` and it is never filled again for that booking
+  (phone-only: lost by "Replace this phone from the cloud").
+- **The money rule.** `balanceDue(b)` = total − paid − `roundOffOf(b)` is the
+  one balance; under ₹1 still counts as paid, a safety net for bookings from
+  before round off (paise left over once showed as PART PAID and "₹0.5 due").
+  The card, Home's Today lines, `receiptStamp` (PAID = total > 0 and
+  `balanceDue` 0), `buildReceiptPDF`, Mark paid, the CSV's Balance Due and the
+  notify function all use it; never subtract on your own. **Revenue** (Home,
+  Reports, the CSV's Total Revenue) is `bookingRevenue(b)` = total − round off:
+  for a settled stay, the money received. The CSV has a Round Off column. The
+  receipt prints "Round off -Rs. X" (or "+Rs. X") between the total and
+  "Amount received" (a hyphen: jsPDF's fonts have no U+2212). Stored amounts
+  are never rounded, and a real balance keeps its paise: `fmtCur`/`fmtCurPdf`
+  show two places whenever there are paise (₹250.50). `tests/test_balance.js`
+  checks every place and that no other line of `app.js` subtracts paid from
+  total; `tests/test_round_off.js` covers round off.
 - After a booking is marked paid in full — the card's **Mark paid**, or typing
   the full amount into the booking — a "Paid in full" sheet offers **Send
   receipt**. A sheet of its own, so the share starts from a fresh tap.
@@ -341,8 +361,8 @@ also fetch from Supabase with `cache: 'no-store'` as a second layer.
   collect payment themselves: their guests are never told a balance and never
   sent payment details.
 - Payment details go out only through `canAskForPayment(b)`: pays us
-  directly, not cancelled, `balanceDue(b) > 0` (under ₹1 counts as paid, see
-  Receipts), and the property has a UPI ID
+  directly, not cancelled, `balanceDue(b) > 0` (total − paid − round off;
+  under ₹1 counts as paid; see Receipts), and the property has a UPI ID
   or bank details. The check-out reminder carries them with the exact
   balance; the Send sheet's **Payment request** sends the same any time;
   `sendMessage` refuses a payment request that fails the check. Without
@@ -387,6 +407,7 @@ also fetch from Supabase with `cache: 'no-store'` as a second layer.
     node tests/test_payment.js        # STAYLOG_REAL_UPI=… also searches the repo for your real UPI ID
     node tests/test_faceid.js            # Face ID: setup behind the PIN, unlock, cancel → PIN, off, Reset PIN, no WebAuthn
     node tests/test_new_bookings.js      # ical-sync + notify together: new stays announced once, echoes/blocks/first reads never; the tap
+    node tests/test_round_off.js         # round off ≤ ₹5: form, Mark paid, receipt, revenue, CSV, sync, notify (+ round-off.sql with STAYLOG_PG)
     node tests/test_balance.js           # under ₹1 is paid: card, Home, stamp, PDF, CSV, requests, notify
     node tests/test_notify_function.js   # Node 22.18+; every alert's condition, decrypts each push, checks VAPID
     node tests/test_push_app.js          # menu, subscribe/unsubscribe, quiet re-subscribe, deep links, sw.js handlers

@@ -107,7 +107,7 @@ console.log('\n— the 9 AM alert follows the same rule —');
 
 console.log('\n— nothing subtracts on its own any more —');
 { const app=fs.readFileSync(path.join(ROOT,'app.js'),'utf8');
-  const own=app.split('\n').map((l,i)=>[i+1,l]).filter(([,l])=>/totalAmount[^;\n]*-[^;\n]*\bpaid\b|total\s*-\s*paid/.test(l)&&!/^const balanceDue|Math\.round\(\(Number\(b\.totalAmount/.test(l.trim()));
+  const own=app.split('\n').map((l,i)=>[i+1,l]).filter(([,l])=>/totalAmount[^;\n]*-[^;\n]*\bpaid\b|total\s*-\s*paid/.test(l)&&!/^const balanceDue|^const d = r2\(Number\(b\.totalAmount/.test(l.trim()));
   ok('every booking balance in app.js goes through balanceDue()', own.length===0, own); }
 
 srv.close();

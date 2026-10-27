@@ -115,6 +115,7 @@
         // b.idProofImage is intentionally absent — see the header
         msg_sent: b.msgSent || (b.confirmSentOn ? { confirm: b.confirmSentOn } : {}),
         receipt_no: str(b.receiptNo), receipt_on: dat(b.receiptOn),
+        round_off: num(b.roundOff) || 0,       // signed; 0 for platforms that collect payment
       }),
       down: r => ({
         id: r.id, propertyId: r.property_id || '', guestName: r.guest_name, phone: r.phone || '',
@@ -123,6 +124,7 @@
         status: r.status, notes: r.notes || '',
         idProofType: r.id_proof_type || '', idProofNumber: r.id_proof_number || '',
         receiptNo: r.receipt_no || '', receiptOn: r.receipt_on || '',
+        roundOff: Number(r.round_off) || 0,
         idProofImage: '',                       // refilled from the local copy on restore
         msgSent: r.msg_sent || {},
       }),
@@ -184,6 +186,7 @@
                   upi_qr: 'supabase/payment-details.sql', bank_details: 'supabase/payment-details.sql' },
     staff: { checkout_wage: 'supabase/checkout-wage.sql', utensil_rate: 'supabase/utensils.sql' },
     expenses: { wage_kind: 'supabase/checkout-wage.sql', auto_amount: 'supabase/checkout-wage.sql' },
+    bookings: { round_off: 'supabase/round-off.sql' },
   };
   let schemaBehind = '';   // the script(s) to run, while the database lacks their columns
   // Supabase names one missing column per refusal; this says which, if any.
