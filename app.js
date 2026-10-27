@@ -6,7 +6,7 @@
 // ─── Build ────────────────────────────────────────────────────────────────────
 // Bump BOTH of these together. This date sat at 28 Sept through a dozen
 // releases and was read, reasonably, as proof the upload had not landed.
-const APP_VERSION='v48', APP_BUILT='29 Oct 2026';
+const APP_VERSION='v49', APP_BUILT='30 Oct 2026';
 // The CACHE_NAME of the sw.js released with this app.js. Every release bumps
 // APP_VERSION and CACHE_NAME together, so one is derived from the other rather
 // than being a fourth thing to forget; the tests fail if they ever disagree.
@@ -1221,6 +1221,9 @@ function bookingCard(b){   // dense row; expands into the full detail
     actions.appendChild(btn({className:'btn-gold btn-sm',onClick:()=>downloadConfirmation(b)},ico('file-text',{style:{marginRight:4,fontSize:14}}),'PDF'));
     if(canReceipt(b)&&b.status!=='cancelled'&&balanceDue(b)>0)actions.appendChild(btn({className:'btn-primary btn-sm','data-mark-paid':'1',
       onClick:()=>markBookingPaid(b)},ico('circle-check',{style:{marginRight:4,fontSize:14}}),'Mark paid'));
+    // Airbnb and the other platforms pay out the full amount themselves.
+    if(!paysUsDirectly(b)&&b.status!=='cancelled'&&balanceDue(b)>0)actions.appendChild(btn({className:'btn-primary btn-sm','data-mark-payout':'1',
+      onClick:()=>markPayoutReceived(b)},ico('circle-check',{style:{marginRight:4,fontSize:14}}),'Mark payout received'));
     if(canReceipt(b))actions.appendChild(btn({className:'btn-gold btn-sm',onClick:()=>shareReceipt(b)},
       ico('receipt',{style:{marginRight:4,fontSize:14}}),b.receiptNo?'Receipt again':'Receipt'));
     actions.appendChild(btn({className:'btn-danger btn-sm',onClick:()=>{if(confirm('Delete this booking?')){mutateData(d=>d.bookings=d.bookings.filter(x=>x.id!==b.id));setState({expandedBooking:null});}}},ico('trash',{style:{marginRight:4}}),'Delete'));
@@ -2049,6 +2052,34 @@ function markBookingPaid(b){
     if(ro!==null)x.roundOff=ro;});
   const now=state.data.bookings.find(y=>y.id===b.id);
   if(now&&justPaidInFull(now))setState({modal:'paidReceipt',editItem:{...now}});
+}
+// Airbnb and every other platform collect from the guest and pay us the whole
+// amount, so there is nothing to ask and nothing to round: one tap records the
+// payout in full, with a few seconds to take it back. No receipt (the platform
+// gives the guest theirs) and no message to the guest.
+const UNDO_MS=5000;
+function markPayoutReceived(b){
+  if(paysUsDirectly(b))return;
+  const was=state.data.bookings.find(y=>y.id===b.id);
+  if(!was||was.status==='cancelled'||!(balanceDue(was)>0))return;
+  const before={paid:was.paid,roundOff:was.roundOff};
+  mutateData(d=>{const x=d.bookings.find(y=>y.id===b.id); if(x){x.paid=Number(x.totalAmount||0);x.roundOff=0;}});
+  showToast('Marked paid','Undo',()=>mutateData(d=>{const x=d.bookings.find(y=>y.id===b.id); if(!x)return;
+    x.paid=before.paid; if(before.roundOff===undefined)delete x.roundOff; else x.roundOff=before.roundOff;}));
+}
+// A strip above the tab bar, outside #app so a re-render leaves it be.
+let toastEl=null, toastTimer=null;
+function showToast(text,action,onAction){
+  if(toastEl)toastEl.remove(); clearTimeout(toastTimer);
+  const el=div({'data-toast':'1',role:'status',style:{position:'fixed',left:16,right:16,bottom:'calc(84px + env(safe-area-inset-bottom,0px))',
+    zIndex:1000,display:'flex',alignItems:'center',gap:12,padding:'11px 14px',borderRadius:12,maxWidth:448,margin:'0 auto',
+    background:'var(--text)',color:'var(--white)',boxShadow:'var(--shadow-lift)',fontSize:13.5,fontWeight:600}},
+    span({style:{flex:1}},text));
+  const done=()=>{clearTimeout(toastTimer); if(toastEl===el)toastEl=null; el.remove();};
+  if(action)el.appendChild(btn({'data-toast-action':'1',style:{background:'transparent',border:'none',color:'var(--gold-light)',
+    fontSize:13.5,fontWeight:700,padding:'4px 6px',minHeight:32},onClick:()=>{done();onAction();}},action));
+  document.body.appendChild(el); toastEl=el;
+  toastTimer=setTimeout(done,UNDO_MS);
 }
 function renderPaidReceiptModal(){
   const b=state.editItem;
