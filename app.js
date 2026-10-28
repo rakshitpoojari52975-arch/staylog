@@ -6,7 +6,7 @@
 // ─── Build ────────────────────────────────────────────────────────────────────
 // Bump BOTH of these together. This date sat at 28 Sept through a dozen
 // releases and was read, reasonably, as proof the upload had not landed.
-const APP_VERSION='v53', APP_BUILT='28 Oct 2026';
+const APP_VERSION='v54', APP_BUILT='28 Oct 2026';
 // The CACHE_NAME of the sw.js released with this app.js. Every release bumps
 // APP_VERSION and CACHE_NAME together, so one is derived from the other rather
 // than being a fourth thing to forget; the tests fail if they ever disagree.
@@ -209,7 +209,7 @@ function monthSelector(current,onChange){
     const overlay=div({id:'month-picker-overlay',style:{position:'fixed',inset:0,zIndex:500}});
     overlay.addEventListener('click',e=>{if(e.target===overlay)overlay.remove();});
     const rect=label.getBoundingClientRect();
-    const picker=div({style:{position:'absolute',top:(rect.bottom+6)+'px',left:Math.max(8,rect.left-40)+'px',background:'var(--white)',border:'1px solid var(--border)',borderRadius:14,padding:'12px',boxShadow:'var(--shadow)',minWidth:240,zIndex:501}});
+    const picker=div({style:{position:'absolute',top:`max(${rect.bottom+6}px, calc(var(--safe-top, 0px) + 8px))`,left:Math.max(8,rect.left-40)+'px',background:'var(--white)',border:'1px solid var(--border)',borderRadius:14,padding:'12px',boxShadow:'var(--shadow)',minWidth:240,zIndex:501}});
     picker.appendChild(btn({style:{width:'100%',padding:'8px 12px',textAlign:'left',background:isAll?'var(--accent-light)':'none',color:isAll?'var(--accent)':'var(--text)',border:'none',borderRadius:8,fontWeight:isAll?600:400,fontSize:14,cursor:'pointer',marginBottom:6},onClick:()=>{onChange(null);overlay.remove();}},'All Time'));
     [yr,yr-1].forEach(y=>{
       picker.appendChild(div({style:{fontSize:11,color:'var(--muted)',fontWeight:600,textTransform:'uppercase',letterSpacing:'0.06em',margin:'8px 0 6px 4px'}},String(y)));
@@ -247,7 +247,7 @@ function expPaidBadge(paid){
 // ─── Modal ────────────────────────────────────────────────────────────────────
 function modal(title,contentFn){
   const overlay=div({style:{position:'fixed',inset:0,background:'var(--scrim)',zIndex:999,display:'flex',alignItems:'flex-end',justifyContent:'center',backdropFilter:'blur(2px)'},onClick:e=>{if(e.target===overlay)closeModal();}});
-  const sheet=div({style:{background:'var(--white)',borderRadius:'20px 20px 0 0',padding:'20px 16px env(safe-area-inset-bottom,24px)',width:'100%',maxWidth:480,maxHeight:'90vh',overflowY:'auto',boxShadow:'var(--shadow-lift)'}});
+  const sheet=div({style:{background:'var(--white)',borderRadius:'20px 20px 0 0',padding:'20px 16px env(safe-area-inset-bottom,24px)',width:'100%',maxWidth:480,maxHeight:'min(90vh, calc(100vh - var(--safe-top, 0px) - 12px))',overflowY:'auto',boxShadow:'var(--shadow-lift)'}});
   sheet.appendChild(div({style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:18}},
     h('span',{style:{fontFamily:'var(--display)',fontSize:20,fontWeight:400}},title),
     btn({style:{background:'none',border:'none',fontSize:24,color:'var(--light)',cursor:'pointer',padding:'2px 8px',lineHeight:1},onClick:closeModal},'×')
@@ -385,7 +385,7 @@ function renderLoginScreen(){
   app.innerHTML='';
   let pinEntry='', confirmPin='', phase=isSetup?'create':'enter';
 
-  const wrap=div({style:{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',minHeight:'100vh',padding:'32px 20px',background:'var(--cream)'}});
+  const wrap=div({style:{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',minHeight:'100vh',padding:'calc(var(--safe-top, 0px) + 32px) 20px 32px',background:'var(--cream)'}});
 
   wrap.appendChild(div({style:{fontFamily:'var(--display)',fontSize:34,color:'var(--accent)',marginBottom:4}},'StayLog'));
   wrap.appendChild(div({style:{fontSize:13,color:'var(--muted)',marginBottom:32,textAlign:'center',maxWidth:260,lineHeight:1.6}},
@@ -533,7 +533,7 @@ function renderHeader(){
   const{data,filterProp}=state;
   const cur=filterProp==='all'?null:data.properties.find(p=>p.id===filterProp);
   const header=div({style:{background:'var(--white)',borderBottom:'1px solid var(--border)',
-    padding:'9px 10px',position:'sticky',top:0,zIndex:100,display:'flex',alignItems:'center',gap:8}});
+    padding:'calc(var(--safe-top, 0px) + 9px) 10px 9px',position:'sticky',top:0,zIndex:100,display:'flex',alignItems:'center',gap:8}});
   header.appendChild(h('div',{className:'display',style:{fontSize:21,paddingLeft:4,flexShrink:0}},'StayLog'));
   if(data.properties.length>0){
     header.appendChild(btn({style:CHIP,onClick:()=>setState({modal:'propPicker'})},

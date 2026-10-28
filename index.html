@@ -57,6 +57,10 @@
 
     /* ─── Tokens · light ─────────────────────────────────────────────── */
     :root {
+      /* The Home Screen app draws under the status bar (viewport-fit=cover,
+         black-translucent): everything that reaches the top adds this. One
+         name, so a test can set it where env() cannot be emulated. */
+      --safe-top: env(safe-area-inset-top, 0px);
       color-scheme: light;
       --cream:       #F5F1E8;
       --white:       #FFFDF8;

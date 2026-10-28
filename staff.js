@@ -12,7 +12,7 @@
 const CFG = window.STAYLOG_CLOUD || {};
 const CHECKIN_TIME = '1:00 PM', CHECKOUT_TIME = '11:00 AM';
 const CACHE_KEY = 'rv_staff_cache';
-const PAGE_VERSION = 'v10 · 18 Oct 2026';
+const PAGE_VERSION = 'v11 · 28 Oct 2026';
 
 const MONTH_SHORT = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 const DAYS = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
@@ -94,7 +94,7 @@ function renderLogin(msg) {
   const app = document.getElementById('app');
   app.innerHTML = '';
   const wrap = div({style:{display:'flex',flexDirection:'column',justifyContent:'center',
-    minHeight:'100vh',padding:'32px 22px',gap:13}});
+    minHeight:'100vh',padding:'calc(var(--safe-top, 0px) + 32px) 22px 32px',gap:13}});
 
   wrap.appendChild(div({className:'display',style:{fontSize:32,color:'var(--accent)',textAlign:'center'}},'Raaya Vasyam'));
   wrap.appendChild(div({style:{fontSize:13.5,color:'var(--muted)',textAlign:'center',marginBottom:18,lineHeight:1.6}},
@@ -502,7 +502,7 @@ function render() {
   app.innerHTML = '';
 
   const st = view && view.standing;
-  const wrap = div({style:{padding:'14px 12px 60px',display:'flex',flexDirection:'column',gap:11}});
+  const wrap = div({style:{padding:'calc(var(--safe-top, 0px) + 14px) 12px 60px',display:'flex',flexDirection:'column',gap:11}});
 
   wrap.appendChild(div({style:{display:'flex',alignItems:'center',justifyContent:'space-between',
     gap:10,paddingBottom:4}},

@@ -19,6 +19,9 @@
        has no menu to change it back from — so it does not follow the device.
        color-scheme:light also keeps the browser from darkening the inputs. */
     :root{
+      /* Under the status bar in the Home Screen app (viewport-fit=cover,
+         black-translucent): the top of the page adds this. */
+      --safe-top:env(safe-area-inset-top, 0px);
       color-scheme:light;
       --cream:#F5F1E8; --white:#FFFDF8; --surface-2:#FBF6EB;
       --border:#E7DFCE; --border-soft:#F0EADC;
@@ -37,6 +40,8 @@
       -webkit-font-smoothing:antialiased; overscroll-behavior:none;
     }
     #app{max-width:480px;margin:0 auto;min-height:100vh;}
+    /* The status bar's strip keeps the page colour while the page scrolls under it. */
+    body::before{content:'';position:fixed;top:0;left:0;right:0;height:var(--safe-top);background:var(--cream);z-index:1000;pointer-events:none;}
     input{
       font-family:inherit; font-size:16px; width:100%; min-height:50px; padding:13px 15px;
       border:1.5px solid var(--border); border-radius:var(--radius-sm);

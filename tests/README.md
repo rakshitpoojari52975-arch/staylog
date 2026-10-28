@@ -37,6 +37,7 @@ kept outside it and was lost when the machine running them was reset.
     node tests/test_notify_function.js   # the notify Edge Function in Node: each alert only when its condition holds,
                                          # pushes decrypted (RFC 8291) and VAPID-verified (RFC 8292)
     node tests/test_push_app.js       # menu, subscribe/unsubscribe, quiet re-subscribe, deep links, sw.js push handlers
+    node tests/test_safe_area.js      # the top safe area (47px simulated): header, PIN screen, sheets, month picker, toast, staff.html
     node tests/test_inbox.js          # the Notifications screen: bell count, groups, tap → link + read, Mark all read + badge,
                                       # Done per alert type, Still to do, Not delivered, offline "As of", sw.js setAppBadge
     node tests/test_push_keys.js      # the VAPID private key is in no file, commit or bundle

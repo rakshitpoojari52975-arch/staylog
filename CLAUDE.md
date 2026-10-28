@@ -525,6 +525,19 @@ also fetch from Supabase with `cache: 'no-store'` as a second layer.
 
 ## Gotchas
 
+- **The status bar covers the top 47px or so.** Both pages use
+  `viewport-fit=cover` with `black-translucent`, so the Home Screen app draws
+  under it. Anything that reaches the top of the screen adds
+  `var(--safe-top, 0px)` (`--safe-top: env(safe-area-inset-top, 0px)` on
+  `:root` in `index.html` and `staff.html`; one name, so
+  `tests/test_safe_area.js` can set 47px where Chromium has no notch). That
+  covers: the sticky header (top padding `--safe-top + 9px`, its own background
+  fills the strip in light and dark), the PIN / Face ID screen, sheets
+  (`maxHeight` never past the status bar), the month picker, and on
+  `staff.html` the sign-in screen and her page, plus a fixed `body::before`
+  strip in the page colour for when she scrolls. The bottom (`env(safe-area-inset-bottom)`)
+  was already right: the nav and the toast use it.
+
 - `today()` is local (IST). Never `toISOString().slice(0,10)` — that is UTC and
   is a day behind between midnight and 05:30. In SQL use
   `(now() at time zone 'Asia/Kolkata')::date`.
@@ -559,6 +572,7 @@ also fetch from Supabase with `cache: 'no-store'` as a second layer.
     node tests/test_balance.js           # under ₹1 is paid: card, Home, stamp, PDF, CSV, requests, notify
     node tests/test_notify_function.js   # Node 22.18+; every alert's condition, decrypts each push, checks VAPID
     node tests/test_push_app.js          # menu, subscribe/unsubscribe, quiet re-subscribe, deep links, sw.js handlers
+    node tests/test_safe_area.js         # 47px status bar: header ⋯ and bell below it and tappable, light/dark, PIN, sheets, month picker, toast, staff.html
     node tests/test_inbox.js             # Notifications screen: bell, groups, tap → link + read, Mark all read + badge, Done per type, Still to do, Not delivered, offline, setAppBadge
     node tests/test_push_keys.js         # STAYLOG_REAL_VAPID_PRIVATE=… also searches for your real private key
     STAYLOG_PG="…" node tests/test_push_sql.js       # push.sql + inbox.sql: twice; owner-only; read_at the owner's only write; no TRUNCATE
