@@ -6,7 +6,7 @@
 // ─── Build ────────────────────────────────────────────────────────────────────
 // Bump BOTH of these together. This date sat at 28 Sept through a dozen
 // releases and was read, reasonably, as proof the upload had not landed.
-const APP_VERSION='v51', APP_BUILT='28 Oct 2026';
+const APP_VERSION='v52', APP_BUILT='28 Oct 2026';
 // The CACHE_NAME of the sw.js released with this app.js. Every release bumps
 // APP_VERSION and CACHE_NAME together, so one is derived from the other rather
 // than being a fourth thing to forget; the tests fail if they ever disagree.
@@ -918,8 +918,9 @@ function renderMenuModal(){
   const{data}=state;
   const content=()=>div({style:{display:'flex',flexDirection:'column',gap:2}},
     menuRow('plus','Add property','Rooms, base tariff and location',()=>setState({modal:'addProp',editItem:null})),
-    menuRow('download','Back up data',`${data.bookings.length} bookings · ${data.expenses.length} expenses · ${data.loans.length} loans`,()=>{downloadBackup();closeModal();}),
-    menuRow('upload','Restore from backup','Replaces everything on this device',()=>{closeModal();restoreBackup();}),
+    // The only backup there is: encrypted on this phone (backup.js). There is no
+    // plain export — a readable file would carry guest names, phone and ID numbers.
+    menuRow('lock','Encrypted backup',bkSubtitle(),openBackupPanel),
     menuRow('cloud','Cloud sync',cloudMenuSub(),()=>setState({modal:'cloud'})),
     menuRow('notes','House notes PDF','The instructions guests get after check-in',()=>{
       downloadHouseNotes(data.properties.find(p=>p.id===state.filterProp)||data.properties[0]);closeModal();}),
@@ -971,38 +972,6 @@ function renderPropPickerModal(){
     return wrap;
   };
   return modal('Property',content);
-}
-
-// Plain JSON backup download
-function downloadBackup(){
-  const blob=new Blob([JSON.stringify(state.data,null,2)],{type:'application/json'});
-  const a=document.createElement('a');
-  a.href=URL.createObjectURL(blob);
-  a.download=`staylog-backup-${today()}.json`;
-  a.click();
-}
-
-// Plain JSON restore
-function restoreBackup(){
-  const inp=document.createElement('input');
-  inp.type='file';inp.accept='.json';
-  inp.onchange=e=>{
-    const file=e.target.files[0];if(!file)return;
-    const reader=new FileReader();
-    reader.onload=ev=>{
-      try{
-        const d=normalizeData(JSON.parse(ev.target.result));
-        if(!d.properties||!d.bookings||!d.expenses)throw new Error('Invalid data structure');
-        if(confirm(`Restore ${d.bookings.length} bookings, ${d.expenses.length} expenses and ${d.loans.length} loans? Current data will be replaced.`)){
-          state.data=d;saveData(d);render();
-        }
-      }catch(err){
-        alert('Restore failed: '+err.message+'\n\nMake sure this is a valid StayLog backup file.');
-      }
-    };
-    reader.readAsText(file);
-  };
-  inp.click();
 }
 
 // ─── Bottom Nav ───────────────────────────────────────────────────────────────
@@ -2370,6 +2339,11 @@ function replaceWithBackup(fresh){
   d.bookings.forEach(b=>{if(imgs[b.id])b.idProofImage=imgs[b.id];});
   state.data=d;repriceWages(state.data);saveData(state.data);
 }
+function bkSubtitle(){
+  const b=bkStatus();
+  return !b.hasKey?'Off · set a passphrase':b.lastError?'Last backup failed — open to see why':`Last backup ${bkWhen(b.lastAt)}`;
+}
+function openBackupPanel(){bk.view='';bk.msg='';bk.list=null;setState({modal:'backup'});}
 function renderBackupModal(){
   const content=()=>{
     const wrap=div({'data-backup':'1',style:{display:'flex',flexDirection:'column',gap:10}});
@@ -2671,11 +2645,10 @@ function renderCloudModal(){
     { const b=bkStatus();
       wrap.appendChild(btn({'data-open-backup':'1',style:{display:'flex',alignItems:'center',gap:11,width:'100%',textAlign:'left',
         padding:'11px 12px',border:'1px solid var(--border)',borderRadius:'var(--radius-sm)',background:'var(--surface-2)'},
-        onClick:()=>{bk.view='';bk.msg='';bk.list=null;setState({modal:'backup'});}},
+        onClick:openBackupPanel},
         ico('lock',{style:{fontSize:18,color:'var(--accent)'}}),
         div({style:{flex:1,minWidth:0}},div({style:{fontSize:13.5,fontWeight:700}},'Encrypted backup'),
-          div({style:{fontSize:12,color:b.lastError?'var(--danger)':'var(--muted)',marginTop:1}},
-            !b.hasKey?'Off · set a passphrase':b.lastError?'Last backup failed — open to see why':`Last backup ${bkWhen(b.lastAt)}`)),
+          div({style:{fontSize:12,color:b.lastError?'var(--danger)':'var(--muted)',marginTop:1}},bkSubtitle())),
         ico('chevron-right',{style:{fontSize:16,color:'var(--light)'}}))); }
 
     // No "replace this phone from the cloud": the cloud holds only what Laxmi's
@@ -4598,7 +4571,7 @@ function render(){
 // ─── Boot ─────────────────────────────────────────────────────────────────────
 try{applyTheme(getTheme());}catch(e){}
 render();
-if(window.StayLogBackup)window.StayLogBackup.onChange(()=>{if(state.loggedIn&&(state.modal==='backup'||state.modal==='cloud'))render();});
+if(window.StayLogBackup)window.StayLogBackup.onChange(()=>{if(state.loggedIn&&['backup','cloud','menu'].includes(state.modal))render();});
 Promise.all([loadDataFromIDB(),loadAuth(),checkFaceId()]).then(([data,auth])=>{
   state.data=data;state.auth=auth;state.loggedIn=false;state._loading=false;
   // Once at every start, so unpaid days made before checkout-day wages (or

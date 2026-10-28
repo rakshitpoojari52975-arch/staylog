@@ -256,6 +256,26 @@ console.log('\n— Change passphrase —');
   ok('the phone\'s stored key is replaced: new backups open with the new passphrase', await page.evaluate(async P=>{
     await StayLogBackup.backupNow(state.data,{force:true}); return (await StayLogBackup.restore(P)).data.bookings.length;},PASS2)===2); }
 
+console.log('\n— the menu: one backup, encrypted —');
+{ const {page}=A;
+  await page.evaluate(()=>{bk.view='';setState({modal:'menu'});}); await page.waitForTimeout(150);
+  const t=await page.locator('body').innerText();
+  ok('no "Back up data" row, and no plain "Restore from backup" row', !/Back up data/.test(t)&&!/Replaces everything on this device/.test(t)&&!/Restore from backup/.test(t), t.slice(0,400));
+  ok('the plain JSON export and import are gone from the app', await page.evaluate(()=>typeof window.downloadBackup==='undefined'&&typeof window.restoreBackup==='undefined'));
+  const row=page.locator('button',{hasText:'Encrypted backup'});
+  ok('an "Encrypted backup" row instead', await row.count()===1);
+  ok('its subtitle is the last backup time', new RegExp('Last backup '+(await page.evaluate(()=>bkWhen(StayLogBackup.status().lastAt))).replace(/[.*+?^${}()|[\]\\]/g,'\\$&')).test(await row.innerText()), await row.innerText());
+  await row.click(); await page.waitForTimeout(150);
+  ok('and it opens the encrypted backup panel', await page.evaluate(()=>state.modal)==='backup'&&await page.locator('[data-bk-now]').count()===1); }
+{ const C=await phone(null);
+  await C.page.evaluate(()=>setState({modal:'menu'})); await C.page.waitForTimeout(150);
+  ok('on a phone without a passphrase the row says "Off · set a passphrase"', /Encrypted backup\s*Off · set a passphrase/.test(await C.page.locator('button',{hasText:'Encrypted backup'}).innerText()));
+  await C.page.locator('button',{hasText:'Encrypted backup'}).click(); await C.page.waitForTimeout(150);
+  ok('and opens the panel at "set a passphrase"', await C.page.locator('[data-bk-set]').count()===1);
+  await C.ctx.close(); }
+{ const src=['app.js','cloud.js','backup.js','staff.js','index.html'].map(f=>fs.readFileSync(path.join(ROOT,f),'utf8')).join('\n');
+  ok('nothing in the app calls downloadBackup or restoreBackup, or writes a .json backup', !/downloadBackup|restoreBackup|staylog-backup-\$\{today\(\)\}\.json/.test(src)); }
+
 console.log('\n— the reminder, and the sync it follows —');
 { const app=fs.readFileSync(path.join(ROOT,'app.js'),'utf8'), cloud=fs.readFileSync(path.join(ROOT,'cloud.js'),'utf8');
   ok('a "No encrypted backup in 3 days" toggle, on by default', /\['backup','No encrypted backup in 3 days'/.test(app));
