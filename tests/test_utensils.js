@@ -156,9 +156,9 @@ console.log('\n— before utensils.sql has been run —');
   await page.evaluate(()=>{window.__server.oldSchema=true;window.__server.upserts={};});
   const r=await page.evaluate(async()=>{try{await window.StayLogCloud.push(state.data);return'ok';}catch(e){return e.message;}});
   const v=await page.evaluate(()=>({st:window.StayLogCloud.status(),staff:window.__server.upserts.staff||[]}));
-  ok('a database without staff.utensil_rate still syncs, without it', r==='ok'&&v.staff.length>0&&!v.staff.some(s=>'utensil_rate' in s), {r,v:v.staff});
-  ok('keeping checkout_wage, which it does have', v.staff.every(s=>s.checkout_wage===500), v.staff);
-  ok('and the panel names the script', /supabase\/utensils\.sql/.test(v.st.schemaBehind), v.st.schemaBehind);
+  // The minimal cloud never sends a rate, so a database without the column has nothing to refuse.
+  ok('a database without staff.utensil_rate syncs: no rate is ever sent', r==='ok'&&v.staff.length>0&&!v.staff.some(s=>'utensil_rate' in s||'checkout_wage' in s), {r,v:v.staff});
+  ok('and there is no script to ask for', v.st.schemaBehind==='', v.st.schemaBehind);
   await ctx.close(); }
 
 console.log('\n— the staff record —');
@@ -170,7 +170,7 @@ console.log('\n— the staff record —');
   await box.fill('150'); await page.locator('button',{hasText:'Update Staff'}).click(); await page.waitForTimeout(200);
   ok('saving keeps it', (await page.evaluate(()=>state.data.staff[0].utensilRate))==='150');
   await page.evaluate(async()=>{await window.StayLogCloud.push(state.data);});
-  ok('and it syncs as staff.utensil_rate', (await page.evaluate(()=>(window.__server.upserts.staff||[]).slice(-1)[0].utensil_rate))===150);
+  ok('and it stays on the phone: the rate is not sent to the cloud', !('utensil_rate' in (await page.evaluate(()=>(window.__server.upserts.staff||[]).slice(-1)[0]))));
   ok('no page errors', errs.length===0, errs);
   await ctx.close(); }
 

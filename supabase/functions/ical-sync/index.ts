@@ -155,13 +155,17 @@ async function syncFeed(feed: Feed, d: ReturnType<typeof db>, fetchImpl: Fetch, 
   const report: Record<string, unknown> = { id: feed.id, platform: feed.platform, property_id: feed.property_id };
   try {
     const events = parseIcs(await readFeed(feed.url, fetchImpl));
-    const known: { uid: string; gone_at: string | null }[] =
-      await d.get(`ical_events?feed_id=eq.${feed.id}&select=uid,gone_at`) || [];
+    const known: { uid: string; gone_at: string | null; imported_booking_id?: string | null }[] =
+      await d.get(`ical_events?feed_id=eq.${feed.id}&select=uid,gone_at,imported_booking_id`) || [];
+    // Once the phone has imported a stay, its Airbnb reservation text (the
+    // link, the last 4 digits of the guest's phone) is on the phone and has no
+    // reason to stay in the cloud: it is not written again.
+    const imported = new Set(known.filter(k => k.imported_booking_id).map(k => k.uid));
     if (events.length) {
       await d.upsert('ical_events', events.map(e => ({
         feed_id: feed.id, uid: e.uid, owner_id: feed.owner_id, property_id: feed.property_id,
         platform: feed.platform, start_date: e.start, end_date: e.end, summary: e.summary,
-        description: e.description, kind: kindOf(feed.platform, e.summary), updated_at: now, gone_at: null,
+        description: imported.has(e.uid) ? null : e.description, kind: kindOf(feed.platform, e.summary), updated_at: now, gone_at: null,
       })), 'feed_id,uid');
     }
     // Gone from the feed: flagged, never deleted. An empty answer where there

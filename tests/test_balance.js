@@ -103,7 +103,10 @@ console.log('\n— the 9 AM alert follows the same rule —');
   ok('₹250.50: owed, with its paise', F.balanceDue(row(1000,749.5))===250.5);
   ok('amounts arriving as text (Postgres numeric) work the same', F.balanceDue(row('4999.50','4999.00'))===0&&F.balanceDue(row('1000','749.5'))===250.5);
   const fn=fs.readFileSync(path.join(ROOT,'supabase/functions/notify/index.ts'),'utf8');
-  ok('the alert uses it', /const due = balanceDue\(b\);/.test(fn)); }
+  // Since the minimal cloud the phone sends balance_due, worked out by its own
+  // balanceDue(); notify's formula is only the fallback for an older database.
+  ok('the alert uses balance_due from the phone, and this formula only as the fallback',
+     /'balance_due' in b/.test(fn)&&/\? balanceDue\(b\) : 0\)/.test(fn)); }
 
 console.log('\n— nothing subtracts on its own any more —');
 { const app=fs.readFileSync(path.join(ROOT,'app.js'),'utf8');

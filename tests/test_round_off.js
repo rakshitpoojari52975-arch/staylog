@@ -182,16 +182,14 @@ console.log('\n— sync —');
 { const {ctx,page}=await open(SEED([BK({roundOff:2.47})]));
   const push=async()=>page.evaluate(async()=>{await window.StayLogCloud.restoreSession();
     try{await window.StayLogCloud.push(state.data,{manual:true});}catch(e){return e.message;} return window.StayLogCloud.status().schemaBehind;});
-  let r=await push();
+  const r=await push();
   const up=await page.evaluate(()=>window.__server.upserts.bookings.slice(-1)[0]);
-  ok('round_off goes up with the booking', up.round_off===2.47&&r==='', [up,r]);
-  await page.evaluate(()=>{window.__server.old=true;});
-  r=await push();
-  ok('before round-off.sql has run: synced without it, and the script is named', r==='supabase/round-off.sql'&&
-    !('round_off' in await page.evaluate(()=>window.__server.upserts.bookings.slice(-1)[0])), r);
+  // The minimal cloud: no amounts and no round off go up, only what is owed,
+  // worked out on the phone with the round off taken into account.
+  ok('round_off stays on the phone; the cloud gets balance_due, round off included', !('round_off' in up)&&!('total_amount' in up)
+     &&up.balance_due===3997.53&&r==='', [up,r]);
+  ok('and the phone keeps the round off', (await page.evaluate(()=>state.data.bookings[0].roundOff))===2.47);
   await ctx.close(); }
-{ const cloud=fs.readFileSync(path.join(ROOT,'cloud.js'),'utf8');
-  ok('the mapper reads round_off back as roundOff', /roundOff: Number\(r\.round_off\) \|\| 0/.test(cloud)); }
 
 console.log('\n— the 9 AM balance alert —');
 { const N=await import(path.join(ROOT,'supabase/functions/notify/index.ts'));
@@ -201,7 +199,8 @@ console.log('\n— the 9 AM balance alert —');
   ok('a round off on Airbnb is ignored', N.balanceDue({total_amount:1000,paid:990,round_off:10,source:'Airbnb'})===10);
   ok('without the column yet, as before', N.balanceDue({total_amount:1000,paid:994.99,source:'Direct'})===5.01);
   const fn=fs.readFileSync(path.join(ROOT,'supabase/functions/notify/index.ts'),'utf8');
-  ok('the alert asks for round_off, and copes before the column exists', /\+ ',round_off'\)\.catch\(\(\) => d\.get\(leavingQ\)\)/.test(fn)); }
+  ok('the alert reads balance_due; the amounts (with round_off if present) only for an older database',
+     /cols \+ ',balance_due'/.test(fn)&&/',source,total_amount,paid,round_off'/.test(fn)); }
 
 const CONN=(process.env.STAYLOG_PG||'').split(/\s+/).filter(Boolean);
 if(CONN.length){

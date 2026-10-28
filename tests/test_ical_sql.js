@@ -104,12 +104,13 @@ r=psql(DB,['-F','|','-f',REPORT]);
 const rows=r.out.trim().split('\n').filter(Boolean).map(l=>l.split('|'));
 ok('it runs', !r.err, r.err);
 ok('one row per booking that a feed lists, deleted ones and plain blocks left out',
-   rows.map(x=>x[11]).join()==='ics_a1,ics_b2,bkTyped', rows);
-const row=id=>rows.find(x=>x[11]===id)||[];
+   rows.map(x=>x[8]).join()==='ics_a1,ics_b2,bkTyped', rows);
+const row=id=>rows.find(x=>x[8]===id)||[];   // no source, guest name or amount since the minimal cloud
 ok('a stay and its copy on the other platform are one row, listed by both feeds',
-   row('ics_a1')[4]==='Airbnb'&&row('ics_a1')[7]==='imported'&&row('ics_a1')[8]==='Airbnb, Booking.com', row('ics_a1'));
-ok('a stay gone from its feed says so', row('ics_b2')[8]==='Booking.com (gone)'&&row('ics_b2')[9]==='t', row('ics_b2'));
-ok('a stay you typed in is shown as matched', row('bkTyped')[7]==='matched'&&row('bkTyped')[9]==='f', row('bkTyped'));
+   row('ics_a1')[5]==='imported'&&row('ics_a1')[6]==='Airbnb, Booking.com', row('ics_a1'));
+ok('a stay gone from its feed says so', row('ics_b2')[6]==='Booking.com (gone)'&&row('ics_b2')[7]==='t', row('ics_b2'));
+ok('a stay you typed in is shown as matched', row('bkTyped')[5]==='matched'&&row('bkTyped')[7]==='f', row('bkTyped'));
+ok('and the report shows no guest name, source or amount', !rows.some(x=>x.some(v=>/Kavya|Rahul|Walk-in|5200|4800|Airbnb guest/.test(v))), rows);
 ok('with dates and nights to compare', row('ics_a1')[0]==='2026-10-20'&&row('ics_a1')[1]==='2026-10-23'&&row('ics_a1')[2]==='3', row('ics_a1'));
 r=psql(DB,[],`select count(*) from public.bookings where deleted_at is null`);
 const before=r.out.trim(); psql(DB,['-f',REPORT]);

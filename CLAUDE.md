@@ -47,23 +47,63 @@ deploy cleared the cache and made the bug look fixed for one sync.
 `tests/test_sw_routes.js` fails if live data is ever cached again. Both clients
 also fetch from Supabase with `cache: 'no-store'` as a second layer.
 
-## Sync model (`cloud.js`)
+## Sync model (`cloud.js`) — the phone holds everything, the cloud a minimum
 
-- **The phone is the master copy.** Sync is a whole-state push: upsert
-  everything, then tombstone (`deleted_at`) any server row the phone lacks.
-  Deletes are soft, so they are recoverable in SQL.
-- `pull()` ("Replace this phone from the cloud") is for bringing up a new
-  device, not for merging. Two devices editing at once are not supported.
+- **The full data exists only on the phone and in the encrypted backup**
+  (`backup.js`). Never anywhere else in readable form.
+- **The cloud holds only allowlisted columns.** `MIRROR` in `cloud.js` names
+  every column that may leave the phone, per table; `push()` sends exactly
+  those (`pick`), so a field not on the list — a guest's name, a note, a field
+  added next year — cannot reach Supabase. `tests/test_minimal_cloud.js` keeps
+  its own copy of the list and fails if what goes up is ever wider. Each
+  column is there for one reader:
+
+  | table | columns (plus owner_id, deleted_at, timestamps) | needed by |
+  |---|---|---|
+  | properties | id, name | Laxmi's calendar, notify text |
+  | bookings | id, property_id, check_in, check_out, guests, status, balance_due | her calendar, arrivals, new-booking check; `balance_due` (Direct/Booking.com only, else null; `STAYLOG_BALANCE_DUE` = the app's `balanceDue`) for the balance alert |
+  | staff | id, name | her page, notify "Laxmi came in today" |
+  | expenses (staff payouts only) | id, staff_id, description, date, amount, gross_amount, loan_deduction, paid, wage_kind | her page (`staff_standing`) |
+  | loans (staff loans) | id, staff_id, principal, installment_amount, disbursed_on, first_due_date, status | her loan card |
+  | loan_repayments (of those) | id, loan_id, amount | her "repaid" total |
+
+  Widening it is a privacy decision for Rakshit, not a code change: update
+  this table, `MIRROR`, the test's copy and `purge-private.sql` together.
+- Sync is a whole-state push of that mirror: upsert, then tombstone
+  (`deleted_at`) any cloud row the mirror lacks. Rows the phone keeps but no
+  longer mirrors (expenses that are not staff payouts, non-staff loans) are
+  tombstoned too — on purpose, so they do not count toward the brake.
+- **There is no pull.** "Replace this phone from the cloud" is gone: the
+  cloud no longer holds the data, so it would wipe the phone. A new phone
+  signs in and uses Encrypted backup → Restore from backup.
 - Sync runs on app open, on focus, on coming back online, and 4s after any
-  change. Overlapping pushes are queued, not dropped.
+  change. Overlapping pushes are queued, not dropped. Each good sync writes
+  `sync_status` (last_sync_at, **app_version**) and schedules a backup.
+- **An empty phone tombstones nothing** (`isEmpty`): no plan, no prompt, no
+  update — whatever is in the cloud stays.
 - **Safety brake.** Before writing anything, `push()` counts what the
-  tombstone pass would delete. More than 5 rows in one sync, or more than 20%
-  of any table, stops the sync and asks (`STAYLOG_CONFIRM_TOMBSTONE` in
-  `app.js`), naming each table and count. Cancel writes nothing and the cloud
-  panel shows "Sync paused". Background syncs do not re-ask about the same
-  deletions; Sync now and Check now always ask. An empty new phone that signs
-  in before "Replace this phone from the cloud" hits this brake instead of
-  wiping the cloud.
+  tombstone pass would delete **from rows the phone no longer has**. More than
+  5 rows in one sync, or more than 20% of any table, stops the sync and asks
+  (`STAYLOG_CONFIRM_TOMBSTONE` in `app.js`), naming each table and count.
+  Cancel writes nothing and the cloud panel shows "Sync paused". Background
+  syncs do not re-ask about the same deletions; Sync now and Check now always
+  ask. Rows left out on purpose never trip it: the first minimal sync instead
+  says once, "Removing private details from the cloud" (a toast and a box in
+  the cloud panel; `privacyNote`, remembered in `staylog_minimal_explained`).
+- **Moving a database to the minimal cloud** (done once, in this order):
+  `minimal-cloud.sql` (adds `bookings.balance_due`, `sync_status.app_version`,
+  drops NOT NULL from the old `guest_name` and repayment `date`; until it has
+  run, v51's sync stops with an instruction naming it), open v51 and let it
+  sync and back up, then `purge-private.sql`. The purge refuses unless every
+  owner has a backup from the last 24 hours and their last sync came from
+  v51+; it drops the removed columns, hard-deletes non-staff expenses and every
+  tombstoned row (a parent only when nothing live points at it), clears the
+  Airbnb reservation text from imported calendar events, and revokes
+  Supabase's default ALL on every table, granting back only what the app uses.
+  One DO block: a refusal changes nothing. Safe to run twice. Supabase's own
+  automatic backups keep the old data until they age out (see
+  `supabase/README.md`). `tests/test_purge_sql.js` checks Laxmi's page is
+  byte-for-byte the same before and after.
 
 ## Encrypted backup (`backup.js`)
 
@@ -122,12 +162,12 @@ also fetch from Supabase with `cache: 'no-store'` as a second layer.
   so a late iCal import or an extended stay is caught), once at every start,
   and after a restore. It touches only unpaid attendance wages
   (`wag_` id — `fromAttendance` does not survive a restore) still at the
-  amount the app set: `autoAmount` (synced as `auto_amount`), or, for days
+  amount the app set: `autoAmount` (phone and backup only), or, for days
   made before it existed, an amount equal to the daily wage, the only rate
   there was. A different amount, or any loan cut taken on the expense, is a
   hand edit: never changed. Paid: never changed. It prices with the current
   rates, so editing a wage also re-prices unpaid app-priced days.
-- `wageKind` ('daily' / 'checkout', synced as `wage_kind`) drives the
+- `wageKind` ('daily' / 'checkout', mirrored as `wage_kind`) drives the
   "Checkout day" label on her page, via a `checkout` key per pending day in
   `staff_standing()`.
 - `supabase/checkout-wage.sql` adds `staff.checkout_wage`,
@@ -146,7 +186,7 @@ also fetch from Supabase with `cache: 'no-store'` as a second layer.
   are untouched). A mark already turned into an expense is not undone.
 - `utensil_marks` is **absent from `ORDER` and `MAP`** too; drained one way into
   an unpaid staff expense "Utensil cleaning — <name> · <date>" whose id is
-  the mark id, then stamped. At `staff.utensilRate` (`utensil_rate`); blank →
+  the mark id, then stamped. At `staff.utensilRate` (on the phone; the cloud has no rates); blank →
   held and reported in the cloud panel, never an invented amount. It is a
   line of its own: a checkout day with utensils pays both, both show on the
   Pay sheet, and `repriceWages()` never touches it (only `wag_` ids).
@@ -170,8 +210,9 @@ also fetch from Supabase with `cache: 'no-store'` as a second layer.
   attendance, and for the same reason. Drained one way in `drainIcal()`:
   event → booking `ics_<hash>` → event stamped `imported_booking_id`.
   Stamped and the booking is gone → deleted on purpose, stays deleted.
-  An import knows its own booking by id, not by local fields (those do not
-  survive "Replace this phone from the cloud").
+  An import knows its own booking by id, not by local fields. Once a stay is
+  imported, `ical-sync` stops storing its Airbnb description (the reservation
+  link and the last 4 digits of the guest's phone); the phone has it.
 - The two calendars are connected, so each feed echoes the other's stays.
   `planIcal()` takes Airbnb "Reserved" first, then Booking.com, then Airbnb
   blocks; an event whose property and exact dates match a live booking is
@@ -254,12 +295,14 @@ also fetch from Supabase with `cache: 'no-store'` as a second layer.
     Opens `#open=stay&prop=&in=&out=`: the app runs a sync (the import
     drain), then opens the booking with those dates; if it is still not on the
     phone, Bookings scrolled to that check-in with a note saying so.
-  - `arrivals`: check-in **tomorrow** (IST), not cancelled. Opens
-    `#open=<id>&send=arrival`.
+  - `arrivals`: check-in **tomorrow** (IST), not cancelled. No guest name:
+    "Guest arriving tomorrow" / "2 guests · 3 nights · <property>". Opens
+    `#open=<id>&send=arrival` (the name is on the phone).
   - `balances`: check-out **tomorrow**, `source` Direct (or blank) or
-    Booking.com, not cancelled, balance ≥ ₹1 (its own `balanceDue`, the
-    app's rule: total − paid − `round_off`; it asks without `round_off` if
-    `round-off.sql` has not run). Never on the day itself, never
+    Booking.com, not cancelled, `balance_due` > 0 (the phone works it out by
+    its own rule and mirrors it; null for other platforms). Only a database
+    from before `minimal-cloud.sql` falls back to the old amounts and its own
+    `balanceDue`. Body "₹X to collect · <property>", no name. Never on the day itself, never
     Airbnb or other platforms (the same pair as `paysUsDirectly`). Opens
     `#open=<id>&send=payment`.
   - `backup`: no encrypted backup in 3 days (see Encrypted backup).
@@ -349,11 +392,11 @@ also fetch from Supabase with `cache: 'no-store'` as a second layer.
   reads "Amount received". Other platforms collect payment themselves, so they
   get no receipt.
 - Numbering `RV/<FY>/<nnn>`, Indian financial year (April–March), assigned on
-  first issue, never reused; unique per owner in SQL.
+  first issue, never reused. Kept on the phone and in the encrypted backup
+  (`receipt_no` left the cloud with the minimal cloud).
 - The stamp states what is true: PAID, PART PAID (with balance) or UNPAID.
-- **Round off (Direct and Booking.com only).** `roundOff` (synced as
-  `round_off`, added by `supabase/round-off.sql`; `LATER_COLUMNS` until it has
-  run) is signed rupees settled without being paid: + what we let go
+- **Round off (Direct and Booking.com only).** `roundOff` (phone and backup
+  only; the cloud gets just the resulting `balance_due`) is signed rupees settled without being paid: + what we let go
   (₹4,632.47 billed, ₹4,630 taken → 2.47), − what the guest paid over
   (₹4,995 billed, ₹5,000 taken → −5.00). `roundOffOf(b)` is 0 for Airbnb and
   every other platform whatever is stored; the form never shows the field for
@@ -364,7 +407,7 @@ also fetch from Supabase with `cache: 'no-store'` as a second layer.
   `paid`), a gap total − received of ₹5.00 or less either way fills Round off
   (`autoRoundOff`); above it Round off is left as it is. Typing in Round off
   sets `roundOffHand` and it is never filled again for that booking
-  (phone-only: lost by "Replace this phone from the cloud").
+  (phone and backup only).
 - **The money rule.** `balanceDue(b)` = total − paid − `roundOffOf(b)` is the
   one balance; under ₹1 still counts as paid, a safety net for bookings from
   before round off (paise left over once showed as PART PAID and "₹0.5 due").
@@ -379,6 +422,9 @@ also fetch from Supabase with `cache: 'no-store'` as a second layer.
   show two places whenever there are paise (₹250.50). `tests/test_balance.js`
   checks every place and that no other line of `app.js` subtracts paid from
   total; `tests/test_round_off.js` covers round off.
+- **The cloud never holds money details.** Totals, payments, round offs,
+  receipt numbers, UPI and bank details stay on the phone and in the encrypted
+  backup; the cloud gets only `balance_due` for Direct and Booking.com stays.
 - **Mark paid, by source.** Direct and Booking.com: **Mark paid**
   (`data-mark-paid`) asks "Amount received?" with the ₹5 round off, then
   offers the receipt. Airbnb and every other platform (not `paysUsDirectly`):
@@ -412,11 +458,15 @@ also fetch from Supabase with `cache: 'no-store'` as a second layer.
   details set, the reminder keeps its one-line balance sentence.
 - The details are **property data** (`upiId`, `upiPayee`, `upiQr`,
   `bankDetails` → `properties.upi_id`, `upi_payee`, `upi_qr`,
-  `bank_details`, added by `supabase/payment-details.sql`), synced like the
-  Wi-Fi. **Never in the code: the repo is public.** `tests/test_payment.js`
+  `bank_details`, added by `supabase/payment-details.sql`): on the phone and
+  in the encrypted backup only, like the Wi-Fi — never mirrored to the cloud
+  (dropped by `purge-private.sql`). **Never in the code: the repo is public.** `tests/test_payment.js`
   scans every file and every commit for UPI IDs on real bank handles, IFSC
   codes and embedded images; only its own fake values are allowed. Run it
   with `STAYLOG_REAL_UPI=<your id>` to also search for the real one by value.
+- What a guest owes reaches the cloud only as `bookings.balance_due`
+  (Direct and Booking.com; null otherwise), for the checkout-tomorrow alert.
+  The alert names no guest: "₹4,000 to collect · Raaya Vasyam".
 - Platform bookings are settled with one-tap **Mark payout received** (full
   amount, no round off; see Receipts); that never sends the guest anything,
   and receipts and payment requests remain Direct and Booking.com only.
@@ -453,6 +503,8 @@ also fetch from Supabase with `cache: 'no-store'` as a second layer.
     node tests/test_payment.js        # STAYLOG_REAL_UPI=… also searches the repo for your real UPI ID
     node tests/test_faceid.js            # Face ID: setup behind the PIN, unlock, cancel → PIN, off, Reset PIN, no WebAuthn
     node tests/test_new_bookings.js      # ical-sync + notify together: new stays announced once, echoes/blocks/first reads never; the tap
+    node tests/test_minimal_cloud.js     # the mirror is the allowlist only; no pull; empty phone tombstones nothing; first sync explained once
+    STAYLOG_PG="…" node tests/test_purge_sql.js      # minimal-cloud.sql + purge-private.sql: refuses unsafely, drops, revokes; Laxmi's page identical
     node tests/test_backup.js            # encrypted backup: round trip, wrong passphrase, nothing readable sent, key non-extractable, restore, change (+ backups.sql)
     node tests/test_payout.js            # platform bookings: one-tap Mark payout received + Undo; Direct/Booking.com unchanged
     node tests/test_round_off.js         # round off ≤ ₹5: form, Mark paid, receipt, revenue, CSV, sync, notify (+ round-off.sql with STAYLOG_PG)
@@ -528,14 +580,13 @@ areas are changed.
   arrives as a "Booking.com guest" booking to delete (it stays deleted). If that
   becomes a chore: a "not a stay" button that stamps the event without a booking.
 - The "Updated" figure and the "No longer on…" flag rest on phone-only fields
-  (`icalMoved`, `icalGone`). After "Replace this phone from the cloud" the flag
-  is re-derived at the next sync but "Updated" restarts from 0.
-- `setup.sql` never revokes Supabase's default `ALL` on its tables, so
-  `anon`/`authenticated` hold `TRUNCATE` (which ignores RLS) on bookings,
-  expenses and the rest — confirmed on Postgres with Supabase's defaults. The
-  REST API cannot issue TRUNCATE, so it needs database credentials to use, but
-  it should be tightened the way `ical.sql` does: revoke all, grant what RLS
-  expects. Check `staff_access` and the staff functions still work after.
+  (`icalMoved`, `icalGone`). They travel in the encrypted backup; a restore
+  from an older backup re-derives the flag at the next sync, but "Updated"
+  restarts from that backup's figure.
+- `setup.sql` still grants Supabase's default `ALL` on a fresh database;
+  `purge-private.sql` closes it (revoke all, then only what the app uses —
+  tested: no TRUNCATE anywhere, Laxmi's functions and the phone's writes still
+  work). A database set up again from scratch needs the purge run again.
 - Her page shows "Received so far ₹0" — wages may be paid in cash without being
   marked paid in the app. Raise it before it becomes a misunderstanding.
 - Pay-sheet loan repayments are dated by each wage's day, not the payday

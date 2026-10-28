@@ -31,22 +31,20 @@ order by a.date desc;
 -- books: the real figure is the sum of the expenses, which you may have edited.
 select to_char(a.date, 'Mon YYYY') as month,
        s.name,
-       count(*) as days_marked,
-       count(*) * coalesce(s.daily_wage, 0) as at_current_rate
+       count(*) as days_marked            -- rates live on the phone, not in the cloud
 from public.attendance a
 join public.staff s on s.id = a.staff_id
 where a.deleted_at is null
-group by date_trunc('month', a.date), to_char(a.date, 'Mon YYYY'), s.name, s.daily_wage
+group by date_trunc('month', a.date), to_char(a.date, 'Mon YYYY'), s.name
 order by date_trunc('month', a.date) desc;
 
 
 -- ── C. Anything stuck ────────────────────────────────────────────────────────
 -- Rows here should clear on the next sync. If one sits for days, check that
--- daily_wage is set for that person — a blank rate holds the mark rather than
--- guessing an amount.
+-- that person's daily wage is set in the app (rates live on the phone) — a
+-- blank rate holds the mark rather than guessing an amount.
 select s.name, a.date,
-       to_char(a.marked_at at time zone 'Asia/Kolkata', 'DD Mon, HH12:MI am') as marked_at,
-       s.daily_wage
+       to_char(a.marked_at at time zone 'Asia/Kolkata', 'DD Mon, HH12:MI am') as marked_at
 from public.attendance a
 join public.staff s on s.id = a.staff_id
 where a.expense_id is null and a.deleted_at is null

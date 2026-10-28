@@ -180,8 +180,10 @@ console.log('\n— to and from Supabase —');
   await page.evaluate(async()=>{await window.StayLogCloud.push(state.data);});
   const up=await page.evaluate(()=>window.__server.upserts);
   const st=(up.staff||[]).slice(-1)[0], ex=(up.expenses||[]).filter(e=>e.id==='wag_stf1_20261012').slice(-1)[0];
-  ok('the staff record carries checkout_wage', st&&st.checkout_wage===500, st);
-  ok('the expense carries wage_kind and auto_amount', ex&&ex.wage_kind==='checkout'&&ex.auto_amount===500&&ex.amount===500, ex);
+  // The minimal cloud: rates stay on the phone; her page needs only the wage itself and its kind.
+  ok('the staff record carries no rate: the checkout wage stays on the phone', st&&!('checkout_wage' in st)&&!('daily_wage' in st)
+     &&(await page.evaluate(()=>state.data.staff[0].checkoutWage))===500, st);
+  ok('the expense carries wage_kind (her "Checkout day" label) but not auto_amount', ex&&ex.wage_kind==='checkout'&&!('auto_amount' in ex)&&ex.amount===500, ex);
   await ctx.close(); }
 
 { const {ctx,page}=await open(SEED({bookings:[bk('b1','10','12')]}));

@@ -8,7 +8,8 @@
 --                  matched  — a booking you already had, which a feed also lists
 --   feeds          which feeds list it now; "(gone)" = no longer in that feed
 --   in_no_feed     no feed lists it any more: check whether it was cancelled
--- Bookings you deleted are left out (deleted_at is set; recoverable in SQL).
+-- Bookings you deleted are left out. Guest names, sources and amounts are not
+-- in the cloud (they stay on the phone): match on property and dates.
 -- Only what this phone has synced is here: an imported stay appears after the
 -- phone's next sync, not straight after the fetch.
 -- ─────────────────────────────────────────────────────────────────────────────
@@ -18,14 +19,11 @@ select
   b.check_out,
   b.check_out - b.check_in                                    as nights,
   p.name                                                      as property,
-  b.source,
-  b.guest_name,
   b.status,
   case when b.id like 'ics\_%' then 'imported' else 'matched' end as how,
   string_agg(e.platform || case when e.gone_at is not null then ' (gone)' else '' end,
              ', ' order by e.platform)                        as feeds,
   bool_and(e.gone_at is not null)                             as in_no_feed,
-  b.total_amount,
   b.id                                                        as booking_id
 from public.bookings b
 join public.ical_events e
