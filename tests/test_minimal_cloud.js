@@ -123,7 +123,7 @@ console.log('\n— what a sync sends —');
   ok('empty for Airbnb, which collects payment itself', bk.b3===null, bk);
   ok('0 for a Direct stay settled with a round off', bk.b4===0, bk);
   const st=L.filter(l=>l.table==='sync_status'&&l.op==='upsert').pop();
-  ok('sync_status records the app version', st&&st.payload[0].app_version===await page.evaluate(()=>APP_VERSION)&&st.payload[0].app_version==='v51', st);
+  ok('sync_status records the app version', st&&st.payload[0].app_version===await page.evaluate(()=>APP_VERSION)&&Number(st.payload[0].app_version.slice(1))>=51, st);   // the purge needs v51 or later
   ok('the phone still has everything', await page.evaluate(()=>state.data.bookings[0].guestName==='Anita Raghunathan'&&state.data.expenses.length===2&&state.data.properties[0].upiId));
   ok('no page errors', errs.length===0, errs);
   await ctx.close(); }

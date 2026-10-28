@@ -107,6 +107,14 @@ also fetch from Supabase with `cache: 'no-store'` as a second layer.
 
 ## Encrypted backup (`backup.js`)
 
+- **It is the only backup. There is no plain export.** The old ⋯ menu rows
+  "Back up data" / "Restore from backup" (`downloadBackup`, `restoreBackup`)
+  wrote and read the whole data as readable JSON — guest names, phone and ID
+  numbers, ID photos — and are gone. Do not bring a readable export back. The
+  ⋯ menu has one row, **Encrypted backup** (subtitle: `bkSubtitle()`, the last
+  backup time), which opens the same panel as Cloud sync → Encrypted backup
+  (`openBackupPanel`); **Save backup file** there is the only file, and it is
+  ciphertext.
 - **The full data lives on the phone; the cloud's full copy is one it cannot
   read.** Cloud sync → **Encrypted backup**: a passphrase (≥ 12 characters,
   typed twice, not the PIN; the sheet warns it cannot be recovered).
@@ -545,8 +553,10 @@ areas are changed.
 - If a Booking.com booking is ever prepaid through Booking.com Payments, record
   it as paid in the app: the app treats every Booking.com stay as
   pay-at-property and would otherwise ask the guest for the balance.
-- Payment details travel in the app's own backup file (Back up data), as the
-  Wi-Fi password does. That file is yours; keep it out of the repo.
+- Payment details travel inside the encrypted backup (and its saved
+  `.staylog` file), as the Wi-Fi password does; nothing readable leaves the
+  phone. Old plain `staylog-backup-*.json` files made before v52 are
+  readable: delete any you still have, and keep them out of the repo.
 - The confirmation message still says "(payable at check-in)"; Booking.com and
   direct guests here may pay any time during the stay. Reword if it confuses.
 
