@@ -318,14 +318,54 @@ also fetch from Supabase with `cache: 'no-store'` as a second layer.
     `push()` after every good sync; no row means no warning). Opens
     `#open=cloud`.
   Each reminder is claimed in `push_log` before sending, so a cron that fires
-  twice notifies once; it is un-claimed if no device took it.
+  twice notifies once. **The claim and the record are separate**: the row is
+  kept whether or not a device took it (`delivered` false = none did; never
+  deleted). A key is claimed when it is new, or when it is undelivered and
+  unheld (`claimed_at` null, or over 10 minutes old from a run that died), by
+  a conditional PATCH Postgres re-checks, so an undelivered reminder is retried
+  the next time it comes up and still goes once. After sending: `delivered`,
+  `claimed_at` null. With no device at all the daily run (owners from
+  `push_subscriptions` ∪ `sync_status`) still records it, undelivered. Before
+  `inbox.sql` has run, notify falls back to the old key-only claim (deleted
+  when undelivered). The test push has no key and is never logged.
+- **The inbox** (`supabase/inbox.sql`, after `push.sql`): `push_log` gains
+  `title`, `body`, `url`, `alert`, `delivered` (default true: old rows were),
+  `read_at`, `claimed_at`. The function writes everything; the owner may read
+  his rows and update **`read_at` only** (a column grant; `push.sql` and
+  `purge-private.sql` re-grant it when the column exists). Home's header has a
+  bell (`data-bell`) with the unread count; it opens **Notifications**
+  (`renderInboxModal`): the last 30 days (`StayLogCloud.inboxList`, rows with a
+  title), newest first, grouped Today / Yesterday / Earlier, each row time,
+  title, body. A tap marks it read (`inboxRead`) and opens the push's own link
+  through `takeOpen`. **Mark all read** reads every unread row in the cloud.
+  Each push's url ends `&n=<key>`; `parseOpen` reads it and
+  `applyPendingOpen` marks that row read, so tapping the phone's notification
+  reads it too. Undelivered rows say "Not delivered — turn notifications on
+  again?", linking to the ⋯ menu's notifications. **Done is worked out on the
+  phone from current data, never stored** (`inboxDone`): arrival → Done when
+  the arrival message is no longer due (`dueMessages`); balance → Done when
+  `balanceDue(b) === 0` (or the booking is gone or cancelled); attendance and
+  utensils (`mark:`) → Recorded once the expense exists (`att_` → `wag_`,
+  `ute_` same id); stale / backup → Cleared once a sync / backup is newer than
+  the alert; a new stay → Imported once the booking is on the phone. The
+  **Still to do** filter shows rows with a state that is not done. The last
+  list is kept in localStorage `staylog_inbox` (with reads not yet sent),
+  shown offline with "As of <time>"; refreshed at start and on return (≥ 1
+  min apart) and when the screen opens.
+- **App icon badge.** notify puts `badge` (unread rows of the last 30 days,
+  this one included) in each keyed push; the `sw.js` push handler calls
+  `navigator.setAppBadge(n)` (`clearAppBadge` at 0) beside `showNotification`
+  and touches no cache. The app sets it from the inbox at every open and
+  every change, and clears it when everything is read.
+- **Housekeeping:** the daily run deletes `push_log` rows older than 60 days.
 - **The VAPID private key is a Supabase secret, never in the repo.** Only the
   public key goes in `cloud-config.js` (`vapidPublicKey`; blank = the menu says
   not set up). `tools/vapid-keys.html` makes a pair in the browser and sends
   nothing. `tests/test_push_keys.js` scans every file, every commit and the
   history bundle, and tries every 43-character token against the public key.
 - `push.sql`: `push_subscriptions`, `notification_prefs`, `sync_status`
-  (owner full access) and `push_log` (owner reads; only the function writes).
+  (owner full access) and `push_log` (owner reads; only the function writes,
+  but for `read_at` once `inbox.sql` has run).
   All revoke Supabase's default `ALL` first.
 - **iOS rules.** Push exists only in the Home Screen app (iOS 16.4+), never in
   a Safari tab: the menu explains Add to Home Screen there. The permission
@@ -519,8 +559,9 @@ also fetch from Supabase with `cache: 'no-store'` as a second layer.
     node tests/test_balance.js           # under ₹1 is paid: card, Home, stamp, PDF, CSV, requests, notify
     node tests/test_notify_function.js   # Node 22.18+; every alert's condition, decrypts each push, checks VAPID
     node tests/test_push_app.js          # menu, subscribe/unsubscribe, quiet re-subscribe, deep links, sw.js handlers
+    node tests/test_inbox.js             # Notifications screen: bell, groups, tap → link + read, Mark all read + badge, Done per type, Still to do, Not delivered, offline, setAppBadge
     node tests/test_push_keys.js         # STAYLOG_REAL_VAPID_PRIVATE=… also searches for your real private key
-    STAYLOG_PG="…" node tests/test_push_sql.js       # push.sql: twice; owner-only; no TRUNCATE
+    STAYLOG_PG="…" node tests/test_push_sql.js       # push.sql + inbox.sql: twice; owner-only; read_at the owner's only write; no TRUNCATE
     STAYLOG_PG="…" node tests/test_payment_sql.js    # payment-details.sql: constraints, owner-only
     STAYLOG_PG="…" node tests/test_utensils_sql.js   # all four scripts in order; the once-a-day, present-first and undo rules
     STAYLOG_PG="…" node tests/test_checkout_sql.js   # setup.sql + attendance.sql + checkout-wage.sql; her staff_standing
@@ -538,6 +579,11 @@ areas are changed.
   the encryption is standard and was checked against its RFCs, not a device.
 - Notifications go to every device the owner has turned them on for; there
   is no per-device choice of alerts. Fine for one iPhone.
+- Inbox Done states follow their rules literally: an arrival whose booking has
+  no WhatsApp number is never "due" in `dueMessages`, so it shows Done at once;
+  an arrival not sent before check-in day passes also turns Done (no longer
+  due). Read state is per owner, not per device. A retried reminder that is
+  finally delivered moves to the top (its `sent_at` becomes the delivery time).
 - The 9 AM run uses the bookings in the cloud, so a booking made offline and
   not yet synced gets no reminder (the stale-sync warning covers a long gap).
 - The attendance webhook shows Laxmi's mark even before the phone turns it
@@ -547,9 +593,6 @@ areas are changed.
   reservation under a new uid, its new dates read as a new stay and notify.
   Dates Rakshit closes by hand on Booking.com also arrive as a "stay" and
   notify, unless a booking with exactly those dates is already in the cloud.
-- `push_log` grows by a few rows a day and is never pruned. Harmless for
-  years; delete rows older than a month in SQL if it ever matters.
-
 - If a Booking.com booking is ever prepaid through Booking.com Payments, record
   it as paid in the app: the app treats every Booking.com stay as
   pay-at-property and would otherwise ask the guest for the balance.

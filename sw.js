@@ -21,7 +21,7 @@
    must never be served from a cache, so live data is now never even looked at
    here — it is not on the list. */
 
-const CACHE_NAME = 'staylog-v52';
+const CACHE_NAME = 'staylog-v53';
 
 const ASSETS = [
   './',
@@ -143,14 +143,15 @@ self.addEventListener('message', e => {
 //
 // Every push shows a visible notification, even one that cannot be read. iOS
 // revokes a subscription after pushes that show nothing, so there is no
-// silent path. The payload ({title, body, url, tag}) is written by the Edge
-// Function supabase/functions/notify.
+// silent path. The payload ({title, body, url, tag, badge}) is written by the
+// Edge Function supabase/functions/notify; badge is the inbox's unread count.
 function notificationFor(data) {
   let m = null;
   try { m = data && data.json(); } catch (e) { m = null; }
   if (!m || typeof m !== 'object') m = {};
   const title = String(m.title || 'StayLog');
-  return { title, options: {
+  const badge = Number.isFinite(Number(m.badge)) && m.badge !== null && m.badge !== '' ? Math.max(0, Math.floor(Number(m.badge))) : null;
+  return { title, badge, options: {
     body: String(m.body || 'Open StayLog to see what changed.'),
     tag: m.tag ? String(m.tag) : undefined,
     icon: './icons/icon-192.png',
@@ -170,8 +171,20 @@ function clickTarget(url) {
 
 self.addEventListener('push', e => {
   const n = notificationFor(e.data);
-  e.waitUntil(self.registration.showNotification(n.title, n.options));
+  e.waitUntil(Promise.all([self.registration.showNotification(n.title, n.options), setBadge(n.badge)]));
 });
+
+// The app icon's number. Not every browser has it; a failure never stops the
+// notification.
+function setBadge(count) {
+  const nav = self.navigator;
+  if (count === null || !nav) return Promise.resolve();
+  try {
+    if (count > 0 && nav.setAppBadge) return Promise.resolve(nav.setAppBadge(count)).catch(() => {});
+    if (count === 0 && nav.clearAppBadge) return Promise.resolve(nav.clearAppBadge()).catch(() => {});
+  } catch (e) { /* unsupported */ }
+  return Promise.resolve();
+}
 
 // A tap opens the booking or screen it is about. An app already open is
 // brought forward and told where to go; otherwise it opens at that address.
@@ -189,4 +202,4 @@ self.addEventListener('notificationclick', e => {
 });
 
 // Exposed for tests, which load this file outside a browser.
-if (typeof module !== 'undefined') module.exports = { routeFor, STATIC_HOSTS, CACHE_NAME, notificationFor, clickTarget };
+if (typeof module !== 'undefined') module.exports = { routeFor, STATIC_HOSTS, CACHE_NAME, notificationFor, clickTarget, setBadge };

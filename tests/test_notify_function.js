@@ -50,7 +50,9 @@ function world(over={}){
   const match=(row,q)=>{for(const [k,v] of q){if(['select','on_conflict','order','limit'].includes(k))continue;
     const val=row[k]; if(v==='is.null'){if(val!=null)return false;}
     else if(v.startsWith('eq.')){if(String(val)!==decodeURIComponent(v.slice(3)))return false;}
-    else if(v.startsWith('neq.')){if(String(val)===decodeURIComponent(v.slice(4)))return false;}}return true;};
+    else if(v.startsWith('neq.')){if(String(val)===decodeURIComponent(v.slice(4)))return false;}
+    else if(v.startsWith('lt.')){if(!(val!=null&&String(val)<decodeURIComponent(v.slice(3))))return false;}
+    else if(v.startsWith('gte.')){if(!(val!=null&&String(val)>=decodeURIComponent(v.slice(4))))return false;}}return true;};
   W.fetch=async(url,init={})=>{
     const u=new URL(url), m=(init.method||'GET').toUpperCase(), h=init.headers||{};
     if(u.host==='proj.supabase.co'){
@@ -63,6 +65,7 @@ function world(over={}){
       if(m==='POST'){const rows=JSON.parse(init.body),out=[];
         for(const r of rows){const dup=T.some(x=>x.owner_id===r.owner_id&&x.key===r.key);if(!dup){T.push({...r});out.push(r);}}
         return res(201,out);}
+      if(m==='PATCH'){const p=JSON.parse(init.body),out=[];for(const r of T)if(match(r,q)){Object.assign(r,p);out.push(r);}return res(200,out);}
       return res(400,{});
     }
     // the push service
@@ -84,7 +87,10 @@ const CRON={'x-cron-secret':'cron-secret-123'};
 const iphone=await device('https://web.push.apple.com/QGVzAbc123',OWNER);
 const ipad=await device('https://web.push.apple.com/QGVzDef456',OWNER);
 const someoneElse=await device('https://web.push.apple.com/QGVzOther',OTHER);
-const pushesFor=async(W,dev)=>Promise.all(W.pushes.filter(p=>p.endpoint===dev.row.endpoint).map(p=>decrypt(dev,p.body)));
+// Each keyed push's url ends "&n=<key>" (so a tap marks it read in the inbox);
+// split off here as m.n, so the links themselves read as before.
+const pushesFor=async(W,dev)=>(await Promise.all(W.pushes.filter(p=>p.endpoint===dev.row.endpoint).map(p=>decrypt(dev,p.body))))
+  .map(m=>{const x=/[&#]n=([^&]*)$/.exec(m.url||'');return x?{...m,url:m.url.slice(0,x.index),n:decodeURIComponent(x[1]),rawUrl:m.url}:m;});
 const base=()=>({push_subscriptions:[{...iphone.row},{...someoneElse.row}],
   properties:[{id:'p1',owner_id:OWNER,name:'Raaya Vasyam',deleted_at:null}],
   staff:[{id:'stf1',owner_id:OWNER,name:'Laxmi Walikar'}],
@@ -219,7 +225,8 @@ console.log('\n— once, and only when wanted —');
   W.gone.add(iphone.row.endpoint);
   await F.handle(post({job:'daily'},CRON),ENV,W.fetch,NOW);
   ok('a device Apple says is gone (410) is removed', !W.tables.push_subscriptions.some(s=>s.endpoint===iphone.row.endpoint));
-  ok('and the reminder is not marked sent, since no device took it', !W.tables.push_log.some(l=>l.key==='arrival:arr:2026-10-21'));
+  const row=W.tables.push_log.find(l=>l.key==='arrival:arr:2026-10-21');
+  ok('the reminder is kept, marked not delivered, since no device took it', row&&row.delivered===false&&row.claimed_at===null, row);
   ok('another owner\'s device is untouched', W.tables.push_subscriptions.some(s=>s.endpoint===someoneElse.row.endpoint)); }
 
 console.log('\n— Laxmi\'s marks —');
@@ -246,6 +253,73 @@ const mark={id:'att_stf1_20261020',owner_id:OWNER,staff_id:'stf1',date:'2026-10-
   ok('with attendance alerts off, her mark sends nothing', W.pushes.length===0);
   await F.handle(post({type:'INSERT',table:'utensil_marks',record:{...mark,id:'ute_x'}},CRON),ENV,W.fetch,NOW);
   ok('while utensil alerts still do', W.pushes.length===1); }
+
+console.log('\n— the inbox: every reminder is kept in push_log —');
+{ const W=world({...base(),bookings:[B({id:'arr',check_in:'2026-10-21',check_out:'2026-10-24',status:'confirmed'})]});
+  await F.handle(post({job:'daily'},CRON),ENV,W.fetch,NOW);
+  const row=W.tables.push_log.find(l=>l.key==='arrival:arr:2026-10-21');
+  ok('a sent alert is recorded with its title, body, url and type', row&&row.title==='Guest arriving tomorrow'&&/^2 guests/.test(row.body)
+     &&row.url==='./#open=arr&send=arrival'&&row.alert==='arrivals', row);
+  ok('delivered, sent now, unread, and the claim let go', row&&row.delivered===true&&row.sent_at===new Date(NOW).toISOString()
+     &&row.read_at==null&&row.claimed_at===null, row);
+  const [m]=await pushesFor(W,iphone);
+  ok('the push carries its key, so a tap marks it read', m&&m.n==='arrival:arr:2026-10-21'&&m.rawUrl==='./#open=arr&send=arrival&n=arrival%3Aarr%3A2026-10-21', m);
+  ok('and the unread count for the app icon', m&&m.badge===1, m); }
+{ // the badge counts the inbox's unread rows of the last 30 days, this one included
+  const old=(k,at,read)=>({owner_id:OWNER,key:k,title:'x',body:'y',url:'./',alert:'stale',sent_at:at,delivered:true,read_at:read||null,claimed_at:null});
+  const W=world({...base(),push_log:[old('a','2026-10-18T03:30:00Z'),old('b','2026-10-19T03:30:00Z','2026-10-19T05:00:00Z'),
+    old('c','2026-09-01T03:30:00Z')]});
+  await F.handle(att('INSERT',mark),ENV,W.fetch,NOW);
+  const [m]=await pushesFor(W,iphone);
+  ok('badge = unread in the last 30 days (read and older rows left out)', m&&m.badge===2, m&&m.badge); }
+{ // no device took it: kept, not delivered; next time it comes up it is retried, once
+  const W=world({...base(),bookings:[B({id:'arr',check_in:'2026-10-21',check_out:'2026-10-24',status:'confirmed'})]});
+  W.gone.add(iphone.row.endpoint);
+  await F.handle(post({job:'daily'},CRON),ENV,W.fetch,NOW);
+  ok('undelivered row kept', W.tables.push_log.filter(l=>l.key==='arrival:arr:2026-10-21').length===1
+     &&W.tables.push_log.find(l=>l.key==='arrival:arr:2026-10-21').delivered===false);
+  W.tables.push_subscriptions.push({...ipad.row});
+  const before=W.pushes.length;
+  await F.handle(post({job:'daily'},CRON),ENV,W.fetch,NOW+60e3);
+  ok('the next run retries it, and a device takes it', W.pushes.length===before+1&&(await pushesFor(W,ipad)).length===1);
+  const row=W.tables.push_log.find(l=>l.key==='arrival:arr:2026-10-21');
+  ok('the same row, now delivered', W.tables.push_log.filter(l=>l.key===row.key).length===1&&row.delivered===true, row);
+  await F.handle(post({job:'daily'},CRON),ENV,W.fetch,NOW+120e3);
+  ok('dedupe still holds: a third run sends nothing', W.pushes.length===before+1); }
+{ // a row held by a run in progress is not taken by a second run; one held over 10 minutes is
+  const held=(at)=>({owner_id:OWNER,key:'arrival:arr:2026-10-21',title:'Guest arriving tomorrow',body:'b',url:'./',alert:'arrivals',
+    sent_at:at,delivered:false,read_at:null,claimed_at:at});
+  let W=world({...base(),bookings:[B({id:'arr',check_in:'2026-10-21',check_out:'2026-10-24',status:'confirmed'})],push_log:[held(new Date(NOW-60e3).toISOString())]});
+  await F.handle(post({job:'daily'},CRON),ENV,W.fetch,NOW);
+  ok('a claim held by another run (1 minute old) is respected', (await pushesFor(W,iphone)).length===0);
+  W=world({...base(),bookings:[B({id:'arr',check_in:'2026-10-21',check_out:'2026-10-24',status:'confirmed'})],push_log:[held(new Date(NOW-11*60e3).toISOString())]});
+  await F.handle(post({job:'daily'},CRON),ENV,W.fetch,NOW);
+  ok('a claim abandoned over 10 minutes ago is taken over', (await pushesFor(W,iphone)).length===1); }
+{ // no device at all: the reminder is still in the inbox
+  const W=world({...base(),push_subscriptions:[],bookings:[B({id:'arr',check_in:'2026-10-21',check_out:'2026-10-24',status:'confirmed'})]});
+  const r=await (await F.handle(post({job:'daily'},CRON),ENV,W.fetch,NOW)).json();
+  const row=W.tables.push_log.find(l=>l.key==='arrival:arr:2026-10-21');
+  ok('with no device, the daily run still records it, not delivered', row&&row.delivered===false&&row.title==='Guest arriving tomorrow', r);
+  ok('the test push, with no key, is never logged', (await F.handle(post({job:'test'},{authorization:'Bearer tok-owner'}),ENV,W.fetch,NOW))
+     &&!W.tables.push_log.some(l=>/StayLog test/.test(l.title||''))); }
+{ // housekeeping: rows older than 60 days go in the daily run
+  const r=(k,at)=>({owner_id:OWNER,key:k,title:'t',sent_at:at,delivered:true});
+  const W=world({...base(),push_log:[r('old','2026-08-20T03:00:00Z'),r('edge','2026-08-21T04:00:00Z'),r('new','2026-10-01T03:00:00Z')]});
+  await F.handle(post({job:'daily'},CRON),ENV,W.fetch,NOW);
+  const keys=W.tables.push_log.map(l=>l.key);
+  ok('rows older than 60 days are pruned, newer ones kept', !keys.includes('old')&&keys.includes('edge')&&keys.includes('new'), keys); }
+{ // before inbox.sql: push_log has only owner_id, key, sent_at — the old behaviour
+  const W=world({...base(),bookings:[B({id:'arr',check_in:'2026-10-21',check_out:'2026-10-24',status:'confirmed'})]});
+  const f=W.fetch; W.fetch=async(url,init={})=>{const u=new URL(url);
+    if(u.pathname==='/rest/v1/push_log'&&['POST','PATCH'].includes((init.method||'').toUpperCase())){
+      const rows=[].concat(JSON.parse(init.body));
+      if(rows.some(r=>Object.keys(r).some(k=>!['owner_id','key','sent_at'].includes(k))))
+        return new Response(JSON.stringify({code:'PGRST204',message:"Could not find the 'alert' column of 'push_log' in the schema cache"}),{status:400});}
+    return f(url,init);};
+  await F.handle(post({job:'daily'},CRON),ENV,W.fetch,NOW);
+  await F.handle(post({job:'daily'},CRON),ENV,W.fetch,NOW);
+  ok('without inbox.sql the reminder still goes, once', (await pushesFor(W,iphone)).length===1, W.tables.push_log);
+  ok('logged the old way', W.tables.push_log.length===1&&W.tables.push_log[0].key==='arrival:arr:2026-10-21'); }
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail?1:0);

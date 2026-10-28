@@ -112,7 +112,7 @@ let ms=await got(W);
 ok('one push', ms.length===1, ms);
 ok('"New Airbnb booking"', ms[0]&&ms[0].title==='New Airbnb booking', ms[0]);
 ok('"12 → 14 Nov · 2 nights · Raaya Vasyam", no guest name invented', ms[0]&&ms[0].body==='12 → 14 Nov · 2 nights · Raaya Vasyam', ms[0]);
-ok('a tap opens that stay', ms[0]&&ms[0].url==='./#open=stay&prop=p1&in=2026-11-12&out=2026-11-14', ms[0]);
+ok('a tap opens that stay, and marks its inbox row read', ms[0]&&ms[0].url==='./#open=stay&prop=p1&in=2026-11-12&out=2026-11-14&n=stay%3Ap1%3A2026-11-12%3A2026-11-14', ms[0]);
 ok('claimed once, by property and dates', W.t.push_log.filter(l=>l.key==='stay:p1:2026-11-12:2026-11-14').length===1);
 await sync(W);
 ok('the next read does not announce it again', W.pushes.length===1);
