@@ -920,6 +920,32 @@
       owner_id: session.user.id, prefs, updated_at: new Date().toISOString() }, { onConflict: 'owner_id' });
     if (error) throw new Error(explain(error));
   }
+  // ── The notification inbox (push_log, supabase/inbox.sql) ─────────────────
+  // Read-only but for read_at: the notify function writes every row. Rows from
+  // before inbox.sql have no title and are not shown.
+  const INBOX_SQL = 'supabase/inbox.sql';
+  const inboxExplain = e => /column|42703|PGRST204|permission denied|42501/i.test((e && (e.message || e.code)) || '')
+    ? `the inbox is not set up — run ${INBOX_SQL} in Supabase` : explain(e);
+  async function inboxList() {
+    if (!session) throw new Error('not signed in');
+    const c = await client();
+    const since = new Date(Date.now() - 30 * 86400e3).toISOString();
+    const { data, error } = await c.from('push_log').select('key,title,body,url,alert,sent_at,delivered,read_at')
+      .eq('owner_id', session.user.id).not('title', 'is', null).gte('sent_at', since).order('sent_at', { ascending: false });
+    if (error) throw new Error(inboxExplain(error));
+    return data || [];
+  }
+  // Marks the given keys read (all unread when keys is null). Only read_at.
+  async function inboxRead(keys) {
+    if (!session) throw new Error('not signed in');
+    if (Array.isArray(keys) && !keys.length) return;
+    const c = await client();
+    let q = c.from('push_log').update({ read_at: new Date().toISOString() }).eq('owner_id', session.user.id).is('read_at', null);
+    if (Array.isArray(keys)) q = q.in('key', keys);
+    const { error } = await q;
+    if (error) throw new Error(inboxExplain(error));
+  }
+
   async function pushTest() {
     if (!session) throw new Error('not signed in');
     const c = await client();
@@ -991,6 +1017,7 @@
     restoreSession, signIn, signOut, push, status, markDirty, checkIn,
     listFeeds, saveFeed, importNow,
     pushSave, pushRemove, pushPrefs, savePushPrefs, pushTest,
+    inboxList, inboxRead,
     _planIcal: planIcal, _icalBookingId: icalBookingId, _coverageGaps: coverageGaps,   // for the tests
     onChange: fn => listeners.push(fn),
     onSynced: fn => synced.push(fn),       // after each successful push

@@ -82,6 +82,33 @@ for(const t of ['push_subscriptions','notification_prefs','sync_status','push_lo
 }
 ok('his rows are all still there', sql(`select (select count(*) from public.push_subscriptions)||','||(select count(*) from public.notification_prefs)||','||(select count(*) from public.sync_status)||','||(select count(*) from public.push_log)`).out.trim()==='1,1,1,1');
 
+console.log('\n— inbox.sql: the owner may mark read, nothing more —');
+r=psql(DB,['-f',F('inbox.sql')]); ok('inbox.sql runs', !r.err, r.err);
+r=psql(DB,['-f',F('inbox.sql')]); ok('and runs again', !r.err, r.err);
+ok('the old row is kept, counted as delivered and unread', sql(`select delivered::text||','||coalesce(read_at::text,'unread') from public.push_log`).out.trim()==='true,unread');
+sql(`insert into public.push_log (owner_id,key,title,body,url,alert,delivered) values
+  ('${OWNER}','balance:b2:2026-10-22','Balance due','₹4,000 to collect','./#open=b2&send=payment','balances',false),
+  ('${OTHER}','stale:2026-10-20','StayLog has not synced','x','./#open=cloud','stale',true)`);
+r=as('authenticated',OWNER,`select key||':'||delivered from public.push_log where title is not null`);
+ok('the owner reads his inbox, undelivered included, and only his', r.out.trim()==='balance:b2:2026-10-22:false', r.err||r.out);
+r=as('authenticated',OWNER,`update public.push_log set read_at=now() where read_at is null returning key`);
+ok('he marks his rows read', !r.err&&r.out.trim().split('\n').length===2, r.err||r.out);
+for(const [col,val] of [['title',"'forged'"],['delivered','true'],['body',"'x'"],['url',"'https://evil'"],['sent_at','now()'],['key',"'k'"],['claimed_at','now()']]){
+  r=as('authenticated',OWNER,`update public.push_log set ${col}=${val} returning 1`);
+  ok(`but cannot change ${col}`, /permission denied/.test(r.err), r.err||r.out);
+}
+r=as('authenticated',OWNER,`delete from public.push_log returning 1`);
+ok('nor delete a row', !!r.err||r.out.trim()==='', r.err||r.out);
+r=as('authenticated',OTHER,`update public.push_log set read_at=now() where owner_id='${OWNER}' returning 1`);
+ok('another account cannot mark his rows', r.out.trim()==='', r.err||r.out);
+r=as('anon','',`update public.push_log set read_at=now() returning 1`);
+ok('nor can anyone not signed in', !!r.err||r.out.trim()==='', r.out);
+r=as('authenticated',OWNER,`truncate public.push_log`);
+ok('still no TRUNCATE', /permission denied/.test(r.err), r.err||'truncated');
+r=psql(DB,['-f',F('push.sql')]);
+r=as('authenticated',OWNER,`update public.push_log set read_at=null returning 1`);
+ok('re-running push.sql afterwards keeps the mark-read grant', !r.err&&r.out.trim()!=='', r.err||r.out);
+
 psql('postgres',['-c',`drop database if exists ${DB}`]);
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail?1:0);

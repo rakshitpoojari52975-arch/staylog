@@ -124,6 +124,10 @@ begin
     grant select, insert, update on public.notification_prefs to authenticated;
     grant select, insert, update on public.sync_status to authenticated;
     grant select on public.push_log to authenticated;
+    if exists (select 1 from information_schema.columns where table_schema = 'public'
+               and table_name = 'push_log' and column_name = 'read_at') then
+      grant update (read_at) on public.push_log to authenticated;         -- the inbox (inbox.sql)
+    end if;
   end if;
   grant select, insert, update, delete on public.backups to authenticated;
 

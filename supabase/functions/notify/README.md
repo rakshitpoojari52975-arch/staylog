@@ -15,8 +15,10 @@ set up, and nothing in it waits on a notification arriving.
 
 Do these in order, once.
 
-1. **Run the SQL.** Supabase → SQL editor → paste `supabase/push.sql` → Run.
-   It is safe to run again.
+1. **Run the SQL.** Supabase → SQL editor → paste `supabase/push.sql` → Run,
+   then `supabase/inbox.sql` (the in-app Notifications screen). Both are safe
+   to run again. Without `inbox.sql` reminders still go out, the old way, and
+   the app's Notifications screen says to run it.
 
 2. **Make the keys.** Open `tools/vapid-keys.html` (on the deployed site, or
    from a local copy) and tap **Make a key pair**, or run
@@ -71,6 +73,10 @@ Do these in order, once.
 - **Send test says "the notify function is not deployed"**: step 4.
 - **"Not set up yet — the public key is missing"**: step 7.
 - **"run supabase/push.sql"**: step 1.
+- **Notifications screen: "the inbox is not set up"**: run `supabase/inbox.sql`.
+- **A reminder shows "Not delivered" in the app**: no device took it (none
+  subscribed, or Apple said the subscription is gone). Turn notifications on
+  again from the ⋯ menu; the reminder is retried the next time it comes up.
 - **The test sends but nothing appears**: check the iPhone's Settings →
   Notifications → StayLog, and Focus modes. The VAPID public key in
   `cloud-config.js` and in the secret must be the same pair as the private key.

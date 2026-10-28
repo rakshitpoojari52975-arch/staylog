@@ -78,6 +78,13 @@ grant select, insert, update on public.sync_status to authenticated;
 drop policy if exists "owner reads" on public.push_log;
 create policy "owner reads" on public.push_log for select using (owner_id = auth.uid());
 grant select on public.push_log to authenticated;
+-- The inbox (inbox.sql) lets the owner mark a reminder read; keep that on a re-run.
+do $$ begin
+  if exists (select 1 from information_schema.columns where table_schema = 'public'
+             and table_name = 'push_log' and column_name = 'read_at') then
+    grant update (read_at) on public.push_log to authenticated;
+  end if;
+end $$;
 
 -- ── Scheduling and webhooks (after deploying the function) ──────────────────
 -- Daily, 9:00 AM IST = 03:30 UTC. Dashboard → Integrations → Cron, or:

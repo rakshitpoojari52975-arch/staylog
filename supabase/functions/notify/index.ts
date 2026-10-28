@@ -25,7 +25,7 @@ export type Env = {
 };
 type Fetch = (input: string, init?: Record<string, unknown>) => Promise<Response>;
 export type Sub = { endpoint: string; p256dh: string; auth: string; owner_id?: string };
-export type Push = { title: string; body: string; url: string; tag: string };
+export type Push = { title: string; body: string; url: string; tag: string; badge?: number };
 
 const CORS: Record<string, string> = {
   'Access-Control-Allow-Origin': '*',
@@ -37,7 +37,7 @@ const json = (body: unknown, status = 200) =>
 
 // The alert types, each with an on/off in notification_prefs. Missing = on.
 export const ALERTS = ['attendance', 'utensils', 'newBookings', 'arrivals', 'balances', 'stale', 'backup'] as const;
-const STALE_DAYS = 2, BACKUP_DAYS = 3;
+const STALE_DAYS = 2, BACKUP_DAYS = 3, INBOX_DAYS = 30, KEEP_LOG_DAYS = 60;
 // Who pays at the property (as in the app: paysUsDirectly). Others never get a
 // balance alert.
 const PAYS_US = new Set(['Direct', 'Booking.com']);
@@ -133,20 +133,63 @@ function db(env: Env, fetchImpl: Fetch) {
   const call = async (method: string, path: string, body?: unknown, extra: Record<string, string> = {}) => {
     const res = await fetchImpl(`${base}/rest/v1/${path}`, {
       method, headers: { ...headers, ...extra }, body: body === undefined ? undefined : JSON.stringify(body) });
-    if (!res.ok) throw new Error(`${method} ${path.split('?')[0]}: HTTP ${res.status}`);
+    if (!res.ok) throw new Error(`${method} ${path.split('?')[0]}: HTTP ${res.status} ${await res.text().catch(() => '')}`.trim());
     const t = await res.text(); return t ? JSON.parse(t) : null;
   };
-  return {
+  const log = (owner: string, k: string) => `push_log?owner_id=eq.${owner}&key=eq.${encodeURIComponent(k)}`;
+  const d = {
     base, key,
+    legacy: false,                       // push_log without the inbox columns (inbox.sql not run)
     get: (p: string) => call('GET', p),
     del: (p: string) => call('DELETE', p),
-    // Claims a log key; true if it was free. A second run finds it taken.
-    claim: async (owner: string, k: string) => {
+    // The claim and the record are separate. A row is both the inbox entry
+    // (title, body, url, alert, sent_at, delivered, read_at) and, through
+    // claimed_at, the right to send it now. A key is claimed when it is new,
+    // or when it was never delivered and nobody holds it (no claim, or a claim
+    // over 10 minutes old from a run that died). So a cron that fires twice
+    // sends once, a reminder no device took is retried, and two runs at the
+    // same moment cannot both send: Postgres re-checks the condition.
+    claim: async (owner: string, k: string, alert: string, push: Push, nowMs: number): Promise<'new' | 'retry' | false> => {
+      const at = new Date(nowMs).toISOString();
+      const entry = { title: push.title, body: push.body, url: push.url, alert };
+      if (!d.legacy) {
+        try {
+          const rows = await call('POST', 'push_log?on_conflict=owner_id,key',
+            [{ owner_id: owner, key: k, ...entry, sent_at: at, delivered: false, claimed_at: at }],
+            { Prefer: 'resolution=ignore-duplicates,return=representation' });
+          if (Array.isArray(rows) && rows.length) return 'new';
+          const stale = new Date(nowMs - 10 * 60e3).toISOString();
+          for (const held of ['claimed_at=is.null', `claimed_at=lt.${stale}`]) {
+            const got = await call('PATCH', `${log(owner, k)}&delivered=eq.false&${held}`, { ...entry, claimed_at: at },
+              { Prefer: 'return=representation' });
+            if (Array.isArray(got) && got.length) return 'retry';
+          }
+          return false;
+        } catch (e) {
+          if (!/column|PGRST204|42703|schema cache/i.test(String((e as Error).message))) throw e;
+          d.legacy = true;                 // before inbox.sql: claim by key alone, as it used to
+        }
+      }
       const rows = await call('POST', 'push_log?on_conflict=owner_id,key', [{ owner_id: owner, key: k }],
         { Prefer: 'resolution=ignore-duplicates,return=representation' });
-      return Array.isArray(rows) && rows.length > 0;
+      return Array.isArray(rows) && rows.length > 0 ? 'new' : false;
+    },
+    // What happened, kept: delivered or not. The claim is let go either way.
+    record: async (owner: string, k: string, delivered: boolean, nowMs: number) => {
+      if (d.legacy) { if (!delivered) await call('DELETE', log(owner, k)).catch(() => {}); return; }
+      await call('PATCH', log(owner, k), delivered
+        ? { delivered: true, claimed_at: null, sent_at: new Date(nowMs).toISOString() }
+        : { delivered: false, claimed_at: null }).catch(() => {});
+    },
+    // The inbox's unread count (last 30 days): the number on the app icon.
+    unread: async (owner: string, nowMs: number): Promise<number | undefined> => {
+      if (d.legacy) return undefined;
+      const since = new Date(nowMs - INBOX_DAYS * 86400e3).toISOString();
+      const rows = await call('GET', `push_log?owner_id=eq.${owner}&read_at=is.null&sent_at=gte.${since}&select=key`).catch(() => null);
+      return Array.isArray(rows) ? rows.length : undefined;
     },
   };
+  return d;
 }
 
 const sameSecret = (a: string, b: string) => {
@@ -164,23 +207,33 @@ async function prefsOf(d: ReturnType<typeof db>, owner: string): Promise<Record<
   return Object.fromEntries(ALERTS.map(a => [a, p[a] !== false]));
 }
 
-// Sends to every device of one owner. Logged under `key` first, so it goes
-// once however often this runs; un-logged again if no device took it.
-async function deliver(owner: string, key: string | null, push: Push, d: ReturnType<typeof db>,
+// Sends to every device of one owner. A keyed reminder is claimed first, so
+// it goes once however often this runs, and kept in the inbox whether or not
+// a device took it (delivered = false: retried the next time it comes up).
+// Each push carries the inbox's unread count for the app icon's badge, and
+// its key in the url, so tapping it marks it read.
+async function deliver(owner: string, key: string | null, alert: string, push: Push, d: ReturnType<typeof db>,
                        env: Env, fetchImpl: Fetch, nowMs: number) {
   const subs: Sub[] = await d.get(`push_subscriptions?owner_id=eq.${owner}&select=endpoint,p256dh,auth`) || [];
-  if (!subs.length) return { sent: 0, gone: 0, skipped: 'no devices' };
-  if (key && !(await d.claim(owner, key))) return { sent: 0, gone: 0, skipped: 'already sent' };
+  if (!key && !subs.length) return { sent: 0, gone: 0, skipped: 'no devices' };
+  if (key && !(await d.claim(owner, key, alert, push, nowMs))) return { sent: 0, gone: 0, skipped: 'already sent' };
+  if (!subs.length) { await d.record(owner, key as string, false, nowMs); return { sent: 0, gone: 0, skipped: 'no devices' }; }
+  const out: Push = { ...push };
+  if (key) {
+    out.url = `${push.url}${push.url.includes('#') ? '&' : '#'}n=${encodeURIComponent(key)}`;
+    const badge = await d.unread(owner, nowMs);
+    if (badge !== undefined) out.badge = badge;
+  }
   let sent = 0, gone = 0;
   for (const s of subs) {
     let status = 0;
-    try { status = await sendPush(s, push, env, fetchImpl, Math.floor(nowMs / 1000)); } catch { status = 0; }
+    try { status = await sendPush(s, out, env, fetchImpl, Math.floor(nowMs / 1000)); } catch { status = 0; }
     if (status >= 200 && status < 300) sent++;
     else if (status === 404 || status === 410) {           // the device unsubscribed for good
       gone++; await d.del(`push_subscriptions?endpoint=eq.${encodeURIComponent(s.endpoint)}`).catch(() => {});
     }
   }
-  if (key && !sent) await d.del(`push_log?owner_id=eq.${owner}&key=eq.${encodeURIComponent(key)}`).catch(() => {});
+  if (key) await d.record(owner, key, sent > 0, nowMs);
   return { sent, gone };
 }
 
@@ -330,14 +383,19 @@ export async function handle(req: Request, env: Env, fetchImpl: Fetch = fetch as
   if (given) {
     if (!sameSecret(given, String(env.PUSH_CRON_SECRET || ''))) return json({ error: 'not allowed' }, 401);
     if (body && body.job === 'daily') {
+      // Everyone with a device, and everyone whose phone syncs: the inbox keeps
+      // a reminder even when no device is left to take it.
       const subs: Sub[] = await d.get('push_subscriptions?select=owner_id') || [];
-      const owners = [...new Set(subs.map(s => s.owner_id).filter(Boolean))] as string[];
+      const synced: { owner_id: string }[] = await d.get('sync_status?select=owner_id').catch(() => []) || [];
+      const owners = [...new Set([...subs, ...synced].map(s => s.owner_id).filter(Boolean))] as string[];
+      // Housekeeping: the log keeps 60 days (the inbox shows 30).
+      await d.del(`push_log?sent_at=lt.${new Date(nowMs - KEEP_LOG_DAYS * 86400e3).toISOString()}`).catch(() => {});
       const report: unknown[] = [];
       for (const owner of owners) {
         const prefs = await prefsOf(d, owner);
         for (const item of await dailyPushes(owner, d, nowMs)) {
           if (!prefs[item.alert]) { report.push({ key: item.key, skipped: 'turned off' }); continue; }
-          report.push({ key: item.key, ...(await deliver(owner, item.key, item.push, d, env, fetchImpl, nowMs)) });
+          report.push({ key: item.key, ...(await deliver(owner, item.key, item.alert, item.push, d, env, fetchImpl, nowMs)) });
         }
       }
       return json({ ok: true, job: 'daily', report });
@@ -347,7 +405,7 @@ export async function handle(req: Request, env: Env, fetchImpl: Fetch = fetch as
       for (const item of await newBookingPushes(body.events, d, nowMs)) {
         if (item.skipped) { report.push({ key: item.key, skipped: item.skipped }); continue; }
         if (!(await prefsOf(d, item.owner))[item.alert]) { report.push({ key: item.key, skipped: 'turned off' }); continue; }
-        report.push({ key: item.key, ...(await deliver(item.owner, item.key, item.push, d, env, fetchImpl, nowMs)) });
+        report.push({ key: item.key, ...(await deliver(item.owner, item.key, item.alert, item.push, d, env, fetchImpl, nowMs)) });
       }
       return json({ ok: true, job: 'new-bookings', report });
     }
@@ -355,7 +413,7 @@ export async function handle(req: Request, env: Env, fetchImpl: Fetch = fetch as
       const ev = await eventPush(body, d);
       if (!ev) return json({ ok: true, skipped: 'not a new mark' });
       if (!(await prefsOf(d, ev.owner))[ev.alert]) return json({ ok: true, skipped: 'turned off' });
-      return json({ ok: true, key: ev.key, ...(await deliver(ev.owner, ev.key, ev.push, d, env, fetchImpl, nowMs)) });
+      return json({ ok: true, key: ev.key, ...(await deliver(ev.owner, ev.key, ev.alert, ev.push, d, env, fetchImpl, nowMs)) });
     }
     return json({ error: 'unknown job' }, 400);
   }
@@ -367,7 +425,7 @@ export async function handle(req: Request, env: Env, fetchImpl: Fetch = fetch as
   const user = who.ok ? await who.json().catch(() => null) : null;
   if (!user || !user.id) return json({ error: 'not allowed' }, 401);
   if (!body || body.job !== 'test') return json({ error: 'unknown job' }, 400);
-  const r = await deliver(String(user.id), null, {
+  const r = await deliver(String(user.id), null, 'test', {
     title: 'StayLog test', body: 'Notifications are on for this iPhone.', url: './#open=menu', tag: 'test' }, d, env, fetchImpl, nowMs);
   return json({ ok: true, ...r });
 }

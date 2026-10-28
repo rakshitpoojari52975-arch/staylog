@@ -6,7 +6,7 @@
 // ─── Build ────────────────────────────────────────────────────────────────────
 // Bump BOTH of these together. This date sat at 28 Sept through a dozen
 // releases and was read, reasonably, as proof the upload had not landed.
-const APP_VERSION='v52', APP_BUILT='28 Oct 2026';
+const APP_VERSION='v53', APP_BUILT='28 Oct 2026';
 // The CACHE_NAME of the sw.js released with this app.js. Every release bumps
 // APP_VERSION and CACHE_NAME together, so one is derived from the other rather
 // than being a fourth thing to forget; the tests fail if they ever disagree.
@@ -541,6 +541,14 @@ function renderHeader(){
       ico('chevron-down',{style:{fontSize:13,color:'var(--muted)',flexShrink:0}})));
   }
   header.appendChild(div({style:{marginLeft:'auto'}}));
+  if(state.tab==='dashboard'){
+    const n=inboxUnread();
+    header.appendChild(btn({className:'btn-icon','data-bell':String(n),'aria-label':n?`Notifications, ${n} unread`:'Notifications',
+      style:{position:'relative'},onClick:()=>setState({modal:'inbox'})},
+      ico('bell',{style:{fontSize:19}}),
+      n?span({'data-bell-count':'1',style:{position:'absolute',top:2,right:2,minWidth:17,height:17,padding:'0 4px',borderRadius:9,
+        background:'var(--danger)',color:'#fff',fontSize:10.5,fontWeight:700,lineHeight:'17px',textAlign:'center'}},n>99?'99+':String(n)):null));
+  }
   header.appendChild(btn({className:'btn-icon','aria-label':'Menu',onClick:()=>setState({modal:'menu'})},
     ico('dots-vertical',{style:{fontSize:19}})));
   return header;
@@ -869,7 +877,7 @@ let pendingOpen=null, privacyToastShown=false;
 function parseOpen(hash){
   const q=new URLSearchParams(String(hash||'').replace(/^#/,''));
   const open=q.get('open');
-  return open?{open,send:q.get('send')||'',prop:q.get('prop')||'',in:q.get('in')||'',out:q.get('out')||''}:null;
+  return open?{open,send:q.get('send')||'',prop:q.get('prop')||'',in:q.get('in')||'',out:q.get('out')||'',n:q.get('n')||''}:null;
 }
 // "New booking": the stay came in through the calendar import, which only
 // becomes a booking on the phone at its next sync. So sync first (the drain
@@ -905,6 +913,7 @@ function takeOpen(hash){
 function applyPendingOpen(){
   const o=pendingOpen; pendingOpen=null;
   if(!o)return;
+  if(o.n)inboxMarkRead([o.n]);     // the push's own inbox row: tapping the phone's notification reads it
   if(o.open==='menu'||o.open==='cloud'||o.open==='backup'){setState({modal:o.open,editItem:null});return;}
   if(o.open==='stay'){openStay(o);return;}
   const b=state.data.bookings.find(x=>x.id===o.open);
@@ -912,6 +921,151 @@ function applyPendingOpen(){
   const send=['arrival','payment'].includes(o.send)?o.send:'';
   setState({tab:'bookings',bookingFilter:'all',expandedBooking:b.id,
     modal:send?'sendConfirm':null,editItem:send?b:null,sendFocus:send?{id:b.id,kind:send}:null});
+}
+
+// ─── Notification inbox ───────────────────────────────────────────────────────
+// Every reminder the notify function sends is kept in push_log (inbox.sql),
+// delivered or not, so one missed or cleared on the phone is still here. The
+// cloud holds what was said; whether it is done is worked out here, from the
+// phone's own data, every time, and never stored. The last list loaded is kept
+// in localStorage for offline ("as of …"), with any reads not yet sent.
+const INBOX_KEY='staylog_inbox', INBOX_DAYS=30;
+const inbox=(()=>{let c=null;try{c=JSON.parse(localStorage.getItem(INBOX_KEY)||'null');}catch(e){c=null;}
+  c=c&&typeof c==='object'?c:{};
+  return {rows:Array.isArray(c.rows)?c.rows:null,at:c.at||'',pending:Array.isArray(c.pending)?c.pending:[],
+    fresh:false,err:'',loading:false,filter:'all',lastTry:0};})();
+function inboxSave(){try{localStorage.setItem(INBOX_KEY,JSON.stringify({rows:inbox.rows,at:inbox.at,pending:inbox.pending}));}catch(e){}}
+function inboxRows(){
+  const since=Date.now()-INBOX_DAYS*86400e3;
+  return (inbox.rows||[]).filter(r=>r&&r.title&&Date.parse(r.sent_at)>=since)
+    .sort((a,b)=>String(b.sent_at).localeCompare(String(a.sent_at)));
+}
+const inboxUnread=()=>inboxRows().filter(r=>!r.read_at).length;
+// The number on the app icon: the same unread count as the bell.
+function inboxBadge(){
+  try{
+    const n=inboxUnread();
+    if(n>0&&navigator.setAppBadge)navigator.setAppBadge(n).catch(()=>{});
+    else if(n===0&&navigator.clearAppBadge)navigator.clearAppBadge().catch(()=>{});
+  }catch(e){}
+}
+function inboxRepaint(){if(state.loggedIn&&(state.modal==='inbox'||(!state.modal&&state.tab==='dashboard')))render();}
+async function refreshInbox(){
+  const C=window.StayLogCloud;
+  if(!C||!C.inboxList||!cloudStatus().signedIn||inbox.loading)return;
+  inbox.loading=true; inbox.lastTry=Date.now();
+  try{
+    if(inbox.pending.length){const keys=[...inbox.pending];await C.inboxRead(keys);
+      inbox.pending=inbox.pending.filter(k=>!keys.includes(k));}
+    const rows=await C.inboxList();
+    const local=new Map((inbox.rows||[]).filter(r=>r.read_at).map(r=>[r.key,r.read_at]));
+    inbox.rows=rows.map(r=>!r.read_at&&(inbox.pending.includes(r.key)||local.has(r.key))?{...r,read_at:local.get(r.key)||new Date().toISOString()}:r);
+    inbox.at=new Date().toISOString(); inbox.fresh=true; inbox.err='';
+  }catch(e){inbox.err=(e&&e.message)||String(e);}
+  finally{inbox.loading=false;}
+  inboxSave(); inboxBadge(); inboxRepaint();
+}
+// Marks rows read on the phone at once, then in the cloud (read_at only).
+// Offline, the keys wait in localStorage and go with the next refresh.
+function inboxMarkRead(keys){
+  const now=new Date().toISOString();
+  const want=keys?new Set(keys):null, hit=[];
+  inbox.rows=(inbox.rows||[]).map(r=>{if(r.read_at||(want&&!want.has(r.key)))return r;hit.push(r.key);return {...r,read_at:now};});
+  const send=keys?[...new Set(keys)]:hit;
+  inbox.pending=[...new Set([...inbox.pending,...send])];
+  inboxSave(); inboxBadge();
+  const C=window.StayLogCloud;
+  // Mark all read asks the cloud for every unread row, not only those listed here.
+  if(C&&C.inboxRead&&cloudStatus().signedIn&&(send.length||!keys))
+    C.inboxRead(keys?send:null).then(()=>{inbox.pending=inbox.pending.filter(k=>!send.includes(k));inboxSave();},()=>{});
+}
+// Done, worked out from the phone's data now. null: nothing to do for it.
+function inboxDone(r){
+  const k=String(r.key||''), D=state.data, at=Date.parse(r.sent_at)||0;
+  let m;
+  if((m=/^arrival:(.+):(\d{4}-\d{2}-\d{2})$/.exec(k))){
+    const b=D.bookings.find(x=>x.id===m[1]);
+    return {done:!b||!dueMessages([b]).some(x=>x.kind==='arrival'),label:'Done'};
+  }
+  if((m=/^balance:(.+):(\d{4}-\d{2}-\d{2})$/.exec(k))){
+    const b=D.bookings.find(x=>x.id===m[1]);
+    return {done:!b||b.status==='cancelled'||balanceDue(b)===0,label:'Done'};
+  }
+  if((m=/^mark:(.+)$/.exec(k))){
+    const exp=/^att_/.test(m[1])?'wag_'+m[1].slice(4):m[1];
+    return {done:D.expenses.some(e=>e.id===exp),label:'Recorded'};
+  }
+  if(/^stale:/.test(k))return {done:(Date.parse(cloudStatus().lastSync)||0)>at,label:'Cleared'};
+  if(/^backup:/.test(k))return {done:(Date.parse(bkStatus().lastAt)||0)>at,label:'Cleared'};
+  if((m=/^stay:([^:]*):(\d{4}-\d{2}-\d{2}):(\d{4}-\d{2}-\d{2})$/.exec(k)))
+    return {done:!!findStay({prop:m[1],in:m[2],out:m[3]}),label:'Imported'};
+  return null;
+}
+const inboxTime=iso=>new Date(iso).toLocaleTimeString('en-IN',{hour:'numeric',minute:'2-digit'});
+function openInboxRow(r){
+  inboxMarkRead([r.key]);
+  const u=String(r.url||''), i=u.indexOf('#');
+  setState({modal:null,editItem:null});
+  if(i>=0)takeOpen(u.slice(i));
+}
+function renderInboxModal(){
+  if((!inbox.fresh||Date.now()-Date.parse(inbox.at)>60e3)&&!inbox.loading&&Date.now()-inbox.lastTry>5000)refreshInbox();
+  const content=()=>{
+    const wrap=div({'data-inbox':'1',style:{display:'flex',flexDirection:'column',gap:10}});
+    const all=inboxRows(), todo=all.filter(r=>{const d=inboxDone(r);return d&&!d.done;});
+    const chip=(f,l)=>{const on=inbox.filter===f;
+      return btn({'data-inbox-filter':f,style:{padding:'6px 12px',minHeight:34,borderRadius:20,whiteSpace:'nowrap',
+        border:`1.5px solid ${on?'var(--accent)':'var(--border)'}`,background:on?'var(--accent-light)':'var(--white)',
+        color:on?'var(--accent)':'var(--muted)',fontSize:12.5,fontWeight:on?700:600},
+        onClick:()=>{inbox.filter=f;render();}},l);};
+    const unread=all.filter(r=>!r.read_at).length;
+    wrap.appendChild(div({style:{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap'}},
+      chip('all',`All ${all.length}`),chip('todo',`Still to do ${todo.length}`),
+      div({style:{marginLeft:'auto'}}),
+      btn({'data-inbox-all-read':'1',className:'btn-sm',disabled:!unread,
+        style:{background:'none',border:'none',color:unread?'var(--accent)':'var(--light)',fontWeight:700,fontSize:13,padding:'6px 4px'},
+        onClick:()=>{inboxMarkRead(null);render();}},'Mark all read')));
+    if(inbox.at&&!inbox.fresh)
+      wrap.appendChild(div({'data-inbox-asof':'1',style:{fontSize:12,color:'var(--muted)'}},
+        `As of ${bkWhen(inbox.at)}${navigator.onLine===false?' · offline':''}`));
+    if(inbox.err&&!/not signed in/.test(inbox.err))
+      wrap.appendChild(div({style:{fontSize:12.5,color:'var(--warn)',lineHeight:1.5}},`Could not load: ${inbox.err}`));
+    if(!cloudStatus().signedIn&&!inbox.rows)
+      wrap.appendChild(div({style:{fontSize:13.5,color:'var(--muted)',lineHeight:1.6,padding:'8px 2px'}},
+        'Reminders are sent from the cloud. Sign in to Cloud sync to see them here.'));
+    const list=inbox.filter==='todo'?todo:all;
+    if(inbox.rows&&!list.length)
+      wrap.appendChild(div({style:{fontSize:13.5,color:'var(--muted)',padding:'18px 2px',textAlign:'center'}},
+        inbox.filter==='todo'?'Nothing still to do.':'No notifications in the last 30 days.'));
+    if(!inbox.rows&&inbox.loading)wrap.appendChild(div({style:{fontSize:13,color:'var(--muted)'}},'Loading…'));
+    const t=today(), y=addDaysISO(t,-1);
+    let group='';
+    list.forEach(r=>{
+      const day=isoOf(new Date(r.sent_at)), g=day===t?'Today':day===y?'Yesterday':'Earlier';
+      if(g!==group){group=g;wrap.appendChild(div({'data-inbox-group':g,style:{fontSize:11.5,fontWeight:700,color:'var(--muted)',
+        textTransform:'uppercase',letterSpacing:'.06em',marginTop:6}},g));}
+      const d=inboxDone(r), unreadRow=!r.read_at;
+      const row=div({'data-inbox-row':r.key,style:{border:'1px solid var(--border)',borderRadius:'var(--radius-sm)',
+        background:unreadRow?'var(--accent-light)':'var(--white)',padding:'10px 12px'}});
+      row.appendChild(btn({'data-inbox-open':r.key,style:{display:'block',width:'100%',textAlign:'left',background:'none',border:'none',
+        padding:0,color:'var(--text)'},onClick:()=>openInboxRow(r)},
+        div({style:{display:'flex',gap:8,alignItems:'baseline'}},
+          div({style:{fontSize:14.5,fontWeight:unreadRow?700:600,flex:1,minWidth:0}},r.title),
+          div({style:{fontSize:11.5,color:'var(--muted)',flexShrink:0}},g==='Earlier'?`${fmtDate(day)}, ${inboxTime(r.sent_at)}`:inboxTime(r.sent_at))),
+        r.body?div({style:{fontSize:13,color:'var(--text-mid)',marginTop:2,lineHeight:1.45}},r.body):null,
+        d?div({'data-inbox-state':d.done?d.label:'todo',style:{fontSize:11.5,fontWeight:700,marginTop:5,
+          color:d.done?'var(--accent)':'var(--warn)'}},d.done?`✓ ${d.label}`:'Still to do'):null));
+      if(r.delivered===false)
+        row.appendChild(btn({'data-inbox-undelivered':'1',style:{display:'block',background:'none',border:'none',padding:'6px 0 0',
+          textAlign:'left',fontSize:12.5,color:'var(--warn)',fontWeight:600},
+          onClick:()=>{setState({modal:'menu'});setTimeout(()=>{const el=document.querySelector('[data-push]');
+            if(el&&el.scrollIntoView)el.scrollIntoView({block:'center'});},80);}},
+          'Not delivered — turn notifications on again?'));
+      wrap.appendChild(row);
+    });
+    return wrap;
+  };
+  return modal('Notifications',content);
 }
 
 function renderMenuModal(){
@@ -4566,6 +4720,7 @@ function render(){
   else if(state.modal==='paidReceipt'){currentModal=renderPaidReceiptModal();document.body.appendChild(currentModal);}
   else if(state.modal==='faceId')   {currentModal=renderFaceIdModal();    document.body.appendChild(currentModal);}
   else if(state.modal==='backup')   {currentModal=renderBackupModal();    document.body.appendChild(currentModal);}
+  else if(state.modal==='inbox')    {currentModal=renderInboxModal();     document.body.appendChild(currentModal);}
 }
 
 // ─── Boot ─────────────────────────────────────────────────────────────────────
@@ -4591,7 +4746,7 @@ Promise.all([loadDataFromIDB(),loadAuth(),checkFaceId()]).then(([data,auth])=>{
     // Opening the app is itself a reason to sync: her attendance marks arrive
     // while this phone is doing nothing, and they only become expenses here.
     window.StayLogCloud.restoreSession()
-      .then(()=>{resubscribeQuietly();return window.StayLogCloud.checkIn&&window.StayLogCloud.checkIn(true);})
+      .then(()=>{resubscribeQuietly();refreshInbox();return window.StayLogCloud.checkIn&&window.StayLogCloud.checkIn(true);})
       .catch(()=>{});
   }
   setTimeout(checkSwMatch,SW_CHECK_DELAY);
@@ -4610,5 +4765,7 @@ document.addEventListener('visibilitychange',()=>{if(!document.hidden)setTimeout
 let lastResub=0;
 document.addEventListener('visibilitychange',()=>{
   if(document.hidden||Date.now()-lastResub<60000)return;
-  lastResub=Date.now(); resubscribeQuietly();
+  lastResub=Date.now(); resubscribeQuietly(); refreshInbox();
 });
+// The app icon's number, from the last list loaded, as soon as the app opens.
+inboxBadge();
