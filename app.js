@@ -6,11 +6,12 @@
 // ─── Build ────────────────────────────────────────────────────────────────────
 // Bump BOTH of these together. This date sat at 28 Sept through a dozen
 // releases and was read, reasonably, as proof the upload had not landed.
-const APP_VERSION='v49', APP_BUILT='30 Oct 2026';
+const APP_VERSION='v50', APP_BUILT='28 Oct 2026';
 // The CACHE_NAME of the sw.js released with this app.js. Every release bumps
 // APP_VERSION and CACHE_NAME together, so one is derived from the other rather
 // than being a fourth thing to forget; the tests fail if they ever disagree.
 const SW_CACHE='staylog-'+APP_VERSION;
+window.STAYLOG_APP_VERSION=APP_VERSION;   // stamped (in plain) on each encrypted backup
 
 // ─── Auth ─────────────────────────────────────────────────────────────────────
 const AUTH_KEY   = 'staylog_auth';
@@ -690,6 +691,7 @@ const PUSH_ALERTS=[
   ['arrivals','Guests arriving tomorrow','9 AM, ready to send the arrival message'],
   ['balances','Balance due at check-out tomorrow','9 AM · Direct and Booking.com only'],
   ['stale','App not synced in 2 days','9 AM'],
+  ['backup','No encrypted backup in 3 days','9 AM'],
 ];
 const pushUI={sub:null,checked:false,busy:false,msg:'',msgBad:false,prefs:null,prefsErr:''};
 const isIOS=()=>/iPad|iPhone|iPod/.test(navigator.userAgent)||(navigator.platform==='MacIntel'&&navigator.maxTouchPoints>1);
@@ -903,7 +905,7 @@ function takeOpen(hash){
 function applyPendingOpen(){
   const o=pendingOpen; pendingOpen=null;
   if(!o)return;
-  if(o.open==='menu'||o.open==='cloud'){setState({modal:o.open,editItem:null});return;}
+  if(o.open==='menu'||o.open==='cloud'||o.open==='backup'){setState({modal:o.open,editItem:null});return;}
   if(o.open==='stay'){openStay(o);return;}
   const b=state.data.bookings.find(x=>x.id===o.open);
   if(!b){setState({tab:'bookings',modal:null,editItem:null});return;}
@@ -2335,6 +2337,167 @@ function calendarLinksBox(){
   return box;
 }
 
+// ─── Encrypted backup ─────────────────────────────────────────────────────────
+// backup.js does the cryptography; this is the sheet (Cloud sync → Encrypted
+// backup). The passphrase is typed here and handed straight to backup.js; it
+// is never kept in state, storage or a log.
+const bk={view:'',busy:false,msg:'',bad:false,list:null,listErr:''};
+const BK=()=>window.StayLogBackup;
+const bkStatus=()=>(BK()&&BK().status())||{hasKey:false};
+function bkSay(msg,bad){bk.msg=msg;bk.bad=!!bad;bk.busy=false;if(state.modal==='backup')render();}
+function bkWork(msg){bk.msg=msg;bk.bad=false;bk.busy=true;if(state.modal==='backup')render();}
+function bkLoadList(){
+  if(bk.list||bk._loading)return;
+  bk._loading=true;
+  BK().list().then(l=>{bk.list=l;bk.listErr='';},e=>{bk.listErr=e.message||String(e);})
+    .finally(()=>{bk._loading=false;if(state.modal==='backup')render();});
+}
+function bkWhen(iso){
+  if(!iso)return 'never';
+  const d=new Date(iso);
+  return `${fmtDate(isoOf(d))}, ${d.toLocaleTimeString('en-IN',{hour:'numeric',minute:'2-digit'})}`;
+}
+// Replaces this phone's data with a decrypted backup. ID photographs were
+// never in it, so this phone's own are carried across by booking id, and what
+// was here is kept aside on the phone first (IndexedDB 'staylog_before_restore').
+function replaceWithBackup(fresh){
+  const imgs={};state.data.bookings.forEach(b=>{if(b.idProofImage)imgs[b.id]=b.idProofImage;});
+  idbSet('staylog_before_restore',JSON.parse(JSON.stringify(state.data))).catch(()=>{});
+  const d=normalizeData(fresh);
+  d.bookings.forEach(b=>{if(imgs[b.id])b.idProofImage=imgs[b.id];});
+  state.data=d;repriceWages(state.data);saveData(state.data);
+}
+function renderBackupModal(){
+  const content=()=>{
+    const wrap=div({'data-backup':'1',style:{display:'flex',flexDirection:'column',gap:10}});
+    const s=bkStatus(), cs=cloudStatus();
+    const note=(t,color)=>wrap.appendChild(div({style:{fontSize:12.5,color:color||'var(--muted)',lineHeight:1.55}},t));
+    const pass=(ph,attr)=>h('input',{type:'password',autocomplete:'off',placeholder:ph,...attr});
+    const button=(label,attr,onClick,primary)=>btn({...attr,disabled:bk.busy,className:primary?'btn-primary':'btn-ghost',
+      style:{width:'100%',minHeight:44},onClick},label);
+    const msgLine=()=>{ if(bk.msg)wrap.appendChild(div({'data-backup-msg':'1',style:{fontSize:13,fontWeight:600,lineHeight:1.5,
+      color:bk.bad?'var(--danger)':'var(--accent)'}},bk.msg)); };
+    if(!BK()){note('Encrypted backup is not available in this copy of the app. Reopen StayLog.');return wrap;}
+    if(!cs.signedIn){note('Sign in to Cloud sync first: the encrypted copy is kept there.');
+      wrap.appendChild(button('Cloud sync',{},()=>setState({modal:'cloud'}),true));return wrap;}
+
+    // ── The panels: test restore, restore, change passphrase ────────────────
+    if(bk.view==='verify'){
+      note('Type the passphrase. The latest backup is decrypted on this phone and compared with what is here. Nothing on the phone changes.');
+      const p=pass('Backup passphrase',{'data-bk-pass':'1'});wrap.appendChild(p);
+      msgLine();
+      wrap.appendChild(button('Test restore',{'data-bk-verify':'1'},async()=>{
+        bkWork('Decrypting…');
+        try{
+          const r=await BK().verify(p.value,state.data);
+          if(r.ok)bkSay(`Backup verified · ${bkWhen(r.createdAt)} · ${r.counts.bookings} bookings, ${r.counts.expenses} expenses, ${r.counts.loans} loans.`);
+          else bkSay(`Decrypted, but the backup of ${bkWhen(r.createdAt)} differs from this phone: `+
+            r.diffs.map(x=>`${x.table} ${x.backup} in the backup, ${x.phone} here`).join('; ')+'. Back up now, then test again.',true);
+        }catch(e){bkSay(e.message||String(e),true);}
+      },true));
+      wrap.appendChild(button('Back',{},()=>{bk.view='';bk.msg='';render();}));
+      return wrap;
+    }
+    if(bk.view==='restore'){
+      note('Replaces everything on this phone with a backup. Use it on a new phone, or to go back to a saved copy. The data here now is kept aside on the phone first.',
+        'var(--text-mid)');
+      const p=pass('Backup passphrase',{'data-bk-pass':'1'});wrap.appendChild(p);
+      bkLoadList();
+      let chosen=bk.chosen||'latest', fileDoc=null;
+      const pick=h('select',{'data-bk-pick':'1'});
+      pick.appendChild(h('option',{value:'latest'},'The latest backup'));
+      (bk.list||[]).forEach((r,i)=>{if(i>0)pick.appendChild(h('option',{value:r.id,selected:chosen===r.id},bkWhen(r.created_at)));});
+      pick.addEventListener('change',e=>{bk.chosen=e.target.value;});
+      if(bk.list&&bk.list.length)wrap.appendChild(div({},div({className:'label'},`From the cloud (${bk.list.length} kept)`),pick));
+      else if(bk.listErr)note(bk.listErr,'var(--danger)');
+      else if(bk.list)note('There is no backup in the cloud.');
+      const fileInp=h('input',{type:'file','data-bk-file':'1',style:{fontSize:12.5}});
+      const fileName=div({style:{fontSize:12,color:'var(--muted)'}});
+      fileInp.addEventListener('change',e=>{const f=e.target.files[0];if(!f)return;
+        f.text().then(t=>{try{fileDoc=BK().readFile(t);fileName.textContent=`Using the file ${f.name}`;}catch(err){fileDoc=null;fileName.textContent=err.message;}});});
+      wrap.appendChild(div({},div({className:'label'},'Or a saved backup file'),fileInp,fileName));
+      msgLine();
+      wrap.appendChild(button('Replace this phone’s data',{'data-bk-restore':'1'},async()=>{
+        bkWork('Decrypting…');
+        let r;
+        try{ r=await BK().restore(p.value,fileDoc||(chosen=(bk.chosen||'latest'),chosen==='latest'?null:{id:chosen})); }
+        catch(e){bkSay(e.message||String(e),true);return;}
+        const c=BK()._counts(r.data);
+        if(!confirm(`Replace everything on this phone with the backup of ${bkWhen(r.createdAt)}?\n\n${c.bookings} bookings, ${c.expenses} expenses, ${c.loans} loans.`)){bkSay('Nothing was changed.');return;}
+        replaceWithBackup(r.data);
+        bk.view='';bkSay(`Restored the backup of ${bkWhen(r.createdAt)}: ${c.bookings} bookings, ${c.expenses} expenses, ${c.loans} loans.`);
+      },false));
+      wrap.lastChild.className='btn-danger';
+      wrap.appendChild(button('Back',{},()=>{bk.view='';bk.msg='';render();}));
+      return wrap;
+    }
+    if(bk.view==='change'){
+      note('Every backup in the cloud is re-encrypted with the new passphrase, and this phone keeps the new key. The new one cannot be recovered either.');
+      const cur=pass('Current passphrase',{'data-bk-cur':'1'}), p1=pass(`New passphrase (at least ${BK().MIN_PASS} characters)`,{'data-bk-p1':'1'}),
+            p2=pass('New passphrase again',{'data-bk-p2':'1'});
+      wrap.appendChild(cur);wrap.appendChild(p1);wrap.appendChild(p2);
+      msgLine();
+      wrap.appendChild(button('Change passphrase',{'data-bk-change':'1'},async()=>{
+        bkWork('Re-encrypting…');
+        try{ const r=await BK().changePassphrase(cur.value,p1.value,p2.value,state.data);
+          bk.view='';bk.list=null;
+          bkSay(`Passphrase changed. ${r.rewritten+1} backup${r.rewritten?'s':''} now open with the new one`+
+            (r.kept?`; ${r.kept} older could not be rewritten and still open with the old one until they expire.`:'.'));
+        }catch(e){bkSay(e.message||String(e),true);}
+      },true));
+      wrap.appendChild(button('Back',{},()=>{bk.view='';bk.msg='';render();}));
+      return wrap;
+    }
+
+    // ── First time on this phone: set the passphrase ─────────────────────────
+    if(!s.hasKey){
+      wrap.appendChild(div({style:{fontSize:13,lineHeight:1.55,color:'var(--text-mid)',background:'var(--warn-light)',
+        border:'1px solid var(--warn-line)',borderRadius:'var(--radius-sm)',padding:'10px 12px'}},
+        h('b',{},'If you forget this passphrase, the backups cannot be opened — by you, by Supabase, or by anyone. '),
+        'It is not your PIN and is never stored or sent; only a key made from it stays on this phone. Write it down somewhere safe.'));
+      const p1=pass(`Passphrase (at least ${BK().MIN_PASS} characters)`,{'data-bk-p1':'1'}), p2=pass('Passphrase again',{'data-bk-p2':'1'});
+      wrap.appendChild(p1);wrap.appendChild(p2);
+      msgLine();
+      wrap.appendChild(button('Turn on encrypted backup',{'data-bk-set':'1'},async()=>{
+        bkWork('Making the key and the first backup…');
+        try{ await BK().setPassphrase(p1.value,p2.value,state.data); bkSay('Encrypted backup is on. The first backup is in the cloud.'); }
+        catch(e){bkSay(e.message||String(e),true);}
+      },true));
+      note('Setting up a new phone? Sign in, then restore with the passphrase you already use:');
+      wrap.appendChild(button('Restore from backup',{'data-bk-open-restore':'1'},()=>{bk.view='restore';bk.msg='';render();}));
+      return wrap;
+    }
+
+    // ── On ───────────────────────────────────────────────────────────────────
+    wrap.appendChild(div({'data-bk-status':'1',style:{background:'var(--surface-2)',border:'1px solid var(--border)',
+      borderRadius:'var(--radius-sm)',padding:'11px 13px'}},
+      div({style:{fontSize:13.5,fontWeight:700,color:s.lastError?'var(--danger)':'var(--accent)'}},
+        s.running?'Backing up…':`Last backup: ${bkWhen(s.lastAt)}`),
+      s.lastError?div({style:{fontSize:12,color:'var(--danger)',marginTop:4,lineHeight:1.45}},`Last try failed: ${s.lastError}`):null,
+      div({style:{fontSize:12,color:'var(--muted)',marginTop:4,lineHeight:1.45}},
+        'Encrypted on this phone after each sync. The cloud keeps the latest and one a day for 30 days; it cannot read them. Guest ID photos are never included.')));
+    msgLine();
+    wrap.appendChild(button('Back up now',{'data-bk-now':'1'},async()=>{
+      bkWork('Backing up…');
+      try{ await BK().backupNow(state.data,{force:true}); bk.list=null; bkSay('Backed up.'); }catch(e){bkSay(e.message||String(e),true);}
+    },true));
+    wrap.appendChild(button('Test restore',{'data-bk-open-verify':'1'},()=>{bk.view='verify';bk.msg='';render();}));
+    wrap.appendChild(button('Restore from backup',{'data-bk-open-restore':'1'},()=>{bk.view='restore';bk.msg='';bk.list=null;render();}));
+    wrap.appendChild(button('Save backup file',{'data-bk-file-save':'1'},async()=>{
+      bkWork('Encrypting…');
+      try{
+        const f=await BK().file(state.data);
+        if(navigator.canShare&&navigator.canShare({files:[f]}))await navigator.share({files:[f],title:'StayLog backup'});
+        else{const a=document.createElement('a');a.href=URL.createObjectURL(f);a.download=f.name;a.click();}
+        bkSay('Saved. The file is encrypted with the same passphrase.');
+      }catch(e){ if(e&&e.name==='AbortError')bkSay(''); else bkSay(e.message||String(e),true); }
+    }));
+    wrap.appendChild(button('Change passphrase',{'data-bk-open-change':'1'},()=>{bk.view='change';bk.msg='';render();}));
+    return wrap;
+  };
+  return modal('Encrypted backup',content);
+}
+
 function renderCloudModal(){
   const content=()=>{
     const wrap=div({style:{display:'flex',flexDirection:'column',gap:11}});
@@ -2490,6 +2653,17 @@ function renderCloudModal(){
 
     wrap.appendChild(div({style:{fontSize:12,color:'var(--muted)',lineHeight:1.5}},
       'Syncs on its own a few seconds after any change, and again when you come back online. Guest ID photographs are never uploaded.'));
+
+    // ── Encrypted backup ─────────────────────────────────────────────────────
+    { const b=bkStatus();
+      wrap.appendChild(btn({'data-open-backup':'1',style:{display:'flex',alignItems:'center',gap:11,width:'100%',textAlign:'left',
+        padding:'11px 12px',border:'1px solid var(--border)',borderRadius:'var(--radius-sm)',background:'var(--surface-2)'},
+        onClick:()=>{bk.view='';bk.msg='';bk.list=null;setState({modal:'backup'});}},
+        ico('lock',{style:{fontSize:18,color:'var(--accent)'}}),
+        div({style:{flex:1,minWidth:0}},div({style:{fontSize:13.5,fontWeight:700}},'Encrypted backup'),
+          div({style:{fontSize:12,color:b.lastError?'var(--danger)':'var(--muted)',marginTop:1}},
+            !b.hasKey?'Off · set a passphrase':b.lastError?'Last backup failed — open to see why':`Last backup ${bkWhen(b.lastAt)}`)),
+        ico('chevron-right',{style:{fontSize:16,color:'var(--light)'}}))); }
 
     const restore=btn({className:'btn-ghost',style:{width:'100%'}},
       ico('cloud-download',{style:{marginRight:7,fontSize:16}}),'Replace this phone from the cloud');
@@ -4424,11 +4598,13 @@ function render(){
   else if(state.modal==='sendConfirm'){currentModal=renderSendModal();     document.body.appendChild(currentModal);}
   else if(state.modal==='paidReceipt'){currentModal=renderPaidReceiptModal();document.body.appendChild(currentModal);}
   else if(state.modal==='faceId')   {currentModal=renderFaceIdModal();    document.body.appendChild(currentModal);}
+  else if(state.modal==='backup')   {currentModal=renderBackupModal();    document.body.appendChild(currentModal);}
 }
 
 // ─── Boot ─────────────────────────────────────────────────────────────────────
 try{applyTheme(getTheme());}catch(e){}
 render();
+if(window.StayLogBackup)window.StayLogBackup.onChange(()=>{if(state.loggedIn&&(state.modal==='backup'||state.modal==='cloud'))render();});
 Promise.all([loadDataFromIDB(),loadAuth(),checkFaceId()]).then(([data,auth])=>{
   state.data=data;state.auth=auth;state.loggedIn=false;state._loading=false;
   // Once at every start, so unpaid days made before checkout-day wages (or
@@ -4437,6 +4613,9 @@ Promise.all([loadDataFromIDB(),loadAuth(),checkFaceId()]).then(([data,auth])=>{
   render();
   if(window.StayLogCloud){
     window.StayLogCloud.onChange(()=>{if(state.modal==='cloud'||state.modal==='menu')render();});
+    // A good sync is followed, a little later, by an encrypted backup.
+    if(window.StayLogCloud.onSynced&&window.StayLogBackup)
+      window.StayLogCloud.onSynced(()=>window.StayLogBackup.schedule(()=>state.data));
     // Opening the app is itself a reason to sync: her attendance marks arrive
     // while this phone is doing nothing, and they only become expenses here.
     window.StayLogCloud.restoreSession()

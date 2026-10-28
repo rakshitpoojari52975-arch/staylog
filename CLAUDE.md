@@ -65,6 +65,38 @@ also fetch from Supabase with `cache: 'no-store'` as a second layer.
   in before "Replace this phone from the cloud" hits this brake instead of
   wiping the cloud.
 
+## Encrypted backup (`backup.js`)
+
+- **The full data lives on the phone; the cloud's full copy is one it cannot
+  read.** Cloud sync → **Encrypted backup**: a passphrase (≥ 12 characters,
+  typed twice, not the PIN; the sheet warns it cannot be recovered).
+  PBKDF2-SHA256, 600,000 iterations, random 16-byte salt → AES-256-GCM, a
+  fresh 12-byte IV for every backup. The derived key is kept on the phone as
+  a **non-extractable** CryptoKey in its own IndexedDB database
+  (`staylog_keys`), with a small encrypted check value to test a passphrase
+  offline. The passphrase is never stored, sent or kept in app state.
+- The plaintext is the whole app data as JSON **minus `idProofImage`** (ID
+  photos never leave the phone, even encrypted). `public.backups`
+  (`supabase/backups.sql`, owner-only RLS, default ALL revoked) holds only
+  ciphertext, salt, IV, iterations, app_version, size, created_at: no counts,
+  no names.
+- Runs after each successful sync (`StayLogCloud.onSynced`, debounced 15 s),
+  skipped when nothing changed since a backup made the same day (IST). Keeps
+  the latest plus the newest of each day for 30 days (`planPrune`).
+- **Test restore** decrypts the latest with the passphrase typed now and
+  compares counts per table with the phone ("Backup verified"); changes
+  nothing. **Restore from backup** (latest, a dated one, or a saved file):
+  wrong passphrase → "Wrong passphrase", nothing changed; otherwise it asks,
+  keeps the phone's data aside in IndexedDB (`staylog_before_restore`),
+  carries the phone's own ID photos across by booking id, then replaces, and
+  keeps that passphrase's key for future backups. **Save backup file** shares
+  the same ciphertext as a `.staylog` file. **Change passphrase** checks the
+  current one, stores a new key, makes a fresh backup, and re-encrypts every
+  stored backup; any it cannot rewrite still open with the old passphrase.
+- `notify` alert `backup`: the newest backup older than 3 days (quiet until
+  the first backup exists, or if `backups.sql` has not run). Opens
+  `#open=backup`.
+
 ## Attendance → wage expenses
 
 - The house help taps "I came in today" on `staff.html`. That writes
@@ -230,6 +262,7 @@ also fetch from Supabase with `cache: 'no-store'` as a second layer.
     `round-off.sql` has not run). Never on the day itself, never
     Airbnb or other platforms (the same pair as `paysUsDirectly`). Opens
     `#open=<id>&send=payment`.
+  - `backup`: no encrypted backup in 3 days (see Encrypted backup).
   - `stale`: `sync_status.last_sync_at` older than 2 days (written by
     `push()` after every good sync; no row means no warning). Opens
     `#open=cloud`.
@@ -420,6 +453,7 @@ also fetch from Supabase with `cache: 'no-store'` as a second layer.
     node tests/test_payment.js        # STAYLOG_REAL_UPI=… also searches the repo for your real UPI ID
     node tests/test_faceid.js            # Face ID: setup behind the PIN, unlock, cancel → PIN, off, Reset PIN, no WebAuthn
     node tests/test_new_bookings.js      # ical-sync + notify together: new stays announced once, echoes/blocks/first reads never; the tap
+    node tests/test_backup.js            # encrypted backup: round trip, wrong passphrase, nothing readable sent, key non-extractable, restore, change (+ backups.sql)
     node tests/test_payout.js            # platform bookings: one-tap Mark payout received + Undo; Direct/Booking.com unchanged
     node tests/test_round_off.js         # round off ≤ ₹5: form, Mark paid, receipt, revenue, CSV, sync, notify (+ round-off.sql with STAYLOG_PG)
     node tests/test_balance.js           # under ₹1 is paid: card, Home, stamp, PDF, CSV, requests, notify

@@ -36,8 +36,8 @@ const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { ...CORS, 'Content-Type': 'application/json' } });
 
 // The alert types, each with an on/off in notification_prefs. Missing = on.
-export const ALERTS = ['attendance', 'utensils', 'newBookings', 'arrivals', 'balances', 'stale'] as const;
-const STALE_DAYS = 2;
+export const ALERTS = ['attendance', 'utensils', 'newBookings', 'arrivals', 'balances', 'stale', 'backup'] as const;
+const STALE_DAYS = 2, BACKUP_DAYS = 3;
 // Who pays at the property (as in the app: paysUsDirectly). Others never get a
 // balance alert.
 const PAYS_US = new Set(['Direct', 'Booking.com']);
@@ -222,6 +222,18 @@ export async function dailyPushes(owner: string, d: ReturnType<typeof db>, nowMs
       title: 'StayLog has not synced',
       body: `Last sync ${days} days ago, so these reminders may be out of date. Open the app to sync.`,
       url: './#open=cloud', tag: 'stale' } });
+  }
+
+  // The encrypted backup: none in 3 days. Like the sync warning, quiet until
+  // the first backup exists (before then there is nothing to have stopped),
+  // and quiet if backups.sql has not run.
+  const last = (await d.get(`backups?owner_id=eq.${owner}&select=created_at&order=created_at.desc&limit=1`).catch(() => []) || [])[0];
+  if (last && Date.parse(last.created_at) < nowMs - BACKUP_DAYS * 86400e3) {
+    const days = Math.floor((nowMs - Date.parse(last.created_at)) / 86400e3);
+    out.push({ alert: 'backup', key: `backup:${today}`, push: {
+      title: 'No backup for ' + days + ' days',
+      body: 'The last encrypted backup was ' + days + ' days ago. Open StayLog with a connection to back up.',
+      url: './#open=backup', tag: 'backup' } });
   }
   return out;
 }

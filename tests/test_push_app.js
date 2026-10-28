@@ -125,11 +125,11 @@ console.log('\n— turning it on from the Home Screen app —');
   ok('the subscription is stored in the cloud, owner and keys included', row&&row.owner_id==='owner-1'&&row.p256dh&&row.auth&&row.device==='iPhone', row);
   t=await page.locator('[data-push]').innerText();
   ok('status: on for this iPhone', /On for this iPhone/.test(t), t);
-  ok('every alert has a toggle, all on by default', await page.locator('[data-push-pref]').count()===6
-     &&(await page.locator('[data-push-pref][aria-checked="true"]').count())===6);
+  ok('every alert has a toggle, all on by default', await page.locator('[data-push-pref]').count()===7
+     &&(await page.locator('[data-push-pref][aria-checked="true"]').count())===7);
   await page.click('[data-push-pref="arrivals"]'); await page.waitForTimeout(150);
   ok('turning one off saves just that one off', JSON.stringify((await S(page)).prefs)===
-     JSON.stringify({attendance:true,utensils:true,newBookings:true,arrivals:false,balances:true,stale:true}), (await S(page)).prefs);
+     JSON.stringify({attendance:true,utensils:true,newBookings:true,arrivals:false,balances:true,stale:true,backup:true}), (await S(page)).prefs);
   ok('and the toggle shows it', await page.locator('[data-push-pref="arrivals"]').getAttribute('aria-checked')==='false');
   await page.click('[data-push-test]'); await page.waitForTimeout(150);
   const inv=(await S(page)).invoked;

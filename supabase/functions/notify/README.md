@@ -7,7 +7,7 @@ Sends the owner's iPhone push notifications:
   ("New booking": the `ical-sync` function hands it over, no webhook);
 - at 9:00 AM IST: guests arriving tomorrow, a balance due at check-out
   tomorrow (Direct and Booking.com only), and a warning if the app has not
-  synced for 2 days (a cron job);
+  synced for 2 days, or has made no encrypted backup for 3 (a cron job);
 - a test, when the owner taps **Send test** in the app's ⋯ menu.
 
 They are reminders only. The app works the same whether or not any of this is
