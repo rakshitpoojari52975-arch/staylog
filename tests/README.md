@@ -27,6 +27,7 @@ kept outside it and was lost when the machine running them was reset.
                                       # payment-details.sql after setup.sql; skips without one
     node tests/test_faceid.js         # Face ID unlock: PIN-gated setup and off, cancel falls back, Reset PIN clears it
     node tests/test_new_bookings.js   # "New booking" pushes: ical-sync and notify run together; once per stay; the tap
+    node tests/test_backup.js         # encrypted backup: real WebCrypto; round trip, wrong passphrase, no plaintext sent, restore, change passphrase
     node tests/test_payout.js         # Airbnb and other platforms: one-tap "Mark payout received", Undo; no receipt or message
     node tests/test_round_off.js      # round off up to ₹5 on Direct/Booking.com: form, Mark paid, receipt, revenue, CSV, sync, notify
     node tests/test_balance.js        # under ₹1 is paid: one balanceDue() everywhere, the notify alert too

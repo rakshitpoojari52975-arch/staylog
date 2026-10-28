@@ -882,6 +882,7 @@
       // push.sql has run the table is missing; that is not a sync failure.
       await c.from('sync_status').upsert({ owner_id: owner, last_sync_at: new Date().toISOString() },
         { onConflict: 'owner_id' }).then(() => {}, () => {});
+      synced.forEach(fn => { try { fn(); } catch {} });   // the encrypted backup follows a good sync
     } catch (err) {
       lastError = err.message || String(err);
       throw err;
@@ -972,7 +973,7 @@
   }
 
   // ── Scheduling ─────────────────────────────────────────────────────────────
-  const listeners = [];
+  const listeners = [], synced = [];
   function notify() { listeners.forEach(fn => { try { fn(status()); } catch {} }); }
 
   function status() {
@@ -1032,6 +1033,8 @@
     pushSave, pushRemove, pushPrefs, savePushPrefs, pushTest,
     _planIcal: planIcal, _icalBookingId: icalBookingId, _coverageGaps: coverageGaps,   // for the tests
     onChange: fn => listeners.push(fn),
+    onSynced: fn => synced.push(fn),       // after each successful push
+    client,                                // for backup.js; same session, same no-store fetch
     staffEmail: u => `${String(u || '').trim().toLowerCase()}@${CFG.staffEmailDomain}`,
   };
 })();
