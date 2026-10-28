@@ -42,10 +42,11 @@ window.supabase={createClient:()=>({
 
 const bk=i=>({id:'bk'+i,propertyId:'p1',guestName:'Guest '+i,checkIn:'2026-09-0'+(1+i%9),checkOut:'2026-09-1'+(i%9),
   amount:3000,status:'checkedout',platform:'direct'});
-const ex=i=>({id:'ex'+i,propertyId:'p1',description:'Supplies '+i,date:'2026-10-01',amount:100,category:'supplies',
-  paid:true,notes:'',staffId:'',loanId:'',loanDeduction:0});
+// Staff payouts: since the minimal cloud, the only expenses that have a cloud copy.
+const ex=i=>({id:'ex'+i,propertyId:'p1',description:'Wage '+i,date:'2026-10-01',amount:100,category:'staff',
+  paid:true,notes:'',staffId:'s1',loanId:'',loanDeduction:0});
 const range=n=>Array.from({length:n},(_,i)=>i+1);
-const SEED=(nb,ne)=>({properties:[{id:'p1',name:'Raaya Vasyam'}],staff:[],loans:[],attendance:[],
+const SEED=(nb,ne)=>({properties:[{id:'p1',name:'Raaya Vasyam'}],staff:[{id:'s1',name:'Laxmi'}],loans:[],attendance:[],
   bookings:range(nb).map(bk),expenses:range(ne).map(ex)});
 
 (async()=>{
@@ -141,9 +142,8 @@ console.log('\n— a new phone, empty, signed in —');
 { const s=SEED(30,30);
   const {ctx,page,dialogs}=await open({properties:[],bookings:[],expenses:[],staff:[],loans:[],attendance:[]},s);
   const r=await push(page), v=await server(page);
-  ok('wiping the cloud is stopped', !r.ok&&v.live.bookings===30&&v.live.expenses===30&&v.live.properties===1, v.live);
-  ok('and points at "Replace this phone from the cloud"',
-     /Replace this phone from the cloud/.test(dialogs[0]||''), dialogs[0]);
+  ok('it takes nothing out of the cloud', v.live.bookings===30&&v.live.expenses===30&&v.live.properties===1, v.live);
+  ok('without even asking: an empty phone never tombstones', dialogs.length===0&&tomb(v.writes)===0, {dialogs,w:v.writes});
   await ctx.close(); }
 
 console.log('\n— asked once, not on every background sync —');

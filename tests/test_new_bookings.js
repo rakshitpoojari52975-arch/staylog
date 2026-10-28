@@ -30,7 +30,8 @@ async function decrypt(dev,body){
   return JSON.parse(new TextDecoder().decode(pt.slice(0,-1)));
 }
 const ics=evs=>['BEGIN:VCALENDAR','VERSION:2.0',...evs.flatMap(e=>['BEGIN:VEVENT',`UID:${e.uid}`,
-  `DTSTART;VALUE=DATE:${e.in.replace(/-/g,'')}`,`DTEND;VALUE=DATE:${e.out.replace(/-/g,'')}`,`SUMMARY:${e.summary}`,'END:VEVENT']),
+  `DTSTART;VALUE=DATE:${e.in.replace(/-/g,'')}`,`DTEND;VALUE=DATE:${e.out.replace(/-/g,'')}`,`SUMMARY:${e.summary}`,
+  ...(e.desc?[`DESCRIPTION:${e.desc}`]:[]),'END:VEVENT']),
   'END:VCALENDAR'].join('\r\n');
 const RES=(uid,i,o)=>({uid,in:i,out:o,summary:'Reserved'});               // an Airbnb guest
 const BLK=(uid,i,o)=>({uid,in:i,out:o,summary:'Airbnb (Not available)'});  // an Airbnb block
@@ -186,6 +187,17 @@ console.log('\n— once, and only when wanted —');
     body:JSON.stringify({job:'new-bookings',events:[{feed_id:'fA',uid:'not-in-the-database'}]})}),ENV,X.fetch,NOW);
   ok('and an event the database does not hold sends nothing', r2.status===200&&X.pushes.length===0); }
 ok('two months: "30 Nov → 2 Dec"', NOTIFY.stayDates('2026-11-30','2026-12-02')==='30 Nov → 2 Dec');
+
+console.log('\n— the reservation text leaves the cloud once imported —');
+{ const X=make(); await sync(X);
+  const D1='Reservation URL: https://www.airbnb.example/hosting/reservations/details/HMABC\\nPhone Number (Last 4 Digits): 4471';
+  X.feeds[FEED_A].push({...RES('a-d1','2026-11-24','2026-11-26'),desc:D1},{...RES('a-d2','2026-12-04','2026-12-06'),desc:D1});
+  await sync(X);
+  ok('until the phone imports it, the event keeps its text (the phone needs it)', X.t.ical_events.filter(e=>/^a-d/.test(e.uid)).every(e=>/4471/.test(e.description||'')));
+  X.t.ical_events.find(e=>e.uid==='a-d1').imported_booking_id='ics_x';      // the phone's drain stamps it
+  await sync(X);
+  ok('once imported, the next read stores it without the link and phone digits', X.t.ical_events.find(e=>e.uid==='a-d1').description===null);
+  ok('one not yet imported keeps it', /4471/.test(X.t.ical_events.find(e=>e.uid==='a-d2').description||'')); }
 
 console.log('\n— the app —');
 const { chromium } = require('playwright');

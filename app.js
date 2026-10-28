@@ -6,7 +6,7 @@
 // ─── Build ────────────────────────────────────────────────────────────────────
 // Bump BOTH of these together. This date sat at 28 Sept through a dozen
 // releases and was read, reasonably, as proof the upload had not landed.
-const APP_VERSION='v50', APP_BUILT='28 Oct 2026';
+const APP_VERSION='v51', APP_BUILT='28 Oct 2026';
 // The CACHE_NAME of the sw.js released with this app.js. Every release bumps
 // APP_VERSION and CACHE_NAME together, so one is derived from the other rather
 // than being a fourth thing to forget; the tests fail if they ever disagree.
@@ -124,7 +124,7 @@ function wageFor(staff,date,bookings,dates){
 window.STAYLOG_WAGE_FOR=wageFor;
 const withCheckoutTag=(desc,on)=>String(desc||'').replace(/ · checkout day$/,'')+(on?CHECKOUT_TAG:'');
 // A wage expense made from her mark. The id is the durable sign: fromAttendance
-// is a phone-side field and does not survive "Replace this phone from the cloud".
+// is a phone-side field; it travels in the encrypted backup, not in the cloud mirror.
 const isAttendanceWage=e=>e.category==='staff'&&(!!e.fromAttendance||/^wag_/.test(String(e.id||'')));
 // "Still at the amount the app set". autoAmount records it (synced as
 // auto_amount). A day made before it existed was priced at the daily wage —
@@ -865,7 +865,7 @@ function notificationsSection(){
 // A tap arrives as ./#open=<booking id>&send=arrival|payment, #open=cloud or
 // #open=menu — in the address when the app starts, or from the service worker
 // when it is already open. It waits behind the PIN.
-let pendingOpen=null;
+let pendingOpen=null, privacyToastShown=false;
 function parseOpen(hash){
   const q=new URLSearchParams(String(hash||'').replace(/^#/,''));
   const open=q.get('open');
@@ -1514,6 +1514,9 @@ const balanceDue = b => {
   const d = r2(Number(b.totalAmount||0)-Number(b.paid||0)-roundOffOf(b));
   return d < PAID_UNDER ? 0 : d;
 };
+// What cloud.js mirrors for the checkout-tomorrow alert instead of the amounts:
+// the balance, by this rule, for guests who pay us; nothing for the rest.
+window.STAYLOG_BALANCE_DUE = b => paysUsDirectly(b) ? balanceDue(b) : null;
 // Payment details go out only when all of these hold: the guest pays us, the
 // booking is live, something is actually owed, and there is something to send.
 const hasPaymentDetails = p => !!(p && (p.upiId || p.bankDetails));
@@ -2515,6 +2518,16 @@ function renderCloudModal(){
         `Run ${s.schemaBehind} in the Supabase SQL editor. Until then the newest wage fields are kept on this phone only, and sync once it has run.`):null
     ));
 
+    // ── The first minimal sync: said once ────────────────────────────────────
+    if(s.privacyNote&&s.privacyNote.length){
+      const n=s.privacyNote.reduce((t,x)=>t+x.count,0);
+      wrap.appendChild(div({'data-privacy-note':'1',style:{background:'var(--accent-light)',border:'1px solid var(--accent-line)',
+        borderRadius:'var(--radius-sm)',padding:'11px 13px',fontSize:12.5,lineHeight:1.55,color:'var(--text-mid)'}},
+        div({style:{fontSize:13.5,fontWeight:700,color:'var(--accent)',marginBottom:3}},'Removing private details from the cloud'),
+        `${n} row${n===1?'':'s'} (${s.privacyNote.map(x=>`${x.count} ${x.table.replace('_',' ')}`).join(', ')}) no longer have a cloud copy, `+
+        'and guest names, phone numbers, amounts and notes are no longer sent. Nothing is deleted from this phone, and all of it is in your encrypted backup.'));
+    }
+
     // ── Attendance ───────────────────────────────────────────────────────────
     // Always shown, never only on trouble. A mark that does not become an
     // expense used to be silent, which left no way to tell a sync that had
@@ -2652,7 +2665,7 @@ function renderCloudModal(){
     wrap.appendChild(sync);
 
     wrap.appendChild(div({style:{fontSize:12,color:'var(--muted)',lineHeight:1.5}},
-      'Syncs on its own a few seconds after any change, and again when you come back online. Guest ID photographs are never uploaded.'));
+      'Syncs on its own a few seconds after any change, and again when you come back online. Only dates, guest counts, property names and Laxmi\u2019s wages go up; names, phone numbers, amounts and notes stay on this phone and in the encrypted backup.'));
 
     // ── Encrypted backup ─────────────────────────────────────────────────────
     { const b=bkStatus();
@@ -2665,29 +2678,10 @@ function renderCloudModal(){
             !b.hasKey?'Off · set a passphrase':b.lastError?'Last backup failed — open to see why':`Last backup ${bkWhen(b.lastAt)}`)),
         ico('chevron-right',{style:{fontSize:16,color:'var(--light)'}}))); }
 
-    const restore=btn({className:'btn-ghost',style:{width:'100%'}},
-      ico('cloud-download',{style:{marginRight:7,fontSize:16}}),'Replace this phone from the cloud');
-    restore.addEventListener('click',async()=>{
-      const st=cloudStatus();
-      const warn=st.dirty
-        ? 'This phone has changes that have NOT been synced. Replacing now throws them away.\n\nContinue?'
-        : 'Replace everything on this phone with the cloud copy?\n\nUse this on a new device, not to undo a mistake.';
-      if(!confirm(warn))return;
-      restore.disabled=true;restore.textContent='Fetching…';
-      try{
-        const fresh=await window.StayLogCloud.pull();
-        // ID photographs never left this phone, so carry them across by id
-        const imgs={};state.data.bookings.forEach(b=>{if(b.idProofImage)imgs[b.id]=b.idProofImage;});
-        fresh.bookings.forEach(b=>{if(imgs[b.id])b.idProofImage=imgs[b.id];});
-        state.data=normalizeData(fresh);repriceWages(state.data);saveData(state.data);
-        closeModal();
-        alert(`Restored ${fresh.bookings.length} bookings, ${fresh.expenses.length} expenses and ${fresh.loans.length} loans.`);
-      }catch(err){
-        restore.disabled=false;restore.textContent='Replace this phone from the cloud';
-        alert('Could not fetch: '+(err.message||err));
-      }
-    });
-    wrap.appendChild(restore);
+    // No "replace this phone from the cloud": the cloud holds only what Laxmi's
+    // page and the reminders need, so a pull would wipe the phone.
+    wrap.appendChild(div({'data-new-phone':'1',style:{fontSize:12,color:'var(--muted)',lineHeight:1.5}},
+      'New phone? Sign in, then Encrypted backup → Restore from backup. The cloud itself keeps only what Laxmi\u2019s page and the reminders need.'));
 
     wrap.appendChild(btn({className:'btn-danger',style:{width:'100%'},onClick:async()=>{
       if(!confirm('Sign out of the cloud? Your data stays on this phone.'))return;
@@ -4612,7 +4606,12 @@ Promise.all([loadDataFromIDB(),loadAuth(),checkFaceId()]).then(([data,auth])=>{
   if(repriceWages(state.data))saveData(state.data);
   render();
   if(window.StayLogCloud){
-    window.StayLogCloud.onChange(()=>{if(state.modal==='cloud'||state.modal==='menu')render();});
+    window.StayLogCloud.onChange(st=>{
+      if(state.modal==='cloud'||state.modal==='menu')render();
+      // The first minimal sync says once what it took out of the cloud.
+      if(st&&st.privacyNote&&!privacyToastShown&&state.loggedIn){privacyToastShown=true;
+        showToast('Removing private details from the cloud','Why',()=>setState({modal:'cloud'}));}
+    });
     // A good sync is followed, a little later, by an encrypted backup.
     if(window.StayLogCloud.onSynced&&window.StayLogBackup)
       window.StayLogCloud.onSynced(()=>window.StayLogBackup.schedule(()=>state.data));

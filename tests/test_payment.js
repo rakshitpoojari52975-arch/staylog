@@ -192,12 +192,12 @@ console.log('\n— property settings and sync —');
   ok('a good one is saved, trimmed', (await page.evaluate(()=>state.data.properties[0].upiId))===FAKE.upi);
   await page.evaluate(async()=>{await window.StayLogCloud.restoreSession();await window.StayLogCloud.push(state.data);});
   const row=await page.evaluate(()=>(window.__server.upserts.properties||[]).slice(-1)[0]);
-  ok('they sync with the property, like the Wi-Fi', row&&row.upi_id===FAKE.upi&&row.upi_payee===FAKE.payee&&row.bank_details===FAKE.bank&&'upi_qr' in row, row);
-  await page.evaluate(()=>{window.__server.oldSchema=true;window.__server.upserts={};});
+  // The minimal cloud: payment details are property data on the phone and in the
+  // encrypted backup only. The cloud gets the property's id and name.
+  ok('they never go to the cloud: the property row is its id and name only', row&&JSON.stringify(Object.keys(row).sort())==='["id","name","owner_id"]'
+     &&!JSON.stringify(await page.evaluate(()=>window.__server.upserts)).includes(FAKE.upi), row);
   const r=await page.evaluate(async()=>{try{await window.StayLogCloud.push(state.data);return'ok';}catch(e){return e.message;}});
-  const st=await page.evaluate(()=>({s:window.StayLogCloud.status().schemaBehind,p:window.__server.upserts.properties||[]}));
-  ok('before payment-details.sql has run, the sync still works without them', r==='ok'&&st.p.length>0&&!st.p.some(x=>'upi_id' in x), {r,st});
-  ok('and the cloud panel names the script', /supabase\/payment-details\.sql/.test(st.s), st.s);
+  ok('and the sync asks for no script about them', r==='ok'&&(await page.evaluate(()=>window.StayLogCloud.status().schemaBehind))==='');
   ok('the phone keeps them meanwhile', (await page.evaluate(()=>state.data.properties[0].upiId))===FAKE.upi);
   ok('no page errors', errs.length===0, errs);
   await ctx.close(); }

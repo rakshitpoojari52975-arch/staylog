@@ -193,25 +193,36 @@ export async function dailyPushes(owner: string, d: ReturnType<typeof db>, nowMs
   const out: { key: string; alert: string; push: Push }[] = [];
   const props: { id: string; name: string }[] = await d.get(`properties?owner_id=eq.${owner}&deleted_at=is.null&select=id,name`) || [];
   const propName = (id: string) => (props.find(p => p.id === id) || { name: '' }).name;
-  const cols = 'id,guest_name,guests,property_id,check_in,check_out,source,total_amount,paid,status';
+  // Only the columns the minimal cloud keeps: no guest names, no amounts.
+  const cols = 'id,guests,property_id,check_in,check_out,status';
+  const stay = (b: Record<string, any>) => {
+    const g = Number(b.guests) || 1, n = nightsBetween(b.check_in, b.check_out);
+    return [`${g} guest${g > 1 ? 's' : ''}`, n > 0 ? `${n} night${n === 1 ? '' : 's'}` : '', propName(b.property_id)].filter(Boolean).join(' · ');
+  };
 
   const arriving = await d.get(`bookings?owner_id=eq.${owner}&deleted_at=is.null&status=neq.cancelled&check_in=eq.${tomorrow}&select=${cols}`) || [];
   for (const b of arriving) out.push({ alert: 'arrivals', key: `arrival:${b.id}:${b.check_in}`, push: {
-    title: `Arriving tomorrow: ${b.guest_name}`,
-    body: `${[propName(b.property_id), `${b.guests || 1} guest${(b.guests || 1) > 1 ? 's' : ''}`].filter(Boolean).join(' · ')}. Tap to send the arrival message.`,
+    title: 'Guest arriving tomorrow',
+    body: `${stay(b)}. Tap to send the arrival message.`,
     url: `./#open=${encodeURIComponent(b.id)}&send=arrival`, tag: `arrival-${b.id}` } });
 
-  // The day before check-out only — never on the day itself; Direct and
-  // Booking.com only; and only with money actually owed.
-  // round_off arrives with supabase/round-off.sql; until it has run, ask without it.
-  const leavingQ = `bookings?owner_id=eq.${owner}&deleted_at=is.null&status=neq.cancelled&check_out=eq.${tomorrow}&select=${cols}`;
-  const leaving = await d.get(leavingQ + ',round_off').catch(() => d.get(leavingQ)) || [];
+  // The day before check-out only — never on the day itself — and only with
+  // money actually owed. The phone mirrors balance_due, by its own rule and
+  // only for guests who pay us (Direct, Booking.com); it is empty for every
+  // other platform. A database from before minimal-cloud.sql has no
+  // balance_due yet: then, and only then, the old amounts are used.
+  const leavingQ = `bookings?owner_id=eq.${owner}&deleted_at=is.null&status=neq.cancelled&check_out=eq.${tomorrow}&select=`;
+  const leaving = await d.get(leavingQ + cols + ',balance_due')
+    .catch(() => d.get(leavingQ + cols + ',source,total_amount,paid,round_off').catch(() => d.get(leavingQ + cols + ',source,total_amount,paid')))
+    || [];
   for (const b of leaving) {
-    const due = balanceDue(b);
-    if (!PAYS_US.has((String(b.source || '').trim() || 'Direct')) || !(due > 0)) continue;
+    const due = 'balance_due' in b
+      ? (b.balance_due == null ? 0 : Number(b.balance_due))
+      : ('total_amount' in b && PAYS_US.has(String(b.source || '').trim() || 'Direct') ? balanceDue(b) : 0);
+    if (!(due > 0)) continue;
     out.push({ alert: 'balances', key: `balance:${b.id}:${b.check_out}`, push: {
       title: `Balance due at check-out tomorrow`,
-      body: `${b.guest_name} owes ${rupees(due)}${propName(b.property_id) ? ' · ' + propName(b.property_id) : ''}. Tap to send the payment request.`,
+      body: `${rupees(due)} to collect${propName(b.property_id) ? ' · ' + propName(b.property_id) : ''}. Tap to send the payment request.`,
       url: `./#open=${encodeURIComponent(b.id)}&send=payment`, tag: `balance-${b.id}` } });
   }
 

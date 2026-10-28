@@ -131,8 +131,9 @@ console.log('\n— 9 AM: guests arriving tomorrow —');
     B({id:'can',check_in:'2026-10-21',check_out:'2026-10-23',status:'cancelled'}),
     B({id:'del',check_in:'2026-10-21',check_out:'2026-10-23',status:'confirmed',deleted_at:'2026-10-19T00:00:00Z'})]});
   await F.handle(post({job:'daily'},CRON),ENV,W.fetch,NOW);
-  const ms=(await pushesFor(W,iphone)).filter(m=>/^Arriving/.test(m.title));
-  ok('one for the guest arriving tomorrow', ms.length===1&&ms[0].title==='Arriving tomorrow: Anita Rao', ms);
+  const ms=(await pushesFor(W,iphone)).filter(m=>/arriving tomorrow/i.test(m.title));
+  ok('one for the guest arriving tomorrow', ms.length===1&&ms[0].title==='Guest arriving tomorrow', ms);
+  ok('"2 guests · 3 nights · Raaya Vasyam", and no guest name', ms[0]&&ms[0].body.startsWith('2 guests · 3 nights · Raaya Vasyam')&&!/Anita/.test(JSON.stringify(ms)), ms[0]);
   ok('opening that booking, ready to send the arrival message', ms[0]&&ms[0].url==='./#open=arr&send=arrival', ms[0]);
   ok('none for today, the day after, cancelled or deleted stays', ms.length===1); }
 
@@ -152,7 +153,7 @@ console.log('\n— 9 AM: a balance due at check-out tomorrow —');
   const urls=ms.map(m=>m.url).sort();
   ok('it fires for a Direct booking leaving tomorrow with a balance', urls.includes('./#open=direct&send=payment'), urls);
   ok('and for a Booking.com one', urls.includes('./#open=bdc&send=payment'), urls);
-  ok('stating the exact amount', ms.some(m=>m.body.startsWith('Anita Rao owes ₹4,000')), ms.map(m=>m.body));
+  ok('stating the exact amount, without the guest\'s name', ms.some(m=>m.body.startsWith('₹4,000 to collect · Raaya Vasyam'))&&!ms.some(m=>/Anita|Rahul/.test(m.body)), ms.map(m=>m.body));
   ok('never for Airbnb or other platforms', !urls.some(u=>/air|mmt/.test(u)), urls);
   ok('never for a zero or overpaid balance', !urls.some(u=>/zero|over/.test(u)), urls);
   ok('never on the day of check-out itself', !urls.some(u=>/leavingToday/.test(u)), urls);
@@ -171,7 +172,22 @@ console.log('\n— 9 AM: a balance due at check-out tomorrow —');
   const urls=ms.map(m=>m.url);
   ok('no alert for ₹4,999.50 with ₹4,999 paid, ₹0.99, or paise overpaid', !urls.some(u=>/half|p99|overp/.test(u)), urls);
   ok('₹1.00 and ₹250.50 still alert', urls.includes('./#open=one&send=payment')&&urls.includes('./#open=real&send=payment'), urls);
-  ok('stating ₹250.50 with its paise', ms.some(m=>/owes ₹250\.50/.test(m.body)), ms.map(m=>m.body)); }
+  ok('stating ₹250.50 with its paise', ms.some(m=>/^₹250\.50 to collect/.test(m.body)), ms.map(m=>m.body)); }
+
+console.log('\n— from the minimal cloud: no names, no amounts, only balance_due —');
+{ const M=o=>Object.assign({id:'m',owner_id:OWNER,guests:2,property_id:'p1',check_in:'2026-10-18',check_out:'2026-10-21',
+    status:'checkedin',deleted_at:null,balance_due:null},o);
+  const W=world({...base(),bookings:[M({id:'owes',balance_due:4000}),M({id:'paise',balance_due:250.5}),M({id:'settled',balance_due:0}),
+    M({id:'air',balance_due:null}),M({id:'today',check_out:'2026-10-20',balance_due:900}),M({id:'can',status:'cancelled',balance_due:500}),
+    M({id:'arr',check_in:'2026-10-21',check_out:'2026-10-24',guests:3})]});
+  await F.handle(post({job:'daily'},CRON),ENV,W.fetch,NOW);
+  const ms=await pushesFor(W,iphone), bal=ms.filter(m=>/^Balance/.test(m.title)).map(m=>m.url).sort();
+  ok('the balance alert fires from balance_due alone', JSON.stringify(bal)===JSON.stringify(['./#open=owes&send=payment','./#open=paise&send=payment']), bal);
+  ok('a zero or empty balance_due (paid, or a platform) never alerts', !bal.some(u=>/settled|air/.test(u)));
+  ok('not on check-out day, not when cancelled', !bal.some(u=>/today|can/.test(u)));
+  const a=ms.find(m=>/arriving/i.test(m.title));
+  ok('the arrival reads "Guest arriving tomorrow · 3 guests · 3 nights · Raaya Vasyam"', a&&a.title==='Guest arriving tomorrow'
+     &&a.body.startsWith('3 guests · 3 nights · Raaya Vasyam')&&a.url==='./#open=arr&send=arrival', a); }
 
 { // the evening before is still "tomorrow" in IST: 20 Oct 19:00 UTC is 21 Oct 00:30 IST
   const W=world({...base(),bookings:[B({id:'d21',check_out:'2026-10-21'}),B({id:'d22',check_out:'2026-10-22'})]});
@@ -197,7 +213,7 @@ console.log('\n— once, and only when wanted —');
     notification_prefs:[{owner_id:OWNER,prefs:{arrivals:false}}]});
   const r=await (await F.handle(post({job:'daily'},CRON),ENV,W.fetch,NOW)).json();
   const ms=await pushesFor(W,iphone);
-  ok('an alert turned off is not sent', !ms.some(m=>/^Arriving/.test(m.title))&&r.report.some(x=>x.skipped==='turned off'), r.report);
+  ok('an alert turned off is not sent', !ms.some(m=>/arriving/i.test(m.title))&&r.report.some(x=>x.skipped==='turned off'), r.report);
   ok('the others still are', ms.some(m=>/^Balance/.test(m.title))); }
 { const W=world({...base(),bookings:[B({id:'arr',check_in:'2026-10-21',status:'confirmed'})]});
   W.gone.add(iphone.row.endpoint);

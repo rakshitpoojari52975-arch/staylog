@@ -20,7 +20,6 @@ with marks as (
 select
   m.date,
   s.name,
-  s.daily_wage,
   m.expense_id                      as ticked_off_as,
   e.id                              as expense_found,
   e.amount,
@@ -39,11 +38,9 @@ select
     when m.expense_id is not null and e.id is null
       then 'Ticked off, but that expense is not in the cloud — either it has not synced yet, '
            || 'or you deleted it afterwards. Both are fine; it will not come back.'
-    when s.daily_wage is null or s.daily_wage <= 0
-      then 'No daily wage set for ' || s.name || '. The mark is held on purpose — set the daily '
-           || 'wage in the app (Staff -> tap the name -> Daily wage).'
     else 'Not converted yet. Open StayLog, menu -> Cloud sync -> Check now, and read the '
-         || 'Attendance line underneath.'
+         || 'Attendance line underneath. If it says held, set her daily wage in the app '
+         || '(Staff -> tap the name -> Daily wage): rates live on the phone, not in the cloud.'
   end as verdict
 from marks m
 join public.staff s on s.id = m.staff_id

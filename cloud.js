@@ -33,6 +33,11 @@
   let held = 0;           // marks waiting on a daily wage being set
   let attError = '';      // attendance trouble, kept apart from sync trouble
   let brake = null;       // what the last stopped push would have deleted
+  // Rows this phone keeps but the cloud no longer mirrors (the first minimal
+  // sync takes them out): said once in the cloud panel, never asked about.
+  const EXPLAINED = 'staylog_minimal_explained';
+  const explained = () => { try { return !!localStorage.getItem(EXPLAINED); } catch { return false; } };
+  let privacyNote = null;
   let declinedSig = '';   // that same set of deletions, already refused once
   // What the last drain actually did. Without this the only way to find out
   // why a mark did not become an expense is to read the database by hand,
@@ -67,132 +72,73 @@
   const dat = v => (v ? String(v).slice(0, 10) : null);
   const ID_OK = /^[A-Za-z0-9_-]{1,64}$/;   // ids the app generates; anything else is not ours
 
-  // ── Field mapping ──────────────────────────────────────────────────────────
-  // Written out by hand in both directions. It is longer than a clever
-  // converter and it is the file you read to answer "what of mine is up there".
-  const MAP = {
-    properties: {
-      up: (p, owner) => ({
-        id: p.id, owner_id: owner, name: p.name, location: str(p.location),
-        rooms: num(p.rooms), price_per_night: num(p.pricePerNight),
-        description: str(p.description), maps_link: str(p.mapsLink),
-        wifi_name: str(p.wifiName), wifi_password: str(p.wifiPassword),
-        signature: str(p.signature), signature_ratio: num(p.signatureRatio),
-        // added by payment-details.sql. Property data, like the Wi-Fi: never in code.
-        upi_id: str(p.upiId), upi_payee: str(p.upiPayee), upi_qr: str(p.upiQr),
-        bank_details: str(p.bankDetails),
-      }),
-      down: r => ({
-        id: r.id, name: r.name, location: r.location || '', rooms: r.rooms ?? '',
-        pricePerNight: r.price_per_night ?? '', description: r.description || '',
-        mapsLink: r.maps_link || '', wifiName: r.wifi_name || '', wifiPassword: r.wifi_password || '',
-        upiId: r.upi_id || '', upiPayee: r.upi_payee || '', upiQr: r.upi_qr || '', bankDetails: r.bank_details || '',
-        signature: r.signature || '', signatureRatio: r.signature_ratio ?? '',
-      }),
-    },
-    staff: {
-      up: (s, owner) => ({
-        id: s.id, owner_id: owner, name: s.name, role: str(s.role), phone: str(s.phone),
-        monthly_salary: num(s.monthlySalary), daily_wage: num(s.dailyWage),
-        checkout_wage: num(s.checkoutWage),     // added by checkout-wage.sql
-        utensil_rate: num(s.utensilRate),       // added by utensils.sql
-        active: s.active !== false, joined_on: dat(s.joinedOn),
-      }),
-      down: r => ({
-        id: r.id, name: r.name, role: r.role || '', phone: r.phone || '',
-        monthlySalary: r.monthly_salary ?? '', dailyWage: r.daily_wage ?? '',
-        checkoutWage: r.checkout_wage ?? '', utensilRate: r.utensil_rate ?? '',
-        active: r.active, joinedOn: r.joined_on || '',
-      }),
-    },
-    bookings: {
-      up: (b, owner) => ({
-        id: b.id, owner_id: owner, property_id: str(b.propertyId), guest_name: b.guestName,
-        phone: str(b.phone), check_in: dat(b.checkIn), check_out: dat(b.checkOut),
-        guests: num(b.guests) || 1, total_amount: num(b.totalAmount) || 0, paid: num(b.paid) || 0,
-        source: str(b.source) || 'Direct', status: b.status || 'confirmed', notes: str(b.notes),
-        id_proof_type: str(b.idProofType), id_proof_number: str(b.idProofNumber),
-        // b.idProofImage is intentionally absent — see the header
-        msg_sent: b.msgSent || (b.confirmSentOn ? { confirm: b.confirmSentOn } : {}),
-        receipt_no: str(b.receiptNo), receipt_on: dat(b.receiptOn),
-        round_off: num(b.roundOff) || 0,       // signed; 0 for platforms that collect payment
-      }),
-      down: r => ({
-        id: r.id, propertyId: r.property_id || '', guestName: r.guest_name, phone: r.phone || '',
-        checkIn: r.check_in, checkOut: r.check_out, guests: r.guests ?? 1,
-        totalAmount: r.total_amount ?? '', paid: r.paid ?? '', source: r.source || 'Direct',
-        status: r.status, notes: r.notes || '',
-        idProofType: r.id_proof_type || '', idProofNumber: r.id_proof_number || '',
-        receiptNo: r.receipt_no || '', receiptOn: r.receipt_on || '',
-        roundOff: Number(r.round_off) || 0,
-        idProofImage: '',                       // refilled from the local copy on restore
-        msgSent: r.msg_sent || {},
-      }),
-    },
-    loans: {
-      up: (l, owner) => ({
-        id: l.id, owner_id: owner, staff_id: l.staffId, property_id: str(l.propertyId),
-        principal: num(l.principal), installment_amount: num(l.installmentAmount),
-        disbursed_on: dat(l.disbursedOn), first_due_date: dat(l.firstDueDate),
-        status: l.status || 'active', notes: str(l.notes), written_off_on: dat(l.writtenOffOn),
-      }),
-      down: r => ({
-        id: r.id, staffId: r.staff_id, propertyId: r.property_id || '',
-        principal: r.principal, installmentAmount: r.installment_amount,
-        disbursedOn: r.disbursed_on, firstDueDate: r.first_due_date || '',
-        status: r.status, notes: r.notes || '', writtenOffOn: r.written_off_on || '',
-        repayments: [],                         // filled from loan_repayments
-      }),
-    },
-    loan_repayments: {
-      up: (r, owner) => ({
-        id: r.id, owner_id: owner, loan_id: r.loanId, date: dat(r.date),
-        amount: num(r.amount), mode: r.mode || 'direct', expense_id: str(r.expenseId), note: str(r.note),
-      }),
-      down: r => ({
-        id: r.id, loanId: r.loan_id, date: r.date, amount: Number(r.amount),
-        mode: r.mode, expenseId: r.expense_id || undefined, note: r.note || '',
-      }),
-    },
-    expenses: {
-      up: (e, owner) => ({
-        id: e.id, owner_id: owner, property_id: str(e.propertyId), staff_id: str(e.staffId),
-        loan_id: str(e.loanId), description: e.description, date: dat(e.date),
-        category: e.category || 'other', amount: num(e.amount) || 0,
-        gross_amount: num(e.grossAmount), loan_deduction: num(e.loanDeduction) || 0,
-        paid: !!e.paid, notes: str(e.notes),
-        // added by checkout-wage.sql: which rate the app used, and the amount it
-        // set, so a hand edit is recognised on any phone and after a restore
-        wage_kind: str(e.wageKind), auto_amount: num(e.autoAmount),
-      }),
-      down: r => ({
-        id: r.id, propertyId: r.property_id || '', staffId: r.staff_id || '', loanId: r.loan_id || '',
-        description: r.description, date: r.date, category: r.category,
-        amount: Number(r.amount), grossAmount: r.gross_amount ?? undefined,
-        loanDeduction: Number(r.loan_deduction || 0), paid: r.paid, notes: r.notes || '',
-        wageKind: r.wage_kind || '', autoAmount: r.auto_amount ?? undefined,
-      }),
-    },
+  // ── What goes up: an allowlist ─────────────────────────────────────────────
+  // The full data lives on this phone, and encrypted in the backup (backup.js).
+  // The cloud mirrors only what something online needs: Laxmi's page
+  // (staff_calendar, staff_standing), the attendance / utensil / calendar
+  // drains, and the notify alerts. MIRROR names every column that may leave the
+  // phone, per table; push() sends exactly those and nothing else, so a field
+  // not on the list — a guest's name, a note, a new field added next year —
+  // cannot reach Supabase. Change this list only with the table in CLAUDE.md.
+  const MIRROR = {
+    properties:      ['id', 'owner_id', 'name'],
+    staff:           ['id', 'owner_id', 'name'],
+    bookings:        ['id', 'owner_id', 'property_id', 'check_in', 'check_out', 'guests', 'status', 'balance_due'],
+    loans:           ['id', 'owner_id', 'staff_id', 'principal', 'installment_amount', 'disbursed_on', 'first_due_date', 'status'],
+    loan_repayments: ['id', 'owner_id', 'loan_id', 'amount'],
+    expenses:        ['id', 'owner_id', 'staff_id', 'description', 'date', 'amount', 'gross_amount', 'loan_deduction', 'paid', 'wage_kind'],
   };
+  // Which of the phone's rows have a cloud copy at all: only staff payouts
+  // (Laxmi's page reads them), and only loans made to staff.
+  const MIRRORED = {
+    expenses: e => !!e.staffId,
+    loans: l => !!l.staffId,
+  };
+  const pick = (row, cols) => { const o = {}; cols.forEach(c => { if (row[c] !== undefined) o[c] = row[c]; }); return o; };
+  // The phone's names for those columns. Written out by hand: this is the file
+  // to read to answer "what of mine is up there".
+  const MAP = {
+    properties: (p, owner) => ({ id: p.id, owner_id: owner, name: p.name }),
+    staff: (s, owner) => ({ id: s.id, owner_id: owner, name: s.name }),
+    bookings: (b, owner) => ({
+      id: b.id, owner_id: owner, property_id: str(b.propertyId),
+      check_in: dat(b.checkIn), check_out: dat(b.checkOut), guests: num(b.guests) || 1,
+      status: b.status || 'confirmed',
+      // For the checkout-tomorrow alert, instead of the amounts: what is owed,
+      // worked out here by the app's own rule. Only for guests who pay us
+      // (Direct, Booking.com); empty for every other platform.
+      balance_due: num(window.STAYLOG_BALANCE_DUE ? window.STAYLOG_BALANCE_DUE(b) : null),
+    }),
+    loans: (l, owner) => ({
+      id: l.id, owner_id: owner, staff_id: l.staffId,
+      principal: num(l.principal), installment_amount: num(l.installmentAmount),
+      disbursed_on: dat(l.disbursedOn), first_due_date: dat(l.firstDueDate), status: l.status || 'active',
+    }),
+    loan_repayments: (r, owner) => ({ id: r.id, owner_id: owner, loan_id: r.loanId, amount: num(r.amount) }),
+    expenses: (e, owner) => ({
+      id: e.id, owner_id: owner, staff_id: str(e.staffId), description: e.description, date: dat(e.date),
+      amount: num(e.amount) || 0, gross_amount: num(e.grossAmount), loan_deduction: num(e.loanDeduction) || 0,
+      paid: !!e.paid, wage_kind: str(e.wageKind),
+    }),
+  };
+  const up = (table, x, owner) => pick(MAP[table](x, owner), MIRROR[table]);
 
-  // Columns added after setup.sql, by a script run by hand. Until it has been
-  // run, Supabase refuses any row that names them, which would stop every sync.
-  // So a push that hits that refusal drops these columns and carries on, and
-  // the cloud panel says which script to run. Nothing local is lost: the
-  // phone keeps the values and sends them once the columns exist.
-  // Per column, because one table can gain columns from more than one script.
+  // Columns added by a script run by hand. Until it has run, Supabase refuses
+  // any row that names them, which would stop every sync; so a push that hits
+  // that refusal drops the column and carries on, and the cloud panel names
+  // the script. The phone keeps everything regardless.
   const LATER_COLUMNS = {
-    properties: { upi_id: 'supabase/payment-details.sql', upi_payee: 'supabase/payment-details.sql',
-                  upi_qr: 'supabase/payment-details.sql', bank_details: 'supabase/payment-details.sql' },
-    staff: { checkout_wage: 'supabase/checkout-wage.sql', utensil_rate: 'supabase/utensils.sql' },
-    expenses: { wage_kind: 'supabase/checkout-wage.sql', auto_amount: 'supabase/checkout-wage.sql' },
-    bookings: { round_off: 'supabase/round-off.sql' },
+    expenses: { wage_kind: 'supabase/checkout-wage.sql' },
+    bookings: { balance_due: 'supabase/minimal-cloud.sql' },
   };
   let schemaBehind = '';   // the script(s) to run, while the database lacks their columns
   // Supabase names one missing column per refusal; this says which, if any.
   const missingColumn = (err, cols) => !err || !/column|schema cache|PGRST204|42703/i.test(`${err.code || ''} ${err.message || ''}`)
     ? null
     : cols.find(c => new RegExp(`'${c}'|"${c}"|\\b${c}\\b`).test(`${err.message || ''} ${err.details || ''}`)) || null;
+  // The old private columns still marked NOT NULL refuse a row without them.
+  const MINIMAL_SQL = 'supabase/minimal-cloud.sql';
+  const notNullRefusal = err => !!err && (err.code === '23502' || /not-null|null value in column/i.test(err.message || ''));
 
   // Parents before children: loans need staff, repayments need loans.
   const ORDER = ['properties', 'staff', 'loans', 'loan_repayments', 'expenses', 'bookings'];
@@ -255,11 +201,13 @@
   }
 
   // ── Push ───────────────────────────────────────────────────────────────────
+  // What the phone holds per table (`all`), and of it what the cloud mirrors
+  // (`sets`). A row in `all` but not in `sets` is left out on purpose.
   function collect(data) {
     const reps = [];
     (data.loans || []).forEach(l => (l.repayments || []).forEach(r =>
-      reps.push({ ...r, loanId: l.id })));
-    return {
+      reps.push({ ...r, loanId: l.id, _staffLoan: MIRRORED.loans(l) })));
+    const all = {
       properties: data.properties || [],
       staff: data.staff || [],
       bookings: data.bookings || [],
@@ -267,7 +215,15 @@
       loan_repayments: reps,
       expenses: data.expenses || [],
     };
+    const sets = {};
+    for (const t of Object.keys(all)) sets[t] = all[t].filter(x =>
+      t === 'loan_repayments' ? x._staffLoan : (MIRRORED[t] ? MIRRORED[t](x) : true));
+    return { sets, all };
   }
+  // Nothing at all on the phone: a new phone, or one not yet restored. Its sync
+  // must never take anything out of the cloud.
+  const isEmpty = data => ['properties', 'bookings', 'expenses', 'staff', 'loans']
+    .every(t => !((data && data[t]) || []).length);
 
   // ── Attendance ─────────────────────────────────────────────────────────────
   // The one table she writes and this phone does not own. It is deliberately
@@ -775,28 +731,35 @@
   const ONE = { properties: 'property', staff: 'staff', loans: 'loan',
     loan_repayments: 'loan repayment', expenses: 'expense', bookings: 'booking' };
 
-  async function plannedTombstones(c, owner, up) {
+  // What the tombstone pass would take out of the cloud, per table, split in
+  // two: `ids` are rows this phone no longer has (a real deletion, which the
+  // brake guards), `left` are rows the phone still has but no longer mirrors
+  // (private details leaving the cloud on purpose, which it does not).
+  async function plannedTombstones(c, owner, up, all) {
     const plan = [];
     for (const table of ORDER) {
       const { data: live, error } = await c.from(table).select('id')
         .eq('owner_id', owner).is('deleted_at', null);
       if (error) throw error;
       const keep = new Set(up[table].map(r => r.id));
+      const onPhone = new Set((all[table] || []).map(r => String(r.id)));
       const gone = (live || []).map(r => r.id).filter(id => !keep.has(id));
-      if (gone.length) plan.push({ table, count: gone.length, of: (live || []).length, ids: gone.sort() });
+      const left = gone.filter(id => onPhone.has(String(id))), ids = gone.filter(id => !onPhone.has(String(id)));
+      if (gone.length) plan.push({ table, count: ids.length, of: (live || []).length, ids: ids.sort(), left: left.sort() });
     }
     return plan;
   }
   function overLimit(plan) {
-    const total = plan.reduce((t, p) => t + p.count, 0);
-    return total > BRAKE_ROWS || plan.some(p => p.count / p.of > BRAKE_SHARE);
+    const real = plan.filter(p => p.count);
+    const total = real.reduce((t, p) => t + p.count, 0);
+    return total > BRAKE_ROWS || real.some(p => p.count / p.of > BRAKE_SHARE);
   }
   function describe(plan) {
     const lines = plan.map(p => `• ${p.count} of ${p.of} ${LABEL[p.table] || p.table} (${Math.round(p.count / p.of * 100)}%)`);
     return 'This sync would delete from the cloud:\n' + lines.join('\n') +
       '\n\nThat is more than usual, so nothing has been changed yet. ' +
-      'If this phone is new or was just restored, choose Cancel and use ' +
-      '"Replace this phone from the cloud" instead.\n\n' +
+      'If this phone is new, choose Cancel and use Cloud sync → Encrypted backup → ' +
+      'Restore from backup instead.\n\n' +
       'OK deletes them (they stay recoverable in SQL). Cancel stops this sync.';
   }
 
@@ -822,26 +785,32 @@
       // Same reason: imported bookings go up in this cycle, not after it.
       const imported = await drainIcal(c, owner, data).catch(() => false);
       if (imported) data = (window.STAYLOG_GET_DATA && window.STAYLOG_GET_DATA()) || data;
-      const sets = collect(data);
-      const up = {};
-      for (const table of ORDER) up[table] = (sets[table] || [])
-        .filter(x => ID_OK.test(String(x.id || ''))).map(x => MAP[table].up(x, owner));
+      const { sets, all } = collect(data);
+      const rows0 = {};
+      for (const table of ORDER) rows0[table] = (sets[table] || [])
+        .filter(x => ID_OK.test(String(x.id || ''))).map(x => up(table, x, owner));
+      const empty = isEmpty(data);
 
       // Counted before anything is written, so a refusal leaves the cloud as it was.
-      const plan = await plannedTombstones(c, owner, up);
+      // An empty phone takes nothing out of the cloud, so there is nothing to count.
+      const plan = empty ? [] : await plannedTombstones(c, owner, rows0, all);
+      // Private details leaving the cloud are explained once, not asked about.
+      const leaving = plan.filter(p => p.left.length).map(p => ({ table: p.table, count: p.left.length }));
+      if (leaving.length && !explained()) privacyNote = leaving;
       if (overLimit(plan)) {
-        const sig = plan.map(p => p.table + ':' + p.ids.join(',')).join('|');
+        const real = plan.filter(p => p.count);
+        const sig = real.map(p => p.table + ':' + p.ids.join(',')).join('|');
         // A background sync does not ask twice about deletions already refused;
         // Sync now always asks.
         const ask = opts.manual || sig !== declinedSig;
         let yes = false;
         if (ask && typeof window.STAYLOG_CONFIRM_TOMBSTONE === 'function') {
-          try { yes = !!(await window.STAYLOG_CONFIRM_TOMBSTONE({ plan, message: describe(plan) })); }
+          try { yes = !!(await window.STAYLOG_CONFIRM_TOMBSTONE({ plan: real, message: describe(real) })); }
           catch { yes = false; }
         }
         if (!yes) {
           if (ask) declinedSig = sig;
-          brake = plan.map(({ table, count, of }) => ({ table, count, of }));
+          brake = real.map(({ table, count, of }) => ({ table, count, of }));
           const what = brake.map(p => `${p.count} ${(p.count === 1 ? ONE : LABEL)[p.table] || p.table}`).join(', ');
           throw new Error(`Sync paused — it would delete ${what}. Nothing was changed. Tap Sync now to review.`);
         }
@@ -851,7 +820,7 @@
       let pushedWithout = false;
       const behind = [];
       for (const table of ORDER) {
-        let rows = up[table];
+        let rows = rows0[table];
         if (rows.length) {
           let { error } = await c.from(table).upsert(rows, { onConflict: 'id' });
           const later = LATER_COLUMNS[table] || {};
@@ -864,8 +833,11 @@
             ({ error } = await c.from(table).upsert(rows, { onConflict: 'id' }));
           }
           if (scripts.size) behind.push(...scripts);
+          if (notNullRefusal(error))
+            throw new Error(`The cloud still expects the old private columns. Run ${MINIMAL_SQL} in the Supabase SQL editor, then sync again. Nothing was lost: it is all on this phone.`);
           if (error) throw error;
         }
+        if (empty) continue;                  // a new or unrestored phone tombstones nothing
         // Anything the server still holds that this phone no longer has is gone.
         let q = c.from(table).update({ deleted_at: new Date().toISOString() })
           .eq('owner_id', owner).is('deleted_at', null);
@@ -880,8 +852,12 @@
       try { localStorage.setItem(LAST_SYNC, new Date().toISOString()); } catch {}
       // The cloud's note of it, for the "not synced in 2 days" reminder. Until
       // push.sql has run the table is missing; that is not a sync failure.
-      await c.from('sync_status').upsert({ owner_id: owner, last_sync_at: new Date().toISOString() },
-        { onConflict: 'owner_id' }).then(() => {}, () => {});
+      // With the app version, so purge-private.sql can tell this phone runs the
+      // minimal cloud (it refuses to run until it does).
+      const beat = { owner_id: owner, last_sync_at: new Date().toISOString(), app_version: window.STAYLOG_APP_VERSION || null };
+      const { error: sErr } = await c.from('sync_status').upsert(beat, { onConflict: 'owner_id' }).then(r => r || {}, e => ({ error: e }));
+      if (sErr) { delete beat.app_version; await c.from('sync_status').upsert(beat, { onConflict: 'owner_id' }).then(() => {}, () => {}); }
+      if (privacyNote && !explained()) { try { localStorage.setItem(EXPLAINED, new Date().toISOString()); } catch {} }
       synced.forEach(fn => { try { fn(); } catch {} });   // the encrypted backup follows a good sync
     } catch (err) {
       lastError = err.message || String(err);
@@ -899,25 +875,9 @@
     }
   }
 
-  // ── Pull ───────────────────────────────────────────────────────────────────
-  // Used to bring a new device up to date, not to merge concurrent edits.
-  async function pull() {
-    if (!session) throw new Error('not signed in');
-    const c = await client();
-    const out = {};
-    for (const table of ORDER) {
-      const { data, error } = await c.from(table).select('*').is('deleted_at', null);
-      if (error) throw error;
-      out[table] = data.map(MAP[table].down);
-    }
-    const byLoan = {};
-    out.loan_repayments.forEach(r => (byLoan[r.loanId] = byLoan[r.loanId] || []).push(r));
-    out.loans.forEach(l => { l.repayments = byLoan[l.id] || []; });
-    return {
-      properties: out.properties, bookings: out.bookings, expenses: out.expenses,
-      staff: out.staff, loans: out.loans,
-    };
-  }
+  // There is no pull. The cloud holds only the allowlisted columns, so
+  // "replace this phone from the cloud" would wipe it; a new phone is brought
+  // up from the encrypted backup (backup.js) instead.
 
   // ── Push notifications ─────────────────────────────────────────────────────
   // The browser makes the subscription; these keep the cloud's copy, which is
@@ -985,7 +945,7 @@
       email: session?.user?.email || '',
       userId: session?.user?.id || '',
       online: navigator.onLine,
-      dirty, pushing, lastSync: last, lastError, brake, icalLog, schemaBehind,
+      dirty, pushing, lastSync: last, lastError, brake, icalLog, schemaBehind, privacyNote,
       utensils: { held: utHeld, error: utError, setUp: utSetUp, last: utLast }, heldMarks: held, attError, attLog, attLast,
     };
   }
@@ -1028,7 +988,7 @@
   });
 
   window.StayLogCloud = {
-    restoreSession, signIn, signOut, push, pull, status, markDirty, checkIn,
+    restoreSession, signIn, signOut, push, status, markDirty, checkIn,
     listFeeds, saveFeed, importNow,
     pushSave, pushRemove, pushPrefs, savePushPrefs, pushTest,
     _planIcal: planIcal, _icalBookingId: icalBookingId, _coverageGaps: coverageGaps,   // for the tests
