@@ -75,6 +75,15 @@ revoke all on public.ical_feeds  from anon, authenticated;
 grant select on public.ical_events to authenticated;
 grant update (imported_booking_id) on public.ical_events to authenticated;
 grant select, insert, update, delete on public.ical_feeds to authenticated;
+-- Once ical-connected.sql has run, the owner updates feeds by column only;
+-- keep that on a re-run of this script.
+do $$ begin
+  if exists (select 1 from information_schema.columns where table_schema = 'public'
+             and table_name = 'ical_feeds' and column_name = 'connected') then
+    revoke update on public.ical_feeds from authenticated;
+    grant update (owner_id, property_id, platform, url, connected) on public.ical_feeds to authenticated;
+  end if;
+end $$;
 
 -- ── Scheduling (do this after deploying the function) ───────────────────────
 -- Dashboard → Integrations → Cron → create a job:

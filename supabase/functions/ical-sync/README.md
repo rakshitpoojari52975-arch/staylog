@@ -10,8 +10,9 @@ bookings at its next sync. The app works the same whether or not this is set up.
 
 Do these in order, once.
 
-1. **Run the SQL.** Supabase → SQL editor → paste `supabase/ical.sql` → Run.
-   It is safe to run again.
+1. **Run the SQL.** Supabase → SQL editor → paste `supabase/ical.sql` → Run,
+   then `supabase/ical-connected.sql` (the "connected to the other platform's
+   calendar" setting in Calendar sync). Both are safe to run again.
 
 2. **Deploy the function.** Supabase → Edge Functions → Deploy a new function →
    name it exactly `ical-sync` → paste `index.ts` → Deploy.
