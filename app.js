@@ -6,7 +6,7 @@
 // ─── Build ────────────────────────────────────────────────────────────────────
 // Bump BOTH of these together. This date sat at 28 Sept through a dozen
 // releases and was read, reasonably, as proof the upload had not landed.
-const APP_VERSION='v54', APP_BUILT='28 Oct 2026';
+const APP_VERSION='v55', APP_BUILT='4 Nov 2026';
 // The CACHE_NAME of the sw.js released with this app.js. Every release bumps
 // APP_VERSION and CACHE_NAME together, so one is derived from the other rather
 // than being a fourth thing to forget; the tests fail if they ever disagree.
@@ -549,8 +549,6 @@ function renderHeader(){
       n?span({'data-bell-count':'1',style:{position:'absolute',top:2,right:2,minWidth:17,height:17,padding:'0 4px',borderRadius:9,
         background:'var(--danger)',color:'#fff',fontSize:10.5,fontWeight:700,lineHeight:'17px',textAlign:'center'}},n>99?'99+':String(n)):null));
   }
-  header.appendChild(btn({className:'btn-icon','aria-label':'Menu',onClick:()=>setState({modal:'menu'})},
-    ico('dots-vertical',{style:{fontSize:19}})));
   return header;
 }
 
@@ -657,7 +655,7 @@ function ensureDarkTokens(){
   }catch(e){ return; }
   const st=document.createElement('style');
   st.id='staylog-dark-fallback';
-  st.textContent=':root[data-theme="dark"]{color-scheme: dark;--cream:       #16180F;--white:       #1E2118;--surface-2:   #23261B;--border:      #2F3324;--border-soft: #262A1E;--text:        #F0ECDF;--text-mid:    #CFCBBB;--muted:       #948F7C;--light:       #7C7768;--accent:      #7CC49A;--accent-hov:  #94D3AD;--accent-light:#20301F;--accent-line: #2C4430;--accent-mid:  #5FA97F;--on-accent:   #14170F;--gold:        #D8AC5B;--gold-light:  #2E2718;--gold-line:   #45391F;--danger:      #E58479;--danger-light:#33201D;--danger-line: #4A2E29;--warn:        #E0A45C;--warn-light:  #2F2718;--warn-line:   #46381F;--info:        #86C9AE;--info-light:  #1D2E28;--shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 26px rgba(0,0,0,.32);--shadow-sm: 0 1px 2px rgba(0,0,0,.35);--shadow-lift: 0 -6px 30px rgba(0,0,0,.5);--scrim: rgba(0,0,0,.55);}';
+  st.textContent=':root[data-theme="dark"]{color-scheme: dark;--cream:       #16180F;--white:       #1E2118;--surface-2:   #23261B;--border:      #2F3324;--border-soft: #262A1E;--text:        #F0ECDF;--text-mid:    #CFCBBB;--muted:       #948F7C;--light:       #7C7768;--accent:      #7CC49A;--accent-hov:  #94D3AD;--accent-light:#20301F;--accent-line: #2C4430;--accent-mid:  #5FA97F;--on-accent:   #14170F;--gold:        #D8AC5B;--gold-light:  #2E2718;--gold-line:   #45391F;--danger:      #E58479;--danger-light:#33201D;--danger-line: #4A2E29;--warn:        #E0A45C;--warn-light:  #2F2718;--warn-line:   #46381F;--info:        #86C9AE;--info-light:  #1D2E28;--shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 26px rgba(0,0,0,.32);--shadow-sm: 0 1px 2px rgba(0,0,0,.35);--shadow-lift: 0 -6px 30px rgba(0,0,0,.5);--scrim: rgba(0,0,0,.55);--nav-glass: rgba(30,33,24,.74);--nav-line: rgba(255,255,255,.07);--nav-shadow: 0 6px 24px rgba(0,0,0,.5), 0 1px 3px rgba(0,0,0,.4);}';
   document.head.appendChild(st);
 }
 const THEMES=[['system','device-mobile','Phone'],['light','sun','Light'],['dark','moon','Dark']];
@@ -949,7 +947,7 @@ function inboxBadge(){
     else if(n===0&&navigator.clearAppBadge)navigator.clearAppBadge().catch(()=>{});
   }catch(e){}
 }
-function inboxRepaint(){if(state.loggedIn&&(state.modal==='inbox'||(!state.modal&&state.tab==='dashboard')))render();}
+function inboxRepaint(){if(state.loggedIn&&(state.modal==='inbox'||state.modal==='menu'||!state.modal))render();}
 async function refreshInbox(){
   const C=window.StayLogCloud;
   if(!C||!C.inboxList||!cloudStatus().signedIn||inbox.loading)return;
@@ -1071,6 +1069,8 @@ function renderInboxModal(){
 function renderMenuModal(){
   const{data}=state;
   const content=()=>div({style:{display:'flex',flexDirection:'column',gap:2}},
+    (()=>{const n=inboxUnread();return menuRow('bell','Notifications',n?`${n} unread`:'Reminders from the last 30 days',
+      ()=>setState({modal:'inbox'}));})(),
     menuRow('plus','Add property','Rooms, base tariff and location',()=>setState({modal:'addProp',editItem:null})),
     // The only backup there is: encrypted on this phone (backup.js). There is no
     // plain export — a readable file would carry guest names, phone and ID numbers.
@@ -1129,22 +1129,39 @@ function renderPropPickerModal(){
 }
 
 // ─── Bottom Nav ───────────────────────────────────────────────────────────────
+// A floating pill of the five tabs and a round ⋯ beside it (styles in
+// index.html, .tabbar). The ⋯ opens the menu and carries a red dot while
+// notifications are unread. Scrolling down shrinks the bar; up, or back at
+// the top, restores it. The class is toggled in place, so a scroll never
+// re-renders the app.
+let navCompact=false, navLastY=0;
 function renderNav(){
   const tabs=[['dashboard','home','Home'],['bookings','calendar','Bookings'],
     ['expenses','receipt','Expenses'],['loans','wallet','Loans'],['reports','chart-bar','Reports']];
-  const nav=div({style:{position:'fixed',bottom:0,left:'50%',transform:'translateX(-50%)',width:'100%',
-    maxWidth:480,background:'var(--white)',borderTop:'1px solid var(--border)',display:'flex',gap:3,
-    zIndex:100,padding:'6px 8px calc(env(safe-area-inset-bottom, 0px) + 8px)'}});
+  const nav=h('nav',{className:'tabbar'+(navCompact?' compact':''),'data-tabbar':'1','aria-label':'Sections'});
+  const pill=div({className:'pill'});
   tabs.forEach(([t,icon,label])=>{
     const active=state.tab===t||(t==='bookings'&&state.tab==='calendar');
-    nav.appendChild(btn({style:{flex:1,minWidth:0,minHeight:50,padding:'7px 2px 5px',borderRadius:'var(--radius-sm)',
-      background:active?'var(--accent-light)':'transparent',color:active?'var(--accent)':'var(--muted)',
-      fontSize:9.5,fontWeight:active?700:600,letterSpacing:'.01em',display:'flex',flexDirection:'column',
-      alignItems:'center',gap:3},onClick:()=>setState({tab:t})},
-      ico(icon,{style:{fontSize:20}}),span({style:{overflow:'hidden',textOverflow:'ellipsis',maxWidth:'100%'}},label)));
+    pill.appendChild(btn({className:'tab','data-tab':t,'aria-label':label,...(active?{'aria-current':'page'}:{}),
+      onClick:()=>setState({tab:t})},ico(icon),span({},label)));
   });
+  nav.appendChild(pill);
+  const unread=inboxUnread();
+  nav.appendChild(btn({className:'navmore','aria-label':unread?`Menu, ${unread} unread notification${unread>1?'s':''}`:'Menu',
+    'data-navmore':'1',onClick:()=>setState({modal:'menu'})},
+    ico('dots'),unread?span({className:'dot','data-unread-dot':'1'}):null));
   return nav;
 }
+function onNavScroll(){
+  const y=window.scrollY||0, bar=document.querySelector('[data-tabbar]');
+  let next=navCompact;
+  if(y<24)next=false;
+  else if(y>navLastY+6)next=true;
+  else if(y<navLastY-6)next=false;
+  if(Math.abs(y-navLastY)>6||y<24)navLastY=y;
+  if(next!==navCompact){navCompact=next;if(bar)bar.classList.toggle('compact',navCompact);}
+}
+window.addEventListener('scroll',onNavScroll,{passive:true});
 
 // ─── Filter by month ──────────────────────────────────────────────────────────
 function filterByMonth(items,dateKey,mf){
@@ -1166,7 +1183,7 @@ function renderCalendar(){
     dayMap[ds]=active.filter(b=>b.checkIn<=ds&&b.checkOut>ds);
   }
   const STATUS_COL={confirmed:'var(--accent-mid)',checkedin:'var(--info)',checkedout:'var(--light)'};
-  const wrap=div({style:{padding:'14px 12px 100px'}});
+  const wrap=div({style:{padding:'14px 12px 0'}});
   wrap.appendChild(div({style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:14}},
     h('div',{style:{fontFamily:'var(--display)',fontSize:20}},'Calendar'),
     div({style:{display:'flex',alignItems:'center',gap:8}},
@@ -1340,7 +1357,13 @@ function bookingCard(b){   // dense row; expands into the full detail
     const actions=div({style:{display:'flex',gap:7,flexWrap:'wrap',marginTop:8}});
     if(b.status==='confirmed')actions.appendChild(btn({className:'btn-primary btn-sm',onClick:()=>updateStatus(b.id,'checkedin')},ico('door-enter',{style:{marginRight:5}}),'Check In'));
     if(b.status==='checkedin')actions.appendChild(btn({className:'btn-primary btn-sm',onClick:()=>updateStatus(b.id,'checkedout')},ico('door-exit',{style:{marginRight:5}}),'Check Out'));
-    if(b.status!=='cancelled'&&b.status!=='checkedout')actions.appendChild(btn({className:'btn-ghost btn-sm',onClick:()=>updateStatus(b.id,'cancelled')},'Cancel'));
+    // Bookings are never deleted from the app: Cancel keeps it on record.
+    if(b.status==='confirmed'||b.status==='checkedin')actions.appendChild(btn({className:'btn-ghost btn-sm','data-cancel-booking':'1',
+      onClick:()=>cancelBooking(b.id)},'Cancel'));
+    else if(b.status==='checkedout')actions.appendChild(div({style:{display:'flex',alignItems:'center',gap:6}},
+      btn({className:'btn-ghost btn-sm','data-cancel-booking':'1',disabled:true,'aria-disabled':'true',
+        style:{opacity:.45,cursor:'not-allowed'},onClick:()=>{}},'Cancel'),
+      span({'data-cancel-note':'1',style:{fontSize:11.5,color:'var(--muted)'}},'Checked out — can’t be cancelled')));
     actions.appendChild(btn({className:'btn-ghost btn-sm',onClick:()=>setState({modal:'addBooking',editItem:b})},ico('edit',{style:{marginRight:4}}),'Edit'));
     if(waNumber(b.phone))actions.appendChild(btn({className:'btn-ghost btn-sm',style:{color:'var(--accent)',borderColor:'var(--accent-line)'},onClick:()=>setState({modal:'sendConfirm',editItem:b})},ico('brand-whatsapp',{style:{marginRight:4,fontSize:15}}),'Send'));
     actions.appendChild(btn({className:'btn-gold btn-sm',onClick:()=>downloadConfirmation(b)},ico('file-text',{style:{marginRight:4,fontSize:14}}),'PDF'));
@@ -1351,7 +1374,6 @@ function bookingCard(b){   // dense row; expands into the full detail
       onClick:()=>markPayoutReceived(b)},ico('circle-check',{style:{marginRight:4,fontSize:14}}),'Mark payout received'));
     if(canReceipt(b))actions.appendChild(btn({className:'btn-gold btn-sm',onClick:()=>shareReceipt(b)},
       ico('receipt',{style:{marginRight:4,fontSize:14}}),b.receiptNo?'Receipt again':'Receipt'));
-    actions.appendChild(btn({className:'btn-danger btn-sm',onClick:()=>{if(confirm('Delete this booking?')){mutateData(d=>d.bookings=d.bookings.filter(x=>x.id!==b.id));setState({expandedBooking:null});}}},ico('trash',{style:{marginRight:4}}),'Delete'));
     detail.appendChild(actions);card.appendChild(detail);
   }
   return card;
@@ -2199,7 +2221,7 @@ function markPayoutReceived(b){
 let toastEl=null, toastTimer=null;
 function showToast(text,action,onAction){
   if(toastEl)toastEl.remove(); clearTimeout(toastTimer);
-  const el=div({'data-toast':'1',role:'status',style:{position:'fixed',left:16,right:16,bottom:'calc(84px + env(safe-area-inset-bottom,0px))',
+  const el=div({'data-toast':'1',role:'status',style:{position:'fixed',left:16,right:16,bottom:'calc(var(--nav-top, 80px) + 12px)',
     zIndex:1000,display:'flex',alignItems:'center',gap:12,padding:'11px 14px',borderRadius:12,maxWidth:448,margin:'0 auto',
     background:'var(--text)',color:'var(--white)',boxShadow:'var(--shadow-lift)',fontSize:13.5,fontWeight:600}},
     span({style:{flex:1}},text));
@@ -2967,7 +2989,7 @@ function renderDashboard(){
   const allB=filterProp==='all'?data.bookings:data.bookings.filter(b=>b.propertyId===filterProp);
   const allE=filterProp==='all'?data.expenses:data.expenses.filter(e=>e.propertyId===filterProp);
   const props=filterProp==='all'?data.properties:data.properties.filter(p=>p.id===filterProp);
-  const wrap=div({style:{padding:'12px 12px 104px',display:'flex',flexDirection:'column',gap:11}});
+  const wrap=div({style:{padding:'12px 12px 0',display:'flex',flexDirection:'column',gap:11}});
 
   if(data.properties.length===0){
     wrap.appendChild(div({style:{textAlign:'center',padding:'64px 20px'}},
@@ -3140,7 +3162,7 @@ function renderBookings(){
   const all=filterProp==='all'?data.bookings:data.bookings.filter(b=>b.propertyId===filterProp);
   const filtered=bookingFilter==='all'?all:all.filter(b=>b.status===bookingFilter);
   const sorted=[...filtered].sort((a,b)=>new Date(b.checkIn)-new Date(a.checkIn));
-  const wrap=div({style:{padding:'12px 12px 104px'}});
+  const wrap=div({style:{padding:'12px 12px 0'}});
   wrap.appendChild(div({style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:11}},
     h('div',{className:'display',style:{fontSize:21}},'Bookings'),
     div({style:{display:'flex',gap:7}},
@@ -3189,7 +3211,7 @@ function renderExpenses(){
     .sort((a,b)=>String(b.date).localeCompare(String(a.date)));
   const total=expenses.reduce((s,e)=>s+Number(e.amount||0),0);
   const totalPaid=expenses.filter(e=>e.paid).reduce((s,e)=>s+Number(e.amount||0),0);
-  const wrap=div({style:{padding:'12px 12px 104px'}});
+  const wrap=div({style:{padding:'12px 12px 0'}});
   wrap.appendChild(div({style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:11}},
     h('div',{className:'display',style:{fontSize:21}},'Expenses'),
     btn({className:'btn-primary btn-sm',onClick:()=>setState({modal:'addExpense',editItem:null})},
@@ -3277,7 +3299,7 @@ function renderReports(){
   const maxVal=Math.max(...monthlyRev,...monthlyExp,1);
   const totalRev=monthlyRev.reduce((a,b)=>a+b,0),totalExp=monthlyExp.reduce((a,b)=>a+b,0);
   const periodLabel=reportMonth?`${MONTH_NAMES[reportMonth.month]}-${reportMonth.year}`:`${yr}-Full-Year`;
-  const wrap=div({style:{padding:'14px 12px 100px'}});
+  const wrap=div({style:{padding:'14px 12px 0'}});
   wrap.appendChild(div({style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:14}},
     h('div',{style:{fontFamily:'var(--display)',fontSize:20}},'Reports'),
     div({style:{display:'flex',alignItems:'center',gap:8}},
@@ -3509,7 +3531,7 @@ function progressBar(pct,color='var(--accent)'){
 // ─── Loans Tab ────────────────────────────────────────────────────────────────
 function renderLoans(){
   const{data,loanFilter,expandedLoan,showStaffPanel}=state;
-  const wrap=div({style:{padding:'14px 12px 100px'}});
+  const wrap=div({style:{padding:'14px 12px 0'}});
 
   wrap.appendChild(div({style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}},
     h('div',{style:{fontFamily:'var(--display)',fontSize:20}},'Staff Loans'),
@@ -4667,6 +4689,17 @@ function renderExpenseModal(){
 }
 
 // ─── Actions ──────────────────────────────────────────────────────────────────
+// Cancel, never delete: the booking stays on record as cancelled. Confirmed
+// and checked-in stays only; Undo (5 s) puts the previous status back, and
+// Edit → Status can restore it later.
+function cancelBooking(id){
+  const was=state.data.bookings.find(x=>x.id===id);
+  if(!was||(was.status!=='confirmed'&&was.status!=='checkedin'))return;
+  if(!confirm('Cancel this booking? It stays on record as cancelled.'))return;
+  const before=was.status;
+  mutateData(d=>{const x=d.bookings.find(y=>y.id===id); if(x)x.status='cancelled';});
+  showToast('Cancelled','Undo',()=>mutateData(d=>{const x=d.bookings.find(y=>y.id===id); if(x&&x.status==='cancelled')x.status=before;}));
+}
 function updateStatus(id,status){
   mutateData(d=>d.bookings=d.bookings.map(b=>b.id===id?{...b,status}:b));
   if(status!=='checkedin')return;
@@ -4694,7 +4727,7 @@ function render(){
   app.innerHTML='';
   app.appendChild(renderHeader());
   const swb=swBanner(); if(swb)app.appendChild(swb);
-  const main=div({style:{flex:1}});
+  const main=div({'data-main':'1',style:{flex:1,paddingBottom:'calc(var(--nav-top, 80px) + 20px)'}});
   if(state.tab==='dashboard') main.appendChild(renderDashboard());
   else if(state.tab==='bookings') main.appendChild(renderBookings());
   else if(state.tab==='calendar') main.appendChild(renderCalendar());

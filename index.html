@@ -61,6 +61,15 @@
          black-translucent): everything that reaches the top adds this. One
          name, so a test can set it where env() cannot be emulated. */
       --safe-top: env(safe-area-inset-top, 0px);
+      /* The same for the home indicator at the bottom, and the floating tab
+         bar above it: --nav-top is how far up from the screen's bottom edge
+         the bar reaches, so pages and toasts clear it. */
+      --safe-bottom: env(safe-area-inset-bottom, 0px);
+      --nav-h: 60px;
+      --nav-top: calc(var(--safe-bottom) + 10px + var(--nav-h));
+      --nav-glass: rgba(255,253,248,.74);
+      --nav-line: rgba(31,36,32,.08);
+      --nav-shadow: 0 6px 22px rgba(31,36,32,.16), 0 1px 3px rgba(31,36,32,.08);
       color-scheme: light;
       --cream:       #F5F1E8;
       --white:       #FFFDF8;
@@ -150,6 +159,9 @@
         --shadow-sm: 0 1px 2px rgba(0,0,0,.35);
         --shadow-lift: 0 -6px 30px rgba(0,0,0,.5);
         --scrim: rgba(0,0,0,.55);
+        --nav-glass: rgba(30,33,24,.74);
+        --nav-line: rgba(255,255,255,.07);
+        --nav-shadow: 0 6px 24px rgba(0,0,0,.5), 0 1px 3px rgba(0,0,0,.4);
       }
     }
     :root[data-theme="dark"] {
@@ -191,6 +203,9 @@
         --shadow-sm: 0 1px 2px rgba(0,0,0,.35);
         --shadow-lift: 0 -6px 30px rgba(0,0,0,.5);
         --scrim: rgba(0,0,0,.55);
+        --nav-glass: rgba(30,33,24,.74);
+        --nav-line: rgba(255,255,255,.07);
+        --nav-shadow: 0 6px 24px rgba(0,0,0,.5), 0 1px 3px rgba(0,0,0,.4);
     }
 
     html { font-size: 16px; -webkit-text-size-adjust: 100%; }
@@ -311,6 +326,46 @@
     @media (prefers-reduced-motion: reduce) {
       * { transition: none !important; animation: none !important; }
     }
+
+    /* ─── Floating tab bar ───────────────────────────────────────────────
+       A rounded pill of the five tabs and, beside it, a round ⋯ of the same
+       height, floating 12px in from the sides above the home indicator.
+       Frosted where the phone can blur, solid where it cannot or the person
+       asked for less transparency. Scrolling down shrinks both (labels go,
+       icons stay); every tap target stays at least 44px. */
+    .tabbar { position: fixed; left: 0; right: 0; bottom: calc(var(--safe-bottom) + 10px);
+      z-index: 100; display: flex; align-items: flex-end; gap: 8px; padding: 0 12px;
+      max-width: 480px; margin: 0 auto; pointer-events: none; }
+    .tabbar > * { pointer-events: auto; }
+    .tabbar .pill, .tabbar .navmore {
+      height: var(--nav-h); background: var(--nav-glass);
+      -webkit-backdrop-filter: saturate(180%) blur(20px); backdrop-filter: saturate(180%) blur(20px);
+      border: 1px solid var(--nav-line); box-shadow: var(--nav-shadow);
+      transition: height .22s ease, width .22s ease; }
+    @supports not ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) {
+      .tabbar .pill, .tabbar .navmore { background: var(--white); }
+    }
+    @media (prefers-reduced-transparency: reduce) {
+      .tabbar .pill, .tabbar .navmore { background: var(--white);
+        -webkit-backdrop-filter: none; backdrop-filter: none; }
+    }
+    .tabbar .pill { flex: 1; min-width: 0; display: flex; gap: 2px; padding: 5px;
+      border-radius: calc(var(--nav-h) / 2); }
+    .tabbar .tab { flex: 1; min-width: 44px; min-height: 44px; border: none; border-radius: 999px;
+      background: transparent; color: var(--muted); font-size: 10px; font-weight: 600;
+      letter-spacing: .01em; display: flex; flex-direction: column; align-items: center;
+      justify-content: center; gap: 1px; padding: 0 2px; transition: background .2s, color .2s; }
+    .tabbar .tab i { font-size: 21px; line-height: 1; }
+    .tabbar .tab span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+    .tabbar .tab[aria-current="page"] { background: var(--accent-light); color: var(--accent); font-weight: 700; }
+    .tabbar .navmore { width: var(--nav-h); flex-shrink: 0; border-radius: 50%; position: relative;
+      display: flex; align-items: center; justify-content: center; color: var(--text-mid); }
+    .tabbar .navmore i { font-size: 22px; }
+    .tabbar .navmore .dot { position: absolute; top: 11px; right: 12px; width: 10px; height: 10px;
+      border-radius: 50%; background: var(--danger); border: 2px solid var(--white); }
+    .tabbar.compact { --nav-h: 54px; }
+    .tabbar.compact .tab span { display: none; }
+    .tabbar.compact .navmore .dot { top: 7px; right: 8px; }
   </style>
 </head>
 <body>

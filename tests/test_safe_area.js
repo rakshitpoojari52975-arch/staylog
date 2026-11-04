@@ -69,8 +69,8 @@ for(const f of ['index.html','staff.html']){
 console.log('\n— the header, with a 47px status bar —');
 { const {ctx,page,errs}=await app();
   const menu=await tappable(page,'[aria-label="Menu"]'), bell=await tappable(page,'[data-bell]');
-  ok('the ⋯ button lies fully below 47px and takes the tap', menu.ok, menu);
-  ok('so does the bell', bell.ok, bell);
+  ok('the ⋯ button (in the bottom bar since v55) takes the tap, clear of the status bar', menu.ok, menu);
+  ok('the header\'s bell lies fully below 47px and takes the tap', bell.ok, bell);
   const title=await box(page,'.display');
   ok('and the StayLog title', title&&title.y>=INSET, title);
   const prop=await page.locator('button',{hasText:/All properties|Raaya Vasyam/}).first().boundingBox();
@@ -143,10 +143,10 @@ console.log('\n— the month picker and the toast —');
 
 console.log('\n— no inset (a browser tab, a phone without a notch): as before —');
 { const {ctx,page}=await app({inset:null});
-  const m=await box(page,'[aria-label="Menu"]');
+  const m=await box(page,'[data-bell]');
   const pad=await page.evaluate(()=>getComputedStyle(document.querySelector('#app > div')).paddingTop);
   ok('the header keeps its 9px', pad==='9px', pad);
-  ok('the ⋯ button is near the top, as it was', m&&m.y<20, m);
+  ok('the bell is near the top, as it was', m&&m.y<20, m);
   await ctx.close(); }
 
 console.log('\n— staff.html —');

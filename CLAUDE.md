@@ -217,7 +217,7 @@ also fetch from Supabase with `cache: 'no-store'` as a second layer.
 - `ical_events` and `ical_feeds` are **absent from `ORDER` and `MAP`**, like
   attendance, and for the same reason. Drained one way in `drainIcal()`:
   event → booking `ics_<hash>` → event stamped `imported_booking_id`.
-  Stamped and the booking is gone → deleted on purpose, stays deleted.
+  Stamped and the booking is gone → deleted on purpose before v55, stays deleted.
   An import knows its own booking by id, not by local fields. Once a stay is
   imported, `ical-sync` stops storing its Airbnb description (the reservation
   link and the last 4 digits of the guest's phone); the phone has it.
@@ -226,6 +226,23 @@ also fetch from Supabase with `cache: 'no-store'` as a second layer.
   blocks; an event whose property and exact dates match a live booking is
   linked to it, never doubled. Airbnb blocks never create bookings. Stays
   already over are not imported. No amount is ever invented.
+- **Bookings are cancelled, never deleted** (v55). The card has no Delete and
+  nothing in the app removes a booking from the data. **Cancel**
+  (`cancelBooking`, `data-cancel-booking`) is offered for confirmed and
+  checked-in stays: it asks "Cancel this booking? It stays on record as
+  cancelled.", then a "Cancelled · Undo" toast (`UNDO_MS`, 5 s) restores the
+  previous status. A checked-out stay shows Cancel disabled and greyed with
+  "Checked out — can’t be cancelled"; tapping it does nothing. Edit → Status
+  can still restore a cancelled booking (the overlap check applies).
+- **A cancelled import stays cancelled.** At every later `drainIcal()` its
+  events are left alone: no new dates (`icalMoved`), no "No longer on…" flag,
+  no rename. `sameStay` in `planIcal()` matches a live booking first, then a
+  cancelled `ics_` import on those dates — by the booking's dates or by the
+  dates its linked events now show — so the other feed's echo, an event
+  whose stamp was lost, or a stay the platform moved after the cancel links
+  to the cancelled booking and is never re-created. A hand-entered booking
+  cancelled on those dates does not block a new stay. Bookings deleted before
+  v55 still stay deleted (stamp → no booking → `removed`).
 - An event leaving its feed sets `gone_at`; the booking is flagged "No longer on
   …, cancelled?", never cancelled or deleted. A feed that suddenly comes back
   empty flags nothing (looks like their glitch, not a wave of cancellations).
@@ -525,6 +542,22 @@ also fetch from Supabase with `cache: 'no-store'` as a second layer.
 
 ## Gotchas
 
+- **The floating tab bar** (v55, `renderNav`, styles `.tabbar` in
+  `index.html`): a rounded pill of Home, Bookings, Expenses, Loans, Reports,
+  12px in from the sides, `--safe-bottom + 10px` above the screen's edge
+  (`--safe-bottom: env(safe-area-inset-bottom, 0px)`), frosted
+  (`-webkit-backdrop-filter` and `backdrop-filter`; solid `--white` under
+  `@supports not` and `prefers-reduced-transparency`), `--nav-glass` /
+  `--nav-line` / `--nav-shadow` per theme. The active tab (`aria-current`) is a
+  filled capsule. Beside it a round **⋯** (`data-navmore`) of the same height
+  opens the menu sheet, whose first row is **Notifications**; a red dot
+  (`data-unread-dot`) shows while the inbox has unread rows. The header keeps
+  the title, property picker and bell; the ⋯ left it. Scrolling down past
+  24px adds `.compact` (60 → 54px, labels hidden, icons kept; every target
+  stays ≥ 44px), up or the top removes it — toggled in place, no re-render
+  (`navCompact`, `onNavScroll`). `prefers-reduced-motion` drops the animation.
+  `--nav-top` (how far up the bar reaches) pads the page (`data-main`) and
+  places the toast, so nothing sits behind the bar. `tests/test_tabbar.js`.
 - **The status bar covers the top 47px or so.** Both pages use
   `viewport-fit=cover` with `black-translucent`, so the Home Screen app draws
   under it. Anything that reaches the top of the screen adds
@@ -535,8 +568,8 @@ also fetch from Supabase with `cache: 'no-store'` as a second layer.
   fills the strip in light and dark), the PIN / Face ID screen, sheets
   (`maxHeight` never past the status bar), the month picker, and on
   `staff.html` the sign-in screen and her page, plus a fixed `body::before`
-  strip in the page colour for when she scrolls. The bottom (`env(safe-area-inset-bottom)`)
-  was already right: the nav and the toast use it.
+  strip in the page colour for when she scrolls. The bottom is the tab bar's
+  (`--safe-bottom`, above).
 
 - `today()` is local (IST). Never `toISOString().slice(0,10)` — that is UTC and
   is a day behind between midnight and 05:30. In SQL use
@@ -572,6 +605,8 @@ also fetch from Supabase with `cache: 'no-store'` as a second layer.
     node tests/test_balance.js           # under ₹1 is paid: card, Home, stamp, PDF, CSV, requests, notify
     node tests/test_notify_function.js   # Node 22.18+; every alert's condition, decrypts each push, checks VAPID
     node tests/test_push_app.js          # menu, subscribe/unsubscribe, quiet re-subscribe, deep links, sw.js handlers
+    node tests/test_cancel.js            # no Delete; Cancel confirms + Undo; checked-out disabled; cancelled import stays cancelled over drains; excluded from revenue/occupancy
+    node tests/test_tabbar.js            # floating tab bar: 34px home indicator, light/dark, 44px targets, last card clear, ⋯ + dot, shrink on scroll, reduced motion
     node tests/test_safe_area.js         # 47px status bar: header ⋯ and bell below it and tappable, light/dark, PIN, sheets, month picker, toast, staff.html
     node tests/test_inbox.js             # Notifications screen: bell, groups, tap → link + read, Mark all read + badge, Done per type, Still to do, Not delivered, offline, setAppBadge
     node tests/test_push_keys.js         # STAYLOG_REAL_VAPID_PRIVATE=… also searches for your real private key
@@ -644,8 +679,9 @@ areas are changed.
   real feed differs from the documented shape, fix `parseIcs()` and add that
   feed to `tests/test_ical_function.js`.
 - Booking.com cannot tell a guest from dates closed by hand, so a closure
-  arrives as a "Booking.com guest" booking to delete (it stays deleted). If that
-  becomes a chore: a "not a stay" button that stamps the event without a booking.
+  arrives as a "Booking.com guest" booking: cancel it (it stays cancelled, and
+  stays on the Bookings list under Cancelled). If that becomes a chore: a "not
+  a stay" button that stamps the event without a booking.
 - The "Updated" figure and the "No longer on…" flag rest on phone-only fields
   (`icalMoved`, `icalGone`). They travel in the encrypted backup; a restore
   from an older backup re-derives the flag at the next sync, but "Updated"

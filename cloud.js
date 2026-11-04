@@ -449,8 +449,10 @@
   // The Edge Function ical-sync reads the platforms' export links into
   // public.ical_events. Like attendance, that table is absent from ORDER and
   // MAP and is drained one way: event → ordinary booking → event stamped with
-  // the booking's id. The stamp is how a booking deleted on purpose stays
-  // deleted, and how a mirrored or hand-entered stay is linked, not doubled.
+  // the booking's id. The stamp is how a booking cancelled here stays
+  // cancelled (the feed never revives, moves or re-creates it; one deleted
+  // before v55, when deleting was possible, stays deleted), and how a
+  // mirrored or hand-entered stay is linked, not doubled.
   const ICAL_COLS = 'feed_id,uid,property_id,platform,start_date,end_date,summary,description,kind,gone_at,imported_booking_id';
   const localToday = () => {
     const d = new Date();
@@ -494,8 +496,22 @@
     const plan = { create: [], update: [], stamp: [], counts: {
       events: order.length, created: 0, linked: 0, updated: 0, gone: 0, blocks: 0, past: 0, removed: 0, held: 0 } };
     const C = plan.counts;
+    // A live booking with these dates; failing that, an import cancelled here
+    // on these dates — the other feed's echo of a stay Rakshit cancelled is
+    // the same stay, so it links to the cancelled one and is never re-created.
+    // Where an import cancelled here now sits, by its own dates and by the
+    // dates its linked events show (a platform may move a stay after it was
+    // cancelled here; its echo then arrives on the new dates).
+    const stayKey = (p, i, o) => p + '|' + i + '|' + o;
+    const cancelledAt = new Map();
+    for (const b of bookings) if (b.status === 'cancelled' && /^ics_/.test(b.id)) cancelledAt.set(stayKey(b.propertyId, b.checkIn, b.checkOut), b);
+    for (const e of order) {
+      const b = e.imported_booking_id && byId.get(e.imported_booking_id);
+      if (b && b.status === 'cancelled' && /^ics_/.test(b.id) && !e.gone_at) cancelledAt.set(stayKey(e.property_id, e.start_date, e.end_date), b);
+    }
     const sameStay = e => bookings.find(b => b.status !== 'cancelled' && b.propertyId === e.property_id &&
-      b.checkIn === e.start_date && b.checkOut === e.end_date);
+        b.checkIn === e.start_date && b.checkOut === e.end_date) ||
+      cancelledAt.get(stayKey(e.property_id, e.start_date, e.end_date));
     const patch = (id, fields) => {
       const b = byId.get(id); Object.assign(b, fields);
       const u = plan.update.find(x => x.id === id);
@@ -508,6 +524,7 @@
         const b = byId.get(e.imported_booking_id);
         if (!b) { C.removed++; continue; }               // deleted on purpose; stays deleted
         if (b.id !== own) continue;                      // linked to a mirror or a hand-entered stay
+        if (b.status === 'cancelled') continue;          // cancelled here: stays cancelled, untouched by the feed
         if (!e.gone_at && (b.checkIn !== e.start_date || b.checkOut !== e.end_date)) {
           patch(b.id, { checkIn: e.start_date, checkOut: e.end_date, icalMoved: today,
                         icalMovedFrom: { checkIn: b.checkIn, checkOut: b.checkOut } }); C.updated++;
@@ -524,7 +541,7 @@
       if (match) {
         // A stay first seen through Booking.com's mirror of Airbnb, still untouched,
         // takes the right name once Airbnb's own event arrives.
-        if (match.id !== own && e.platform === 'Airbnb' && e.kind === 'reserved' &&
+        if (match.id !== own && match.status !== 'cancelled' && e.platform === 'Airbnb' && e.kind === 'reserved' &&
             /^ics_/.test(match.id) && match.source !== 'Airbnb' && match.guestName === placeholder(match.source)) {
           patch(match.id, { source: 'Airbnb', guestName: placeholder('Airbnb'), notes: importNotes(e) });
         }
