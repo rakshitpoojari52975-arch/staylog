@@ -3,7 +3,7 @@
    indicator. Chromium has no home indicator, so the pages read it through
    --safe-bottom (= env(safe-area-inset-bottom)) and this test sets 34px, an
    iPhone's. Checked in light and dark: every tab and ⋯ visible, at least
-   44px and tappable above the inset; frosted, with a solid fallback; the
+   44px and tappable above the inset; glass, with a solid fallback; the
    active tab a filled capsule; the last booking card and the toast clear of
    the bar; ⋯ opens the menu (Notifications first) and carries a red dot while
    anything is unread; scrolling down shrinks the bar, up or the top restores
@@ -78,10 +78,11 @@ for(const dark of [false,true]){
     const accent=getComputedStyle(probe).backgroundColor;probe.remove();
     return {blur:p.backdropFilter||p.webkitBackdropFilter,bg:p.backgroundColor,radius:p.borderRadius,shadow:p.boxShadow,
       active:a.backgroundColor,accent,activeRadius:a.borderRadius,glass:root.getPropertyValue('--nav-glass').trim()};});
-  ok('frosted: a backdrop blur over a translucent background', /blur/.test(st.blur)&&/rgba\(.*0\.7\d?\)/.test(st.bg), st);
+  const alpha=c=>{const m=/rgba?\(([^)]+)\)/.exec(c);const p=m?m[1].split(',').map(Number):[];return p.length===4?p[3]:1;};
+  ok('glass: a backdrop blur over a translucent background', /blur/.test(st.blur)&&alpha(st.bg)<0.6, st);
   ok('with a soft shadow and fully rounded ends', st.shadow!=='none'&&parseFloat(st.radius)>=25, st);
   ok(`its glass is the ${dark?'dark':'light'} theme's`, dark?/^rgba\(30, ?33, ?24/.test(st.glass):/^rgba\(255, ?253, ?248/.test(st.glass), st.glass);
-  ok('the active tab is a filled capsule', st.active===st.accent&&parseFloat(st.activeRadius)>=22, st);
+  ok('the active tab is a filled capsule, a little more opaque than the glass', alpha(st.active)>alpha(st.bg)&&alpha(st.active)<1&&parseFloat(st.activeRadius)>=22, st);
   ok('only one tab is active', await page.locator('[data-tab][aria-current="page"]').count()===1);
   ok('the header keeps the title, property picker and bell, and no ⋯', await page.locator('header, #app > div').first().locator('[data-bell]').count()===1
      &&await page.locator('#app > div').first().locator('[aria-label="Menu"]').count()===0);
@@ -93,7 +94,7 @@ for(const dark of [false,true]){
 
 console.log('\n— a solid fallback where nothing can blur, or less transparency is asked for —');
 { const css=fs.readFileSync(path.join(ROOT,'index.html'),'utf8');
-  ok('-webkit-backdrop-filter and backdrop-filter both set', /-webkit-backdrop-filter:\s*saturate\(180%\) blur\(20px\)/.test(css)&&/[^-]backdrop-filter:\s*saturate\(180%\) blur\(20px\)/.test(css));
+  ok('-webkit-backdrop-filter and backdrop-filter both set', /-webkit-backdrop-filter:\s*blur\(20px\) saturate\(180%\)/.test(css)&&/[^-]backdrop-filter:\s*blur\(20px\) saturate\(180%\)/.test(css));
   ok('@supports not (backdrop-filter) → solid --white', /@supports not \(\(-webkit-backdrop-filter: blur\(1px\)\) or \(backdrop-filter: blur\(1px\)\)\)\s*\{\s*\.tabbar \.pill, \.tabbar \.navmore \{ background: var\(--white\); \}/.test(css));
   ok('prefers-reduced-transparency → solid, no blur', /@media \(prefers-reduced-transparency: reduce\)\s*\{\s*\.tabbar \.pill, \.tabbar \.navmore \{ background: var\(--white\);\s*-webkit-backdrop-filter: none; backdrop-filter: none; \}/.test(css)); }
 

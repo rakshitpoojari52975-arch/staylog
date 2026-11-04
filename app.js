@@ -6,7 +6,7 @@
 // ─── Build ────────────────────────────────────────────────────────────────────
 // Bump BOTH of these together. This date sat at 28 Sept through a dozen
 // releases and was read, reasonably, as proof the upload had not landed.
-const APP_VERSION='v55', APP_BUILT='4 Nov 2026';
+const APP_VERSION='v56', APP_BUILT='4 Nov 2026';
 // The CACHE_NAME of the sw.js released with this app.js. Every release bumps
 // APP_VERSION and CACHE_NAME together, so one is derived from the other rather
 // than being a fourth thing to forget; the tests fail if they ever disagree.
@@ -655,7 +655,7 @@ function ensureDarkTokens(){
   }catch(e){ return; }
   const st=document.createElement('style');
   st.id='staylog-dark-fallback';
-  st.textContent=':root[data-theme="dark"]{color-scheme: dark;--cream:       #16180F;--white:       #1E2118;--surface-2:   #23261B;--border:      #2F3324;--border-soft: #262A1E;--text:        #F0ECDF;--text-mid:    #CFCBBB;--muted:       #948F7C;--light:       #7C7768;--accent:      #7CC49A;--accent-hov:  #94D3AD;--accent-light:#20301F;--accent-line: #2C4430;--accent-mid:  #5FA97F;--on-accent:   #14170F;--gold:        #D8AC5B;--gold-light:  #2E2718;--gold-line:   #45391F;--danger:      #E58479;--danger-light:#33201D;--danger-line: #4A2E29;--warn:        #E0A45C;--warn-light:  #2F2718;--warn-line:   #46381F;--info:        #86C9AE;--info-light:  #1D2E28;--shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 26px rgba(0,0,0,.32);--shadow-sm: 0 1px 2px rgba(0,0,0,.35);--shadow-lift: 0 -6px 30px rgba(0,0,0,.5);--scrim: rgba(0,0,0,.55);--nav-glass: rgba(30,33,24,.74);--nav-line: rgba(255,255,255,.07);--nav-shadow: 0 6px 24px rgba(0,0,0,.5), 0 1px 3px rgba(0,0,0,.4);}';
+  st.textContent=':root[data-theme="dark"]{color-scheme: dark;--cream:       #16180F;--white:       #1E2118;--surface-2:   #23261B;--border:      #2F3324;--border-soft: #262A1E;--text:        #F0ECDF;--text-mid:    #CFCBBB;--muted:       #948F7C;--light:       #7C7768;--accent:      #7CC49A;--accent-hov:  #94D3AD;--accent-light:#20301F;--accent-line: #2C4430;--accent-mid:  #5FA97F;--on-accent:   #14170F;--gold:        #D8AC5B;--gold-light:  #2E2718;--gold-line:   #45391F;--danger:      #E58479;--danger-light:#33201D;--danger-line: #4A2E29;--warn:        #E0A45C;--warn-light:  #2F2718;--warn-line:   #46381F;--info:        #86C9AE;--info-light:  #1D2E28;--shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 26px rgba(0,0,0,.32);--shadow-sm: 0 1px 2px rgba(0,0,0,.35);--shadow-lift: 0 -6px 30px rgba(0,0,0,.5);--scrim: rgba(0,0,0,.55);--nav-glass: rgba(30,33,24,.42);--nav-active: rgba(52,58,42,.78);--nav-line: rgba(255,255,255,.12);--nav-rim: rgba(255,255,255,.10);--nav-shadow: 0 8px 30px rgba(0,0,0,.55), 0 1px 3px rgba(0,0,0,.4);--nav-ink: #E6E2D4;--nav-halo: rgba(14,16,10,.9);}';
   document.head.appendChild(st);
 }
 const THEMES=[['system','device-mobile','Phone'],['light','sun','Light'],['dark','moon','Dark']];

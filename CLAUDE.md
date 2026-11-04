@@ -545,11 +545,18 @@ also fetch from Supabase with `cache: 'no-store'` as a second layer.
 - **The floating tab bar** (v55, `renderNav`, styles `.tabbar` in
   `index.html`): a rounded pill of Home, Bookings, Expenses, Loans, Reports,
   12px in from the sides, `--safe-bottom + 10px` above the screen's edge
-  (`--safe-bottom: env(safe-area-inset-bottom, 0px)`), frosted
-  (`-webkit-backdrop-filter` and `backdrop-filter`; solid `--white` under
-  `@supports not` and `prefers-reduced-transparency`), `--nav-glass` /
-  `--nav-line` / `--nav-shadow` per theme. The active tab (`aria-current`) is a
-  filled capsule. Beside it a round **⋯** (`data-navmore`) of the same height
+  (`--safe-bottom: env(safe-area-inset-bottom, 0px)`). **Liquid Glass** (v56):
+  the page scrolls visibly behind it — a ~40% tint (`--nav-glass`) under
+  `blur(20px) saturate(180%)` (`-webkit-backdrop-filter` and
+  `backdrop-filter`), a hairline translucent border (`--nav-line`), a light
+  inner rim (`--nav-rim`) and a soft shadow (`--nav-shadow`), all theme
+  tokens in light and both dark blocks. Solid `--white` only under
+  `@supports not` (no backdrop-filter) and `prefers-reduced-transparency`.
+  Labels and icons are `--nav-ink`, bold, with a soft `--nav-halo` text
+  shadow, so they read over any content: `tests/test_glass.js` measures
+  label contrast from real pixels (≥ 4.5:1 over a plain and a busy card). The
+  active tab (`aria-current`) is a slightly more opaque capsule
+  (`--nav-active`). Beside it a round **⋯** (`data-navmore`) of the same height
   opens the menu sheet, whose first row is **Notifications**; a red dot
   (`data-unread-dot`) shows while the inbox has unread rows. The header keeps
   the title, property picker and bell; the ⋯ left it. Scrolling down past
@@ -606,6 +613,7 @@ also fetch from Supabase with `cache: 'no-store'` as a second layer.
     node tests/test_notify_function.js   # Node 22.18+; every alert's condition, decrypts each push, checks VAPID
     node tests/test_push_app.js          # menu, subscribe/unsubscribe, quiet re-subscribe, deep links, sw.js handlers
     node tests/test_cancel.js            # no Delete; Cancel confirms + Undo; checked-out disabled; cancelled import stays cancelled over drains; excluded from revenue/occupancy
+    node tests/test_glass.js             # Liquid Glass bar: translucent (alpha < 0.6) + backdrop-filter, page seen through, solid with reduced transparency, label contrast from pixels
     node tests/test_tabbar.js            # floating tab bar: 34px home indicator, light/dark, 44px targets, last card clear, ⋯ + dot, shrink on scroll, reduced motion
     node tests/test_safe_area.js         # 47px status bar: header ⋯ and bell below it and tappable, light/dark, PIN, sheets, month picker, toast, staff.html
     node tests/test_inbox.js             # Notifications screen: bell, groups, tap → link + read, Mark all read + badge, Done per type, Still to do, Not delivered, offline, setAppBadge
