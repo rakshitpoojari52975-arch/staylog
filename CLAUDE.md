@@ -277,6 +277,32 @@ also fetch from Supabase with `cache: 'no-store'` as a second layer.
   a booking from another source): whether each export carries the other's
   imported dates is undocumented, and guessing means an alarm on every stay
   or none. Until then Calendar sync says the check is waiting.
+- **Airbnb's export omits the dates it copies from Booking.com** (confirmed
+  on the real feed, Nov 2026: the Booking.com stays were absent from the
+  Airbnb feed in `ical_events`). The calendars are connected, so Airbnb does
+  block them, but the check cannot see that, and the "proven" heuristic had
+  turned it on anyway: every Booking.com stay showed "Still open on Airbnb".
+  Two answers (v57):
+  - **"<platform> is connected to <other>'s calendar"**, per feed, in Cloud
+    sync → Calendar sync (`data-feed-connected`, stored in
+    `ical_feeds.connected` by `supabase/ical-connected.sql`; `setFeedConnected`
+    in `cloud.js`). On, `coverageGaps()` skips bookings whose source is the
+    other platform for that feed; Direct stays are still checked. The note
+    under it for Airbnb: "Airbnb’s calendar link doesn’t include dates it
+    copies from Booking.com, so those stays can’t be checked there." Toggling
+    runs a sync so the gaps are worked out again. Until the script has run,
+    feeds read as not connected (`selectFeeds` retries without the column)
+    and the switch is disabled, naming the script.
+  - **"Closed on <platform>"** on a "Still open on …" warning
+    (`data-gap-closed`, `dismissGap`): stored on the booking as `gapClosed:
+    {<platform>: '<checkIn>|<checkOut>'}` — phone and encrypted backup only,
+    not in `MIRROR` — so new dates bring the warning back. `openGapsFor`
+    leaves dismissed gaps out, so Home and Calendar sync do not count them.
+- `ical-connected.sql` also narrows the owner's UPDATE on `ical_feeds` to
+  columns: `owner_id, property_id, platform, url` (what the app's link upsert
+  sets; RLS still pins `owner_id`) and `connected` — never the function's
+  `last_*` fetch record. `ical.sql` and `purge-private.sql` keep those
+  column grants on a re-run once the column exists.
 - A stay a platform moves keeps its old dates (`icalMovedFrom`); the card says
   so for 7 days.
 
@@ -612,6 +638,7 @@ also fetch from Supabase with `cache: 'no-store'` as a second layer.
     node tests/test_balance.js           # under ₹1 is paid: card, Home, stamp, PDF, CSV, requests, notify
     node tests/test_notify_function.js   # Node 22.18+; every alert's condition, decrypts each push, checks VAPID
     node tests/test_push_app.js          # menu, subscribe/unsubscribe, quiet re-subscribe, deep links, sw.js handlers
+    node tests/test_ical_connected.js    # "connected" per feed: no gap for the other platform's stays, Direct still checked, survives a sync; "Closed on …" hides a gap until the dates change
     node tests/test_cancel.js            # no Delete; Cancel confirms + Undo; checked-out disabled; cancelled import stays cancelled over drains; excluded from revenue/occupancy
     node tests/test_glass.js             # Liquid Glass bar: translucent (alpha < 0.6) + backdrop-filter, page seen through, solid with reduced transparency, label contrast from pixels
     node tests/test_tabbar.js            # floating tab bar: 34px home indicator, light/dark, 44px targets, last card clear, ⋯ + dot, shrink on scroll, reduced motion
@@ -622,7 +649,7 @@ also fetch from Supabase with `cache: 'no-store'` as a second layer.
     STAYLOG_PG="…" node tests/test_payment_sql.js    # payment-details.sql: constraints, owner-only
     STAYLOG_PG="…" node tests/test_utensils_sql.js   # all four scripts in order; the once-a-day, present-first and undo rules
     STAYLOG_PG="…" node tests/test_checkout_sql.js   # setup.sql + attendance.sql + checkout-wage.sql; her staff_standing
-    STAYLOG_PG="-h <socket dir> -p <port> -U postgres" node tests/test_ical_sql.js   # skips without a Postgres; loads setup.sql + ical.sql, checks access and the report
+    STAYLOG_PG="-h <socket dir> -p <port> -U postgres" node tests/test_ical_sql.js   # skips without a Postgres; setup.sql + ical.sql + ical-connected.sql: access, the report, column grants
 
 The first four survived a machine reset; fifteen earlier suites (receipt, WhatsApp,
 loans, PDFs, staff page, theme) did not and should be rebuilt here before those
@@ -676,11 +703,15 @@ areas are changed.
 - The checkout-day rate looks at every property's bookings. Fine with one
   house help across Raaya Vasyam; revisit if staff ever belong to one property.
 
-- Whether Booking.com's export includes the Airbnb dates it imports (and the
-  reverse) decides whether the still-open check ever switches on for that
-  feed. Calendar sync shows "Still-open check: waiting" until it does; if it
-  never does, that platform's export does not echo the other, and closing
-  dates there by hand is the only protection.
+- **Airbnb's export leaves out the dates it imports from Booking.com** —
+  confirmed on the real feed. Turn on "Airbnb is connected to Booking.com’s
+  calendar" in Calendar sync, so Booking.com stays are not checked against
+  Airbnb (Airbnb closes them itself); direct stays still are. Whether
+  Booking.com's export carries the Airbnb dates it imports is still not
+  known: if Booking.com stays clear of the check but Airbnb stays are flagged
+  "Still open on Booking.com" while Booking.com shows them closed, turn its
+  setting on too. A single false warning can be dismissed on the booking
+  ("Closed on …").
 - **The calendar import has not met a real feed or the real project yet.**
   After setup, run `supabase/ical-report.sql` and compare against the Airbnb
   calendar and the Booking.com extranet for the first few days. If a platform's

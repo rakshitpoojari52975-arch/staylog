@@ -116,6 +116,32 @@ r=psql(DB,[],`select count(*) from public.bookings where deleted_at is null`);
 const before=r.out.trim(); psql(DB,['-f',REPORT]);
 ok('the report changes nothing', psql(DB,[],`select count(*) from public.bookings where deleted_at is null`).out.trim()===before);
 
+console.log('\n— ical-connected.sql: the per-feed "connected" setting —');
+const CONNECTED=path.resolve(__dirname,'../supabase/ical-connected.sql');
+r=psql(DB,['-f',CONNECTED]); ok('runs', !r.err, r.err);
+r=psql(DB,['-f',CONNECTED]); ok('and runs again', !r.err, r.err);
+const F1='aaaaaaaa-0000-0000-0000-000000000001', F2='aaaaaaaa-0000-0000-0000-000000000002';
+ok('existing feeds start not connected', psql(DB,[],`select bool_or(connected)::text from ical_feeds`).out.trim()==='false');
+r=as('authenticated',U1,`update ical_feeds set connected=true where id='${F1}' returning connected`);
+ok('the owner turns it on for a feed', r.out.trim()==='t', r.err||r.out);
+r=as('authenticated',U1,`update ical_feeds set url='https://a/changed.ics' where id='${F1}' returning url`);
+ok('and can still change the link', r.out.trim()==='https://a/changed.ics', r.err||r.out);
+r=as('authenticated',U1,`insert into ical_feeds (owner_id,property_id,platform,url) values ('${U1}','p1','Airbnb','https://a/new.ics')
+  on conflict (owner_id,property_id,platform) do update set owner_id=excluded.owner_id, property_id=excluded.property_id,
+  platform=excluded.platform, url=excluded.url returning url`);
+ok('the app\'s upsert of a link still works (the columns PostgREST sets)', r.out.trim()==='https://a/new.ics', r.err||r.out);
+for(const [c,v] of [['last_ok_at','now()'],['last_error',"'x'"],['last_count','99'],['last_fetched_at','now()']]){
+  r=as('authenticated',U1,`update ical_feeds set ${c}=${v} where id='${F1}'`);
+  ok(`but not the function's ${c}`, /permission denied/.test(r.err), r.err||r.out);
+}
+r=as('authenticated',U2,`update ical_feeds set connected=true where id='${F1}' returning 1`);
+ok('another account cannot set it on his feed', r.out.trim()==='', r.err||r.out);
+r=as('anon','',`update ical_feeds set connected=true returning 1`);
+ok('nor anyone signed out', !!r.err||r.out.trim()==='', r.out);
+r=psql(DB,['-f',SQL]);
+r=as('authenticated',U1,`update ical_feeds set last_error='x' where id='${F1}'`);
+ok('re-running ical.sql afterwards keeps the column grants', /permission denied/.test(r.err)&&!as('authenticated',U1,`update ical_feeds set connected=false where id='${F1}'`).err, r.err||r.out);
+
 psql('postgres',['-c',`drop database if exists ${DB}`]);
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail?1:0);

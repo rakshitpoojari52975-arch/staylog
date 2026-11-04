@@ -6,7 +6,7 @@
 // ─── Build ────────────────────────────────────────────────────────────────────
 // Bump BOTH of these together. This date sat at 28 Sept through a dozen
 // releases and was read, reasonably, as proof the upload had not landed.
-const APP_VERSION='v56', APP_BUILT='4 Nov 2026';
+const APP_VERSION='v57', APP_BUILT='4 Nov 2026';
 // The CACHE_NAME of the sw.js released with this app.js. Every release bumps
 // APP_VERSION and CACHE_NAME together, so one is derived from the other rather
 // than being a fourth thing to forget; the tests fail if they ever disagree.
@@ -1258,7 +1258,15 @@ function bookingClashes(bookings){
 const clashesFor=b=>(state._clashes||{})[b.id]||[];
 // Nights a platform can still sell, from the last calendar check (cloud.js
 // coverageGaps). Read once per render; cancelled and past stays never count.
-const openGapsFor=b=>b.status==='cancelled'||!(b.checkOut>today())?[]:((state._gaps||{})[b.id]||[]);
+// A gap dismissed with "Closed on <platform>" is kept on the booking
+// (gapClosed, phone and backup only — not in MIRROR), for these dates only:
+// move the stay and the warning comes back.
+const stayDatesKey=b=>`${b.checkIn}|${b.checkOut}`;
+const gapDismissed=(b,platform)=>!!(b.gapClosed&&b.gapClosed[platform]===stayDatesKey(b));
+const openGapsFor=b=>b.status==='cancelled'||!(b.checkOut>today())?[]:((state._gaps||{})[b.id]||[]).filter(g=>!gapDismissed(b,g.platform));
+function dismissGap(id,platform){
+  mutateData(d=>{const b=d.bookings.find(x=>x.id===id); if(b)b.gapClosed={...(b.gapClosed||{}),[platform]:stayDatesKey(b)};});
+}
 const MOVED_SHOWN_DAYS=7;
 function movedRecently(b){
   if(!b.icalMoved||!b.icalMovedFrom)return false;
@@ -1312,8 +1320,14 @@ function bookingCard(b){   // dense row; expands into the full detail
     ico(icon,{style:{fontSize:14,flexShrink:0}}),div({},text));
   clashes.forEach(o=>card.appendChild(warn('var(--danger)','var(--danger-light)','alert-triangle',
     `Double booking: overlaps ${o.guestName} (${fmtDate(o.checkIn)} → ${fmtDate(o.checkOut)}, ${o.source||'Direct'})`,'data-clash')));
-  openGapsFor(b).forEach(g=>card.appendChild(warn('var(--warn)','var(--warn-light)','calendar-exclamation',
-    `Still open on ${g.platform}: ${g.open===g.nights?(g.nights===1?'the night':`all ${g.nights} nights`):`${g.open} of ${g.nights} nights`} from ${fmtDate(g.from)} — it could be booked twice. Close the dates there.`,'data-open')));
+  openGapsFor(b).forEach(g=>{
+    const w=warn('var(--warn)','var(--warn-light)','calendar-exclamation',
+      `Still open on ${g.platform}: ${g.open===g.nights?(g.nights===1?'the night':`all ${g.nights} nights`):`${g.open} of ${g.nights} nights`} from ${fmtDate(g.from)} — it could be booked twice. Close the dates there.`,'data-open');
+    w.appendChild(btn({className:'btn-ghost btn-sm','data-gap-closed':g.platform,style:{marginLeft:'auto',flexShrink:0,padding:'4px 9px',
+      fontSize:11.5,minHeight:30,color:'var(--warn)',borderColor:'var(--warn-line)'},
+      onClick:e=>{e.stopPropagation();dismissGap(b.id,g.platform);}},`Closed on ${g.platform}`));
+    card.appendChild(w);
+  });
   if(movedRecently(b)&&b.status!=='cancelled')card.appendChild(warn('var(--info)','var(--info-light)','calendar-event',
     `${b.source} moved this stay on ${fmtDate(b.icalMoved)} (was ${fmtDate(b.icalMovedFrom.checkIn)} → ${fmtDate(b.icalMovedFrom.checkOut)})`,'data-moved'));
   if(b.icalGone&&b.status!=='cancelled')card.appendChild(warn('var(--gold)','var(--gold-light)','calendar-x',
@@ -2392,6 +2406,28 @@ function icalFeedReport(f,stats,log){
     fetchLine=`Fetched ${whenShort(f.last_ok_at)} · ${plural(f.last_count||0,'event')} in the feed`;
   }else fetchLine='Not fetched yet — tap Check now.';
   wrap.appendChild(div({'data-feed-fetch':'1',style:{fontSize:12,color:'var(--muted)',marginTop:3,lineHeight:1.45}},fetchLine));
+  const other=f.platform==='Airbnb'?'Booking.com':'Airbnb';
+  const on=!!f.connected;
+  const sw=btn({'data-feed-connected':f.id,role:'switch','aria-checked':String(on),disabled:!!f.connectedMissing,
+    style:{display:'flex',alignItems:'center',gap:9,width:'100%',textAlign:'left',background:'none',border:'none',
+      padding:'8px 0 2px',minHeight:44,color:'var(--text)',fontSize:12.5,fontWeight:600}},
+    span({style:{width:34,height:20,borderRadius:10,flexShrink:0,position:'relative',background:on?'var(--accent)':'var(--border)',
+      transition:'background .2s'}},span({style:{position:'absolute',top:2,left:on?16:2,width:16,height:16,borderRadius:8,
+      background:'var(--white)',transition:'left .2s'}})),
+    span({},`${f.platform} is connected to ${other}’s calendar`));
+  sw.addEventListener('click',async()=>{
+    sw.disabled=true;
+    try{ await window.StayLogCloud.setFeedConnected(f.id,!on);
+      // the still-open check is worked out at each sync: run one now
+      await window.StayLogCloud.push(state.data,{manual:true}).catch(()=>{});
+      render(); }
+    catch(err){ sw.disabled=false; alert(err.message||String(err)); }
+  });
+  wrap.appendChild(sw);
+  wrap.appendChild(div({'data-feed-connected-note':'1',style:{fontSize:11.5,color:'var(--muted)',lineHeight:1.45,marginTop:2}},
+    f.connectedMissing?`Run supabase/ical-connected.sql in Supabase to use this.`
+    :f.platform==='Airbnb'?'Airbnb’s calendar link doesn’t include dates it copies from Booking.com, so those stays can’t be checked there.'
+    :'If Booking.com’s calendar link leaves out dates it copies from Airbnb, turn this on: those stays can’t be checked there.'));
   if(!stats)return wrap;
   // what it led to here
   const tile=(label,n,attr,tone)=>div({style:{flex:1}},div({className:'kicker'},label),

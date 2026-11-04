@@ -37,6 +37,7 @@ kept outside it and was lost when the machine running them was reset.
     node tests/test_notify_function.js   # the notify Edge Function in Node: each alert only when its condition holds,
                                          # pushes decrypted (RFC 8291) and VAPID-verified (RFC 8292)
     node tests/test_push_app.js       # menu, subscribe/unsubscribe, quiet re-subscribe, deep links, sw.js push handlers
+    node tests/test_ical_connected.js # per-feed "connected" setting and per-booking "Closed on …" for the still-open check
     node tests/test_cancel.js         # bookings cancelled, never deleted: Cancel + Undo, checked-out disabled, cancelled imports stay cancelled
     node tests/test_glass.js          # the tab bar's glass: translucent, seen through, solid fallback, label contrast measured from pixels
     node tests/test_tabbar.js         # the floating tab bar and ⋯: 34px home indicator simulated, light/dark, shrink on scroll

@@ -115,7 +115,13 @@ begin
     grant update (expense_id) on public.utensil_marks to authenticated;
   end if;
   if to_regclass('public.ical_feeds') is not null then
-    grant select, insert, update, delete on public.ical_feeds to authenticated;
+    if exists (select 1 from information_schema.columns where table_schema = 'public'
+               and table_name = 'ical_feeds' and column_name = 'connected') then
+      grant select, insert, delete on public.ical_feeds to authenticated;   -- ical-connected.sql: column grants
+      grant update (owner_id, property_id, platform, url, connected) on public.ical_feeds to authenticated;
+    else
+      grant select, insert, update, delete on public.ical_feeds to authenticated;
+    end if;
     grant select on public.ical_events to authenticated;
     grant update (imported_booking_id) on public.ical_events to authenticated;
   end if;

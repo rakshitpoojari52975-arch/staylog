@@ -609,6 +609,12 @@
     const [y, m, d] = iso.split('-').map(Number);
     return new Date(Date.UTC(y, m - 1, d + 1)).toISOString().slice(0, 10);   // a calendar date, not a moment
   };
+  // A feed marked `connected` (ical_feeds.connected, supabase/ical-connected.sql)
+  // is on a platform linked to the other platform's calendar: it closes those
+  // stays itself, and its export leaves the copied dates out (confirmed for
+  // Airbnb on the real feed), so stays from the other platform are not
+  // checked against it. Direct stays still are.
+  const OTHER_PLATFORM = { Airbnb: 'Booking.com', 'Booking.com': 'Airbnb' };
   function coverageGaps(events, feeds, bookings, today) {
     const byId = new Map((bookings || []).map(b => [b.id, b]));
     const out = { gaps: {}, proven: {} };
@@ -622,6 +628,7 @@
       if (!proven || !f.last_ok_at || f.last_error) continue;
       for (const b of bookings || []) {
         if (b.status === 'cancelled' || b.propertyId !== f.property_id || (b.source || 'Direct') === f.platform) continue;
+        if (f.connected && (b.source || 'Direct') === OTHER_PLATFORM[f.platform]) continue;
         if (!b.checkIn || !b.checkOut || !(b.checkOut > today)) continue;
         const nights = [];
         for (let n = b.checkIn > today ? b.checkIn : today; n < b.checkOut && nights.length < 366; n = nextDay(n)) nights.push(n);
@@ -674,8 +681,7 @@
       }
       // The still-open check, on the bookings and stamps as they now stand.
       let cover = null;
-      const { data: feedRows, error: fErr } = await c.from('ical_feeds')
-        .select('id,property_id,platform,last_ok_at,last_error').eq('owner_id', owner);
+      const { data: feedRows, error: fErr } = await selectFeeds(c, owner, 'id,property_id,platform,last_ok_at,last_error');
       if (!fErr) {
         const stamped = new Map(plan.stamp.map(x => [x.feed_id + '|' + x.uid, x.booking_id]));
         const evs = (events || []).map(e => ({ ...e,
@@ -696,15 +702,32 @@
     }
   }
 
+  // Reads ical_feeds with `connected` when ical-connected.sql has run, and
+  // without it (every feed then counts as not connected) until it has.
+  const CONNECTED_SQL = 'supabase/ical-connected.sql';
+  const columnMissing = e => /column|42703|PGRST204/i.test(`${(e && e.code) || ''} ${(e && e.message) || ''}`);
+  async function selectFeeds(c, owner, cols) {
+    const r = await c.from('ical_feeds').select(cols + ',connected').eq('owner_id', owner);
+    if (!r.error || !columnMissing(r.error)) return r;
+    const r2 = await c.from('ical_feeds').select(cols).eq('owner_id', owner);
+    return r2.error ? r2 : { data: (r2.data || []).map(f => ({ ...f, connected: false, connectedMissing: true })), error: null };
+  }
   // Feed links live only in the cloud: they are read by the function there.
   async function listFeeds() {
     if (!session) throw new Error('not signed in');
     const c = await client();
-    const { data, error } = await c.from('ical_feeds')
-      .select('id,property_id,platform,url,last_fetched_at,last_ok_at,last_error,last_count')
-      .eq('owner_id', session.user.id);
+    const { data, error } = await selectFeeds(c, session.user.id, 'id,property_id,platform,url,last_fetched_at,last_ok_at,last_error,last_count');
     if (error) throw error;
     return data || [];
+  }
+  // "<platform> is connected to <other>'s calendar", per feed. The owner may
+  // update this (and the link) but never the function's fetch record.
+  async function setFeedConnected(feedId, on) {
+    if (!session) throw new Error('not signed in');
+    const c = await client();
+    const { error } = await c.from('ical_feeds').update({ connected: !!on })
+      .eq('owner_id', session.user.id).eq('id', feedId);
+    if (error) throw new Error(columnMissing(error) ? `Run ${CONNECTED_SQL} in Supabase first.` : (error.message || String(error)));
   }
   async function saveFeed(propertyId, platform, url) {
     if (!session) throw new Error('not signed in');
@@ -1032,7 +1055,7 @@
 
   window.StayLogCloud = {
     restoreSession, signIn, signOut, push, status, markDirty, checkIn,
-    listFeeds, saveFeed, importNow,
+    listFeeds, saveFeed, importNow, setFeedConnected,
     pushSave, pushRemove, pushPrefs, savePushPrefs, pushTest,
     inboxList, inboxRead,
     _planIcal: planIcal, _icalBookingId: icalBookingId, _coverageGaps: coverageGaps,   // for the tests
