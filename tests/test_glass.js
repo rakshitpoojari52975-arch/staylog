@@ -1,4 +1,5 @@
-/* The tab bar is Liquid Glass: a thin tint over a blur of the page behind it.
+/* The tab bar is clear glass (v58): a very thin tint over a light blur, so
+   the page behind it stays plainly readable through it.
    Checked in light and dark: the pill's and ⋯'s computed background is
    translucent (alpha < 0.6) with backdrop-filter set; the page is really seen
    through it (pixels under the pill change with what scrolls behind); with
@@ -87,11 +88,13 @@ for(const dark of [false,true]){
   const st=await page.evaluate(()=>['.tabbar .pill','.tabbar .navmore','[data-tab][aria-current="page"]'].map(sel=>{
     const c=getComputedStyle(document.querySelector(sel));
     return {bg:c.backgroundColor,bf:c.backdropFilter||'',wbf:c.webkitBackdropFilter||'',border:c.borderTopColor,shadow:c.boxShadow};}));
-  ok('the pill is translucent (alpha < 0.6)', alpha(st[0].bg)<0.6&&alpha(st[0].bg)>=0.3, st[0].bg);
-  ok('so is the ⋯ button', alpha(st[1].bg)<0.6&&alpha(st[1].bg)>=0.3, st[1].bg);
-  ok('both blur and saturate what is behind them', [st[0],st[1]].every(s=>/blur\(20px\)/.test(s.bf||s.wbf)&&/saturate\(1\.8|saturate\(180%/.test(s.bf||s.wbf)), st);
-  ok('with a hairline translucent border and a soft shadow', [st[0],st[1]].every(s=>alpha(s.border)<0.3&&alpha(s.border)>0&&/rgba/.test(s.shadow)), st);
-  ok('the active tab is a slightly more opaque capsule', alpha(st[2].bg)>alpha(st[0].bg)&&alpha(st[2].bg)<1, st[2].bg);
+  ok('the pill is clear glass: tint alpha ≤ 0.15', alpha(st[0].bg)<=0.15&&alpha(st[0].bg)>0, st[0].bg);
+  ok('so is the ⋯ button', alpha(st[1].bg)<=0.15&&alpha(st[1].bg)>0, st[1].bg);
+  const blurPx=f=>{const m=/blur\(([\d.]+)px\)/.exec(f||'');return m?+m[1]:NaN;};
+  ok('a light blur (≤ 4px) and saturate, on both', [st[0],st[1]].every(s=>blurPx(s.bf||s.wbf)<=4&&blurPx(s.bf||s.wbf)>0&&/saturate\(/.test(s.bf||s.wbf)), st.map(s=>s.bf||s.wbf));
+  ok(`a hairline border, ${dark?'about 18%':'about 35%'} white, and a soft shadow`, [st[0],st[1]].every(s=>
+    /^rgba\(255, 255, 255,/.test(s.border)&&Math.abs(alpha(s.border)-(dark?0.18:0.35))<0.03&&/rgba/.test(s.shadow)), st);
+  ok('the active tab is a slightly more opaque capsule (about 22%)', alpha(st[2].bg)>alpha(st[0].bg)&&Math.abs(alpha(st[2].bg)-0.22)<0.03, st[2].bg);
 
   // The page really shows through: the same pixels under the pill change with what is behind.
   const pill=await page.locator('.tabbar .pill').boundingBox(), more=await page.locator('[data-navmore]').boundingBox();
@@ -127,7 +130,12 @@ for(const dark of [false,true]){
     ok(`labels read at 4.5:1 or better over a ${kind} card`, res.every(x=>x.glyph>10&&x.p5>=4.5), res);
   }
   const w=await page.evaluate(()=>{const c=getComputedStyle(document.querySelector('[data-tab] span'));return {w:+c.fontWeight,ts:c.textShadow};});
-  ok('labels are bold, with a soft halo', w.w>=700&&/px/.test(w.ts)&&w.ts!=='none', w);
+  const cream=await page.evaluate(()=>{const p=document.createElement('div');p.style.color='var(--cream)';document.body.appendChild(p);
+    const c=getComputedStyle(p).color;p.remove();return c;});
+  const moreTs=await page.evaluate(()=>getComputedStyle(document.querySelector('[data-navmore]')).textShadow);
+  ok('labels are bold (700), with a thin halo in the page\'s own background colour', w.w>=700&&w.ts.includes(cream)
+     &&/2px/.test(w.ts)&&/4px/.test(w.ts), {w,cream});
+  ok('the ⋯ icon has the same halo', moreTs.includes(cream)&&/2px/.test(moreTs), moreTs);
   ok('no page errors', errs.length===0, errs);
   await ctx.close();
 
@@ -147,9 +155,12 @@ for(const dark of [false,true]){
 console.log('\n— where backdrop-filter is unsupported —');
 { const css=fs.readFileSync(path.join(ROOT,'index.html'),'utf8');
   ok('@supports not (backdrop-filter): solid background', /@supports not \(\(-webkit-backdrop-filter: blur\(1px\)\) or \(backdrop-filter: blur\(1px\)\)\)\s*\{\s*\.tabbar \.pill, \.tabbar \.navmore \{ background: var\(--white\); \}/.test(css));
-  ok('both the -webkit- prefix and the standard property', /-webkit-backdrop-filter: blur\(20px\) saturate\(180%\); backdrop-filter: blur\(20px\) saturate\(180%\)/.test(css));
+  ok('both the -webkit- prefix and the standard property, from --nav-blur and --nav-saturate',
+     /-webkit-backdrop-filter: blur\(var\(--nav-blur\)\) saturate\(var\(--nav-saturate\)\);\s*backdrop-filter: blur\(var\(--nav-blur\)\) saturate\(var\(--nav-saturate\)\)/.test(css));
+  ok('--nav-blur 3px, --nav-saturate 140%', /--nav-blur:\s*3px;/.test(css)&&/--nav-saturate:\s*140%;/.test(css));
   const tok=n=>[...css.matchAll(new RegExp(`--${n}:\\s*([^;]+);`,'g'))].map(m=>m[1].trim());
-  ok('every glass colour is a theme token, defined for light and both dark blocks', ['nav-glass','nav-active','nav-line','nav-rim','nav-ink','nav-halo'].every(n=>tok(n).length===3), ['nav-glass','nav-active'].map(n=>tok(n))); }
+  ok('every glass colour is a theme token, defined for light and both dark blocks', ['nav-glass','nav-active','nav-line','nav-rim','nav-ink','nav-active-ink'].every(n=>tok(n).length===3), ['nav-glass','nav-active'].map(n=>tok(n)));
+  ok('tints: .12 light, .14 dark (both dark blocks)', JSON.stringify(tok('nav-glass'))==='["rgba(255,253,248,.12)","rgba(30,33,24,.14)","rgba(30,33,24,.14)"]', tok('nav-glass')); }
 
 await br.close(); srv.close();
 console.log(`\n${pass} passed, ${fail} failed`);

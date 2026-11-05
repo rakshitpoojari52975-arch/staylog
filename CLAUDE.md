@@ -571,18 +571,22 @@ also fetch from Supabase with `cache: 'no-store'` as a second layer.
 - **The floating tab bar** (v55, `renderNav`, styles `.tabbar` in
   `index.html`): a rounded pill of Home, Bookings, Expenses, Loans, Reports,
   12px in from the sides, `--safe-bottom + 10px` above the screen's edge
-  (`--safe-bottom: env(safe-area-inset-bottom, 0px)`). **Liquid Glass** (v56):
-  the page scrolls visibly behind it — a ~40% tint (`--nav-glass`) under
-  `blur(20px) saturate(180%)` (`-webkit-backdrop-filter` and
-  `backdrop-filter`), a hairline translucent border (`--nav-line`), a light
-  inner rim (`--nav-rim`) and a soft shadow (`--nav-shadow`), all theme
+  (`--safe-bottom: env(safe-area-inset-bottom, 0px)`). **Clear glass** (v58;
+  v56 was frosted and read as opaque): the page is plainly readable through
+  it — a 12% tint (`--nav-glass`, 14% in dark) under
+  `blur(var(--nav-blur)) saturate(var(--nav-saturate))` (3px, 140%; tune
+  those two tokens only), `-webkit-` prefixed. A hairline border
+  (`--nav-line`, 35% white light / 18% dark) keeps the edge visible, with a
+  light inner rim (`--nav-rim`) and a soft shadow (`--nav-shadow`); all theme
   tokens in light and both dark blocks. Solid `--white` only under
   `@supports not` (no backdrop-filter) and `prefers-reduced-transparency`.
-  Labels and icons are `--nav-ink`, bold, with a soft `--nav-halo` text
-  shadow, so they read over any content: `tests/test_glass.js` measures
-  label contrast from real pixels (≥ 4.5:1 over a plain and a busy card). The
-  active tab (`aria-current`) is a slightly more opaque capsule
-  (`--nav-active`). Beside it a round **⋯** (`data-navmore`) of the same height
+  Labels (700) and icons are `--nav-ink` with a thin halo,
+  `0 0 2px var(--cream), 0 0 4px var(--cream)` (the page's own background,
+  light or dark). The active tab (`aria-current`) is a 22% capsule
+  (`--nav-active`) with `--nav-active-ink` (the accent, deepened in light mode:
+  at 22% the plain accent read 3.8:1 over busy content).
+  `tests/test_glass.js` measures label contrast from real pixels (≥ 4.5:1
+  over a plain and a busy card). Beside it a round **⋯** (`data-navmore`) of the same height
   opens the menu sheet, whose first row is **Notifications**; a red dot
   (`data-unread-dot`) shows while the inbox has unread rows. The header keeps
   the title, property picker and bell; the ⋯ left it. Scrolling down past
@@ -640,7 +644,7 @@ also fetch from Supabase with `cache: 'no-store'` as a second layer.
     node tests/test_push_app.js          # menu, subscribe/unsubscribe, quiet re-subscribe, deep links, sw.js handlers
     node tests/test_ical_connected.js    # "connected" per feed: no gap for the other platform's stays, Direct still checked, survives a sync; "Closed on …" hides a gap until the dates change
     node tests/test_cancel.js            # no Delete; Cancel confirms + Undo; checked-out disabled; cancelled import stays cancelled over drains; excluded from revenue/occupancy
-    node tests/test_glass.js             # Liquid Glass bar: translucent (alpha < 0.6) + backdrop-filter, page seen through, solid with reduced transparency, label contrast from pixels
+    node tests/test_glass.js             # clear glass bar: tint ≤ 0.15, blur ≤ 4px, halo, page seen through, solid with reduced transparency, label contrast from pixels
     node tests/test_tabbar.js            # floating tab bar: 34px home indicator, light/dark, 44px targets, last card clear, ⋯ + dot, shrink on scroll, reduced motion
     node tests/test_safe_area.js         # 47px status bar: header ⋯ and bell below it and tappable, light/dark, PIN, sheets, month picker, toast, staff.html
     node tests/test_inbox.js             # Notifications screen: bell, groups, tap → link + read, Mark all read + badge, Done per type, Still to do, Not delivered, offline, setAppBadge
