@@ -94,7 +94,7 @@ for(const dark of [false,true]){
 
 console.log('\n— a solid fallback where nothing can blur, or less transparency is asked for —');
 { const css=fs.readFileSync(path.join(ROOT,'index.html'),'utf8');
-  ok('-webkit-backdrop-filter and backdrop-filter both set', /-webkit-backdrop-filter:\s*blur\(20px\) saturate\(180%\)/.test(css)&&/[^-]backdrop-filter:\s*blur\(20px\) saturate\(180%\)/.test(css));
+  ok('-webkit-backdrop-filter and backdrop-filter both set', /-webkit-backdrop-filter:\s*blur\(var\(--nav-blur\)\)/.test(css)&&/[^-]backdrop-filter:\s*blur\(var\(--nav-blur\)\)/.test(css));
   ok('@supports not (backdrop-filter) → solid --white', /@supports not \(\(-webkit-backdrop-filter: blur\(1px\)\) or \(backdrop-filter: blur\(1px\)\)\)\s*\{\s*\.tabbar \.pill, \.tabbar \.navmore \{ background: var\(--white\); \}/.test(css));
   ok('prefers-reduced-transparency → solid, no blur', /@media \(prefers-reduced-transparency: reduce\)\s*\{\s*\.tabbar \.pill, \.tabbar \.navmore \{ background: var\(--white\);\s*-webkit-backdrop-filter: none; backdrop-filter: none; \}/.test(css)); }
 
