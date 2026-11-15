@@ -1,18 +1,23 @@
-/* Raaya Vasyam · staff view
+/* StayLog · staff view
    ────────────────────────────────────────────────────────────────────────────
    What the house help sees. It reads nothing directly — two database functions
    hand back a fixed list of columns, so guest names, phone numbers and money
    cannot appear here however the policies change later.
 
-   Signing in asks for a username, not an email. Her account is a made-up
-   address she never needs to know about.
+   Signing in asks for the account code, a username and a password, not an
+   email: her account is a made-up address she never needs to know about
+   (<username>.<code>@staff.staylog.invalid, made from the app since v64). A
+   login made before that keeps working without a code. Every name on the
+   page — the business, the owner, her own — comes from the data
+   (staff_profile), never from this file.
    ──────────────────────────────────────────────────────────────────────────── */
 'use strict';
 
 const CFG = window.STAYLOG_CLOUD || {};
-const CHECKIN_TIME = '1:00 PM', CHECKOUT_TIME = '11:00 AM';
-const CACHE_KEY = 'rv_staff_cache';
-const PAGE_VERSION = 'v11 · 28 Oct 2026';
+const STAFF_DOMAIN = 'staff.staylog.invalid';
+const CODE_KEY = 'staylog_staff_code', PROP_KEY = 'staylog_staff_prop';
+const OLD_CACHE_KEY = 'rv_staff_cache';
+const PAGE_VERSION = 'v12 · 15 Nov 2026';
 
 const MONTH_SHORT = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 const DAYS = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
@@ -61,19 +66,33 @@ function client() {
     { auth:{ persistSession:true, autoRefreshToken:true }, global:{ fetch: noStoreFetch } });
   return sb;
 }
-const cacheGet = () => { try { return JSON.parse(localStorage.getItem(CACHE_KEY)); } catch { return null; } };
-const cacheSet = v => { try { localStorage.setItem(CACHE_KEY, JSON.stringify(v)); } catch {} };
+// The offline copy is per login (v64): the next person signing in on this
+// phone never sees the last one's wages, not even for a moment.
+const cacheKey = () => session && session.user ? 'staylog_staff_cache:' + session.user.id : null;
+const cacheGet = () => { try { const k = cacheKey(); return k ? JSON.parse(localStorage.getItem(k)) : null; } catch { return null; } };
+const cacheSet = v => { try { const k = cacheKey(); if (k) localStorage.setItem(k, JSON.stringify(v)); } catch {} };
+try { localStorage.removeItem(OLD_CACHE_KEY); } catch {}
+const lsGet = k => { try { return localStorage.getItem(k) || ''; } catch { return ''; } };
+const lsSet = (k, v) => { try { v ? localStorage.setItem(k, v) : localStorage.removeItem(k); } catch {} };
+// Names from the data, with plain words when there are none yet.
+const prof = () => (view && view.profile) || {};
+const ownerName = () => prof().owner || 'the owner';
+const business = () => prof().business || 'Your workplace';
+const myProps = () => Array.isArray(prof().properties) ? prof().properties : [];
 
 // ── Data ─────────────────────────────────────────────────────────────────────
 async function fetchView() {
   const c = client();
-  const [cal, standing] = await Promise.all([
+  const [cal, standing, profile] = await Promise.all([
     c.rpc('staff_calendar'),
     c.rpc('staff_standing'),
+    c.rpc('staff_profile'),          // v64; before 07-staff.sql it is not there, and the page says less
   ]);
   if (cal.error) throw cal.error;
   if (standing.error) throw standing.error;
-  const v = { calendar: cal.data || [], standing: standing.data || null, at: new Date().toISOString() };
+  const v = { calendar: cal.data || [], standing: standing.data || null, profile: profile.error ? null : (profile.data || null),
+    at: new Date().toISOString() };
+  if (v.profile && v.profile.business) document.title = v.profile.business + ' — Staff';
   cacheSet(v);
   return v;
 }
@@ -84,48 +103,60 @@ async function refresh(silent) {
   try { view = await fetchView(); }
   catch (err) {
     if (!view) view = cacheGet();
-    if (!silent) alert('Could not refresh: ' + (err.message || err));
+    if (!silent) alert(isNetwork(err) ? 'No internet just now — showing what was saved last. Try again in a while.' : 'Could not refresh: ' + (err.message || err));
   }
   finally { busy = false; render(); }
 }
 
 // ── Login ────────────────────────────────────────────────────────────────────
+const isNetwork = err => !navigator.onLine || /fetch|network|load failed|timed? ?out/i.test(String((err && (err.message || err.name)) || err));
+const invalidLogin = err => /invalid login|invalid credentials|invalid_grant/i.test(String((err && err.message) || ''));
 function renderLogin(msg) {
   const app = document.getElementById('app');
   app.innerHTML = '';
   const wrap = div({style:{display:'flex',flexDirection:'column',justifyContent:'center',
     minHeight:'100vh',padding:'calc(var(--safe-top, 0px) + 32px) 22px 32px',gap:13}});
 
-  wrap.appendChild(div({className:'display',style:{fontSize:32,color:'var(--accent)',textAlign:'center'}},'Raaya Vasyam'));
+  wrap.appendChild(div({className:'display',style:{fontSize:32,color:'var(--accent)',textAlign:'center'}},'Staff'));
   wrap.appendChild(div({style:{fontSize:13.5,color:'var(--muted)',textAlign:'center',marginBottom:18,lineHeight:1.6}},
     'Your schedule, wages and loan'));
 
-  const user = h('input',{type:'text',placeholder:'Username',autocapitalize:'none',
+  const code = h('input',{type:'text',placeholder:'Account code (leave empty if you were not given one)','data-code':'1',
+    autocapitalize:'none',autocorrect:'off',spellcheck:'false',value:lsGet(CODE_KEY)});
+  const user = h('input',{type:'text',placeholder:'Username',autocapitalize:'none','data-user':'1',
     autocorrect:'off',spellcheck:'false',autocomplete:'username'});
-  const pass = h('input',{type:'password',placeholder:'Password',autocomplete:'current-password'});
-  wrap.appendChild(user); wrap.appendChild(pass);
+  const pass = h('input',{type:'password',placeholder:'Password',autocomplete:'current-password','data-pass':'1'});
+  wrap.appendChild(code); wrap.appendChild(user); wrap.appendChild(pass);
 
-  if (msg) wrap.appendChild(div({style:{fontSize:13,color:'var(--danger)',background:'var(--danger-light)',
+  if (msg) wrap.appendChild(div({'data-login-msg':'1',style:{fontSize:13,color:'var(--danger)',background:'var(--danger-light)',
     border:'1px solid var(--danger)',borderRadius:'var(--radius-sm)',padding:'10px 12px',lineHeight:1.45}}, msg));
 
   const go = h('button',{className:'btn'},'Sign in');
   const submit = async () => {
-    const u = user.value.trim(), p = pass.value;
+    const u = user.value.trim().toLowerCase(), p = pass.value, k = code.value.trim().toLowerCase();
     if (!u || !p) return;
     go.disabled = true; go.textContent = 'Signing in…';
-    try {
-      const email = u.includes('@') ? u : `${u.toLowerCase()}@${CFG.staffEmailDomain}`;
-      const { data, error } = await client().auth.signInWithPassword({ email, password: p });
-      if (error) throw error;
-      session = data.session;
-      view = cacheGet();
-      render();
-      refresh(true);
-    } catch (err) {
-      renderLogin(/Invalid login/i.test(err.message||'')
-        ? 'That username and password did not match. Check with Rakshit if you are stuck.'
-        : (err.message || 'Could not sign in.'));
+    // With a code: the login made in the app. Without one (or if that does
+    // not match): a login made before v64, on its old address.
+    const tries = u.includes('@') ? [u] : [k ? `${u}.${k}@${STAFF_DOMAIN}` : null, CFG.staffEmailDomain ? `${u}@${CFG.staffEmailDomain}` : null].filter(Boolean);
+    let lastErr = null;
+    for (const email of tries) {
+      try {
+        const { data, error } = await client().auth.signInWithPassword({ email, password: p });
+        if (error) throw error;
+        session = data.session;
+        lsSet(CODE_KEY, k);
+        view = cacheGet();
+        render();
+        refresh(true);
+        return;
+      } catch (err) { lastErr = err; if (!invalidLogin(err)) break; }
     }
+    renderLogin(isNetwork(lastErr)
+      ? 'Could not reach the internet. Check your connection and try again — your password was not the problem.'
+      : invalidLogin(lastErr)
+        ? 'That username and password did not match. Check the account code too, and ask the owner if you are stuck.'
+        : ((lastErr && lastErr.message) || 'Could not sign in.'));
   };
   go.addEventListener('click', submit);
   pass.addEventListener('keydown', e => { if (e.key === 'Enter') submit(); });
@@ -144,20 +175,26 @@ let detailOpen = false;
 // the totals she is entitled to see.
 let marking = false;
 
+const pickedProp = () => { const v = lsGet(PROP_KEY); return myProps().some(p => p.id === v) ? v : ''; };
 async function markToday(on) {
   if (marking) return;
   marking = true; render();
   try {
-    const { data, error } = await client().rpc(on ? 'staff_mark_today' : 'staff_unmark_today');
+    // At more than one property she says which; the choice is remembered (v64).
+    const props = myProps(), at = props.length > 1 ? pickedProp() : null;
+    if (on && props.length > 1 && !at) { alert('Choose where you are working today first.'); return; }
+    const { data, error } = on && at
+      ? await client().rpc('staff_mark_today_at', { p_property: at })
+      : await client().rpc(on ? 'staff_mark_today' : 'staff_unmark_today');
     if (error) throw error;
     if (data && data.ok === false) {
       alert(
         data.reason === 'too_late'
           ? 'Today\u2019s mark can only be removed within 15 minutes of making it. '
-            + 'Please tell Rakshit if it needs changing.'
+            + `Please tell ${ownerName()} if it needs changing.`
         : data.reason === 'already_counted'
-          ? 'Today has already been counted. Ask Rakshit if it needs changing.'
-          : 'Your access is not active. Please check with Rakshit.');
+          ? `Today has already been counted. Ask ${ownerName()} if it needs changing.`
+          : `Your access is not active. Please check with ${ownerName()}.`);
     }
   } catch (err) {
     alert('Could not save that — check your internet and try again.');
@@ -170,7 +207,7 @@ async function markToday(on) {
 // ── Utensil cleaning ─────────────────────────────────────────────────────────
 // Beside attendance, once a day, only on a day she is marked present, with the
 // same 15-minute undo (all enforced in SQL: supabase/utensils.sql). She uses it
-// only when Rakshit is paying her for it, not when a guest has.
+// only when the owner is paying for it, not when a guest has.
 let markingUtensils = false;
 async function markUtensils(on) {
   if (markingUtensils) return;
@@ -184,10 +221,10 @@ async function markUtensils(on) {
           ? 'Please mark yourself present first (I came in today).'
         : data.reason === 'too_late'
           ? 'This can only be removed within 15 minutes of marking it. '
-            + 'Please tell Rakshit if it needs changing.'
+            + `Please tell ${ownerName()} if it needs changing.`
         : data.reason === 'already_counted'
-          ? 'This has already been counted. Ask Rakshit if it needs changing.'
-          : 'Your access is not active. Please check with Rakshit.');
+          ? `This has already been counted. Ask ${ownerName()} if it needs changing.`
+          : `Your access is not active. Please check with ${ownerName()}.`);
     }
   } catch (err) {
     alert('Could not save that — check your internet and try again.');
@@ -251,6 +288,15 @@ function attendanceCard(st) {
         'Today\u2019s mark was removed'
         + (isNaN(un) ? '' : ' at ' + un.toLocaleTimeString('en-IN',{hour:'numeric',minute:'2-digit'}))
         + '. Mark it again if that was a mistake.'));
+    }
+    const props = myProps();
+    if (props.length > 1) {
+      const sel = h('select',{'data-prop-pick':'1',style:{marginTop:11,width:'100%',minHeight:44,borderRadius:'var(--radius-sm)',
+        border:'1.5px solid var(--border)',background:'var(--white)',padding:'8px 10px',fontSize:14}});
+      sel.appendChild(h('option',{value:''},'Where are you working today?'));
+      props.forEach(p => { const o = h('option',{value:p.id},p.name); if (p.id === pickedProp()) o.selected = true; sel.appendChild(o); });
+      sel.addEventListener('change', e => lsSet(PROP_KEY, e.target.value));
+      card.appendChild(sel);
     }
     card.appendChild(h('button',{className:'btn',disabled:marking,style:{marginTop:11},
       onClick:()=>markToday(true)}, marking ? 'Saving…' : 'I came in today'));
@@ -381,7 +427,7 @@ function staleCard() {
     background:'var(--gold-light)'}},
     div({className:'kicker',style:{color:'var(--gold)'}},'Wages unavailable'),
     div({style:{fontSize:13.5,color:'var(--text-mid)',marginTop:6,lineHeight:1.55}},
-      'This page could not read your wage figures. Nothing is wrong with your money — please ask Rakshit to finish the update.'));
+      `This page could not read your wage figures. Nothing is wrong with your money — please ask ${ownerName()} to finish the update.`));
 }
 
 function loanCard(loan) {
@@ -507,12 +553,12 @@ function render() {
   wrap.appendChild(div({style:{display:'flex',alignItems:'center',justifyContent:'space-between',
     gap:10,paddingBottom:4}},
     div({style:{minWidth:0}},
-      div({className:'display',style:{fontSize:21}}, 'Raaya Vasyam'),
+      div({className:'display',style:{fontSize:21},'data-business':'1'}, business()),
       div({style:{fontSize:12,color:'var(--muted)',marginTop:1}},
-        st && st.name ? st.name : 'Staff')),
+        `${prof().name || (st && st.name) || 'Staff'} · Your schedule, wages and loan`)),
     h('button',{className:'btn-quiet',style:{flexShrink:0,minHeight:38,padding:'8px 12px',fontSize:12.5},
-      onClick:async()=>{ await client().auth.signOut(); session=null; view=null;
-        try{localStorage.removeItem(CACHE_KEY);}catch{} render(); }},'Sign out')));
+      onClick:async()=>{ const k = cacheKey(); await client().auth.signOut(); session=null; view=null;
+        try{ if (k) localStorage.removeItem(k); }catch{} render(); }},'Sign out')));
 
   if (busy && !view)
     wrap.appendChild(div({className:'card',style:{padding:'30px',textAlign:'center',
@@ -521,7 +567,7 @@ function render() {
   if (!st && !busy)
     wrap.appendChild(div({className:'card',style:{padding:'20px',textAlign:'center',
       color:'var(--muted)',fontSize:13.5,lineHeight:1.6}},
-      'Nothing is shared with this account yet. Ask Rakshit to check your access.'));
+      `Nothing is shared with this account yet. Ask ${ownerName()} to check your access.`));
 
   if (st) {
     wrap.appendChild(attendanceCard(st));
@@ -531,8 +577,12 @@ function render() {
 
   if (view) {
     wrap.appendChild(div({className:'display',style:{fontSize:17,margin:'12px 2px 2px'}},'Next 15 days'));
-    wrap.appendChild(div({style:{fontSize:12,color:'var(--muted)',margin:'0 2px 8px',lineHeight:1.5}},
-      `Guests arrive from ${CHECKIN_TIME} and leave by ${CHECKOUT_TIME}.`));
+    // Times from her properties; several with different times: each says its own.
+    const ps = myProps(), times = [...new Set(ps.map(p => `${p.checkin}|${p.checkout}`))];
+    const line = !ps.length ? 'Guests arrive in the afternoon and leave in the morning.'
+      : times.length === 1 ? `Guests arrive from ${ps[0].checkin} and leave by ${ps[0].checkout}.`
+      : ps.map(p => `${p.name}: in from ${p.checkin}, out by ${p.checkout}.`).join(' ');
+    wrap.appendChild(div({'data-times':'1',style:{fontSize:12,color:'var(--muted)',margin:'0 2px 8px',lineHeight:1.5}}, line));
     wrap.appendChild(calendarCard());
     wrap.appendChild(staysList());
   }
@@ -551,11 +601,11 @@ function render() {
 
 // ── Boot ─────────────────────────────────────────────────────────────────────
 (async function () {
-  view = cacheGet();
   try {
     const { data } = await client().auth.getSession();
     session = data.session || null;
   } catch {}
+  view = cacheGet();
   render();
   if (session) refresh(true);
 

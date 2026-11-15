@@ -53,6 +53,12 @@ checks as (
                     where table_schema = 'stay' and table_name = 'loans' and column_name = 'staff_id') = 'YES'
               then 'ok' else 'not yet — run 04-phase2.sql' end
   union all
+  -- 8. phase 5: staff "Works at" and her page's profile
+  select 'staff Works at and her profile (07-staff.sql)',
+         case when exists (select 1 from information_schema.columns where table_schema = 'stay' and table_name = 'staff' and column_name = 'works_at')
+                   and to_regprocedure('public.staff_profile()') is not null
+              then 'ok' else 'not yet — run 07-staff.sql' end
+  union all
   -- 7. the old app's tables are still there and untouched by this phase
   select 'old table public.' || t, case when to_regclass('public.' || t) is not null then 'ok (unchanged)' else 'not found' end
   from unnest(array['properties','bookings','expenses','staff','loans','loan_repayments','attendance']) t

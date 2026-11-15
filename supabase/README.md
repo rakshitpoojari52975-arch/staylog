@@ -22,6 +22,14 @@ Built beside the tables above; the app does not use it yet, and nothing in
 To undo: `stay/rollback-phase1.sql` (refuses once an account exists in
 `stay`), then remove `stay` from Exposed schemas.
 
+**Phase 5 (v64) — staff.** After merging:
+1. `stay/07-staff.sql`, then `stay/check.sql` (all `ok`).
+2. Edge Functions → **Deploy a new function** named `staff-login`: paste
+   `functions/staff-login/index.ts`, turn **Verify JWT off**, deploy. It needs
+   no secrets of its own (Supabase provides the URL and service role key).
+3. In the app, Staff: give Lakshmi a property under **Works at** if you like,
+   and add your name (the staff page says "Ask <your name> if you're stuck").
+
 **Phase 4 (v63) — properties as data.** After merging: `stay/06-property-texts.sql`
 (fills the house rules, house notes and welcome lines of your properties with
 the texts the app used to carry, word for word; only empty fields). Its last

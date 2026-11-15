@@ -56,7 +56,7 @@
     staff: [
       ['name', 'name', 'text', true], ['role', 'role', 'text'], ['phone', 'phone', 'text'], ['joinedOn', 'joined_on', 'date'],
       ['monthlySalary', 'monthly_salary', 'num'], ['dailyWage', 'daily_wage', 'num'], ['checkoutWage', 'checkout_wage', 'num'],
-      ['utensilRate', 'utensil_rate', 'num'], ['active', 'active', 'bool', true]],
+      ['utensilRate', 'utensil_rate', 'num'], ['active', 'active', 'bool', true], ['worksAt', 'works_at', 'textarr', true]],
     loans: [
       ['staffId', 'staff_id', 'text'], ['principal', 'principal', 'num', true], ['installmentAmount', 'installment_amount', 'num'],
       ['disbursedOn', 'disbursed_on', 'date'], ['firstDueDate', 'first_due_date', 'date'], ['status', 'status', 'text', true],
@@ -367,6 +367,20 @@
     return keep.length ? Object.fromEntries(keep.map(c => [c, mine[c]])) : null;
   }
 
+  // Her marks still waiting for a rate (no line yet): the server holds them
+  // and makes the line once the rate is set. Shown on Home (v64).
+  async function heldMarks(account) {
+    try {
+      const db = await stay(), out = [];
+      for (const [table, kind] of [['attendance', 'attendance'], ['utensil_marks', 'utensils']]) {
+        const { data, error } = await db.from(table).select('staff_id,date').eq('account_id', account).is('expense_id', null).is('deleted_at', null);
+        if (error) return;                    // not allowed to see staff: nothing to show
+        for (const r of data || []) out.push({ staff_id: r.staff_id, date: r.date, kind });
+      }
+      S.heldMarks = out;
+    } catch {}
+  }
+
   async function pull(account, touched) {
     for (const t of ORDER) {
       const since = S.cursor[t] ? new Date(Date.parse(S.cursor[t]) - PULL_OVERLAP_MS).toISOString() : null;
@@ -503,6 +517,7 @@
         before = flatten(S.data, m.account);
         baseBefore = clone(S.base);
         await pull(m.account, touched);
+        await heldMarks(m.account);
         await drainIcal(m.account);
         await push(m.account, opts.manual, touched);
         await stampEvents(m.account);
@@ -562,7 +577,8 @@
     try { if (m && S && S._ns === nsOf(m)) pending = outbox(m.account).length; } catch {}
     return { active: !!m, account: m && m.account, user: m && m.user, running: !!running,
       lastPull: S && S.lastPull, lastPush: S && S.lastPush, outbox: pending, held: (S && S.held) || 0,
-      conflicts: (S && S.conflicts) || [], errors: (S && S.errors) || [], lastError: (S && S.lastError) || '' };
+      conflicts: (S && S.conflicts) || [], errors: (S && S.errors) || [], lastError: (S && S.lastError) || '',
+      heldMarks: (S && S.heldMarks) || [] };
   }
 
   window.StayLogSync = {
@@ -627,6 +643,34 @@
       return { receiptNo: no, receiptOn: (row && row.receipt_on) || localToday() };
     },
     memberships: () => srv.memberships(),
+    // Staff logins of this account (v64): who has one, its username, whether
+    // it is on; changes go through the staff-login Edge Function.
+    async staffLogins() {
+      const m = model(); if (!m) return { logins: [], code: '' };
+      const db = await stay();
+      const [{ data: logins, error }, { data: acct }] = await Promise.all([
+        db.from('staff_logins').select('staff_id,username,active').eq('account_id', m.account),
+        db.from('accounts').select('code,owner_name').eq('id', m.account)]);
+      if (error) throw new Error(error.message || String(error));
+      return { logins: logins || [], code: (acct && acct[0] && acct[0].code) || '', ownerName: (acct && acct[0] && acct[0].owner_name) || '' };
+    },
+    async staffLogin(action, fields) {
+      const m = model(); if (!m) throw new Error('Not switched over yet');
+      const c = await C().client();
+      const { data, error } = await c.functions.invoke('staff-login', { body: { action, account: m.account, ...fields } });
+      if (error) {
+        let msg = '';
+        try { msg = (await error.context.json()).error || ''; } catch {}
+        throw new Error(msg || (/404|not found/i.test(error.message || '') ? 'The staff-login function is not deployed yet.' : (error.message || 'That did not work.')));
+      }
+      return data;
+    },
+    async setOwnerName(name) {
+      const m = model(); if (!m) return;
+      const db = await stay();
+      const { error } = await db.from('accounts').update({ owner_name: String(name || '').trim() || null }).eq('id', m.account);
+      if (error) throw new Error(error.message || String(error));
+    },
     switchAccount(account) { const m = model(); if (!m) return; this.activate(m.user, account); },
     events: () => (S && S.events) || [],
     migration: {

@@ -44,6 +44,10 @@ kept outside it and was lost when the machine running them was reset.
     node tests/test_sync.js           # phase 2: the per-row sync engine, two devices against a stand-in for `stay` (+ real apply_change with STAYLOG_PG)
     node tests/test_sync_app.js       # phase 2 in the app: hashed PIN, dormant until switch-over, own storage, Sync panel + Use mine, server receipts
     node tests/test_property_data.js  # phase 4: properties as data (+ 06-property-texts.sql with STAYLOG_PG)
+    node tests/test_staff_page.js     # phase 5: the staff page
+    node tests/test_staff_app.js      # phase 5: staff in the app
+    node tests/test_staff_login_function.js   # phase 5: the staff-login Edge Function
+    STAYLOG_PG="…" node tests/test_staff_sql.js      # phase 5: 07-staff.sql
     node tests/test_move_app.js       # phase 3: Move to the new system — copy, compare, switch, another phone joins, rollback
     node tests/test_notify_stay.js    # phase 3: notify over `stay`
     node tests/test_ical_stay.js      # phase 3: ical-sync over `stay`
