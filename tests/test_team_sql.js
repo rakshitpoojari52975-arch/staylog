@@ -38,7 +38,7 @@ let r = psql(DB, [], `
   create table public.app_status (id int primary key default 1, min_version int not null default 0, message text, updated_at timestamptz default now());
   insert into public.app_status (id) values (1);
   insert into auth.users (id, email) values ('${OWNER}','owner@example.com'),('${MGR}','priya@example.com'),('${X}','x@example.com');`);
-for (const f of ['01-schema.sql', '02-functions.sql', '03-access.sql', '04-phase2.sql', '05-migrate.sql', '07-staff.sql', '08-team.sql', '08-team.sql', '09-calendar.sql']) {
+for (const f of ['01-schema.sql', '02-functions.sql', '03-access.sql', '04-phase2.sql', '05-migrate.sql', '07-staff.sql', '08-team.sql', '08-team.sql', '09-calendar.sql', '10-onboarding.sql']) {
   r = psql(DB, ['-c', 'set client_min_messages=warning', '-f', F(f)]); if (r.err) { ok(f, false, r.err); break; } }
 ok('stay 01 → 08 load (08 twice)', !r.err, r.err);
 const check = psql(DB, ['-F', '|', '-f', F('check.sql')]).out.trim().split('\n').filter(Boolean);

@@ -68,6 +68,12 @@ checks as (
   select 'calendar import on the server (09-calendar.sql)',
          case when to_regclass('stay.ical_runs') is not null then 'ok' else 'not yet — run 09-calendar.sql' end
   union all
+  -- 11. phase 9: onboarding new accounts
+  select 'platform invites and account settings (10-onboarding.sql)',
+         case when to_regclass('stay.platform_invites') is not null
+                   and to_regprocedure('stay.open_account(text,uuid,text,text,text,text,text)') is not null
+              then 'ok' else 'not yet — run 10-onboarding.sql' end
+  union all
   -- 7. the old app's tables are still there and untouched by this phase
   select 'old table public.' || t, case when to_regclass('public.' || t) is not null then 'ok (unchanged)' else 'not found' end
   from unnest(array['properties','bookings','expenses','staff','loans','loan_repayments','attendance']) t

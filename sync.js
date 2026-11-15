@@ -400,6 +400,12 @@
   // local state so the screens stay right offline.
   async function myAccess(account) {
     try { const a = await rpc('my_access', { p_account: account }); if (a) S.me = a; } catch {}
+    // v71: the account's own settings (currency, who pays directly, time
+    // zone) and whether this login may invite new owners. Kept for offline.
+    try { const db = await stay();
+      const { data } = await db.from('accounts').select('name,code,time_zone,currency,pays_directly_sources,owner_name,migrated_from').eq('id', account);
+      if (data && data[0]) S.settings = data[0]; } catch {}
+    try { const pa = await rpc('am_platform_admin', {}); S.platformAdmin = pa === true; } catch {}
   }
 
   async function pull(account, touched) {
@@ -630,7 +636,8 @@
     return { active: !!m, account: m && m.account, user: m && m.user, running: !!running,
       lastPull: S && S.lastPull, lastPush: S && S.lastPush, outbox: pending, held: (S && S.held) || 0,
       conflicts: (S && S.conflicts) || [], errors: (S && S.errors) || [], lastError: (S && S.lastError) || '',
-      heldMarks: (S && S.heldMarks) || [], me: (S && S.me) || null };
+      heldMarks: (S && S.heldMarks) || [], me: (S && S.me) || null,
+      settings: (S && S.settings) || null, platformAdmin: !!(S && S.platformAdmin) };
   }
 
   window.StayLogSync = {
@@ -760,6 +767,41 @@
       }
       return data;
     },
+    // ⋯ → Account settings (owner). The database checks each value
+    // (10-onboarding.sql): a real time zone, a currency code, at least one
+    // source that pays directly; the account code never changes.
+    async saveSettings(fields) {
+      const m = model(); if (!m) throw new Error('Not switched over yet');
+      const db = await stay();
+      const keep = ['name', 'time_zone', 'currency', 'pays_directly_sources', 'owner_name'];
+      const row = Object.fromEntries(Object.entries(fields || {}).filter(([k]) => keep.includes(k)));
+      const { data, error } = await db.from('accounts').update(row).eq('id', m.account).select('name,code,time_zone,currency,pays_directly_sources,owner_name,migrated_from');
+      if (error) throw new Error(/time zone/i.test(error.message || '') ? 'That time zone is not known.' : (error.message || String(error)));
+      if (data && data[0]) { await loadState(); S.settings = data[0]; await persist(); changed(); }
+      return data && data[0];
+    },
+    // Platform invites (a platform admin only): a link for a new owner.
+    async platformInvites() {
+      const db = await stay();
+      const { data, error } = await db.from('platform_invites').select('code,label,created_at,expires_at,used_by,used_at,account_id')
+        .order('created_at', { ascending: false });
+      if (error) throw new Error(error.message || String(error));
+      return data || [];
+    },
+    async platformInvite(label) {
+      const m = model(); if (!m) throw new Error('Not switched over yet');
+      const bytes = crypto.getRandomValues(new Uint8Array(18));
+      const code = btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+      const db = await stay();
+      const { error } = await db.from('platform_invites').insert({ code, label: label || null, created_by: m.user });
+      if (error) throw new Error(error.message || String(error));
+      return code;
+    },
+    async withdrawPlatformInvite(code) {
+      const db = await stay();
+      const { error } = await db.from('platform_invites').update({ expires_at: new Date().toISOString() }).eq('code', code);
+      if (error) throw new Error(error.message || String(error));
+    },
     async setOwnerName(name) {
       const m = model(); if (!m) return;
       const db = await stay();
@@ -767,6 +809,8 @@
       if (error) throw new Error(error.message || String(error));
     },
     switchAccount(account) { const m = model(); if (!m) return; this.activate(m.user, account); },
+    // the account's settings (v71), light: read on every render
+    settings: () => (S && S.settings) || null,
     events: () => (S && S.events) || [],
     // the Calendar sync panel's figures in the new model (null until a sync has read them)
     icalLog: () => (S && S.ical) || null,
