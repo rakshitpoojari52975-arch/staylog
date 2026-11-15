@@ -89,6 +89,64 @@ Agreed decisions (his answers, 15 Nov 2026):
   "StayLog has been updated — close and reopen" (a strip, not an error).
 - New ids are `crypto.randomUUID()` (`uid()`, `StayLogCloud.newId`).
 
+### Phase 1 — the `stay` schema (SQL only; the app does not use it yet)
+- `supabase/stay/01-schema.sql` → `02-functions.sql` → `03-access.sql` →
+  `check.sql` (all rows "ok"); exposed to the API in the dashboard (Data API →
+  Exposed schemas). `rollback-phase1.sql` drops the schema again, refusing
+  once any account exists in it. Nothing reads or changes `public`.
+- Tables: `accounts` (code, time_zone, currency, `pays_directly_sources`),
+  `platform_admins` (seeded from `public.owners`), `members` (owner/manager,
+  `permissions` jsonb), `member_properties`, `staff_logins` (replaces
+  `staff_access`, keeps `display_name`), `invites`, `properties` (every
+  property setting as a column, `receipt_prefix` unique per account),
+  `bookings`, `staff`, `staff_properties`, `loans`, `expenses`
+  (`property_id` null = Shared, `paid_on`, `source_mark_id`),
+  `loan_repayments`, `attendance`, `utensil_marks` (id = staff + date, a
+  check), `receipt_series`, `ical_feeds`, `ical_events` (+ `announced_at`),
+  `push_subscriptions`, `notification_prefs`, `push_log` (per recipient),
+  `sync_status` (per device), `backups` (per device). Business rows: PK
+  `(account_id, id)`, composite FKs, `version`, `updated_by`, `deleted_at`,
+  `legacy jsonb`; `stay.touch()` bumps `version` on every change.
+- Access (`03-access.sql`): `stay.holds(acct, property)` and
+  `stay.can(acct, perm)` (defaults: edit_bookings, send_messages, mark_paid,
+  add_expenses on; see_money, manage_staff, edit_properties off;
+  manage_calendar never). Owners see all; managers their properties' bookings
+  (guest details included) and only what `can` allows; Shared expenses need
+  see_money; staff lines, staff, loans and marks need manage_staff; calendar
+  links owner-only. Staff logins read no base table. No TRUNCATE; DELETE
+  only on `member_properties`, `staff_properties`, `push_subscriptions`,
+  `backups`. Bookings can't be soft-deleted (trigger). An account keeps one
+  owner (trigger). `stay.create_account` for platform admins.
+- `stay.apply_change(table, row, base_version)`: security invoker (RLS
+  decides); new rows refused if the id exists; edits land only `where version
+  = base`; returns ok / conflict (with the server row) / missing.
+- Money in SQL: `pays_directly` (blank source = Direct), `round_off_of`,
+  `balance_due` (under ₹1 = 0), `revenue` — the app's rules.
+- Receipts: `stay.issue_receipt(acct, booking)` — once per booking, only for
+  sources that pay directly, needs mark_paid; counter per prefix and Indian
+  financial year (`financial_year`), seeded from the highest number already
+  used (`seed_receipt_series`), row-locked so devices issuing at once get
+  different numbers; a unique index refuses duplicates anyway.
+- **Her marks become lines on the server, at once** (`on_mark` trigger →
+  `process_mark`): `wag_<staff>_<yyyymmdd>` / the utensil mark id; an existing
+  line is only stamped; a line deleted on purpose stays deleted; no rate →
+  held (released by `process_pending` when a rate or her properties change);
+  the checkout rate counts checkouts at her properties (all when none
+  assigned); charged to the mark's property, else her one property, else
+  Shared. `reprice_wages` runs when bookings or rates change (unpaid,
+  app-priced, no loan cut; paid and hand edits never). **Undo changed:**
+  because the line exists at once, her 15-minute undo (`undo_mark`) also
+  soft-deletes the line while it is untouched (unpaid, no loan cut, still the
+  app's amount), flagged `legacy.undone`, so marking again revives the same
+  line. Undoing attendance undoes that day's utensils. `stay.importing`
+  (`set_config('stay.importing','on', true)`) turns these triggers off for a
+  migration.
+- Her page over `stay`: `stay.staff_calendar / staff_standing /
+  staff_mark_today / staff_unmark_today / staff_mark_utensils_today /
+  staff_unmark_utensils_today` — the public ones' output, in the account's
+  time zone, her assigned properties only (all when none). Not wired: the
+  cutover (phase 3) points the public functions at them.
+
 ## Deploying
 
 - GitHub Pages serves `main`. Work on a branch and open a PR; Rakshit merges.
@@ -726,6 +784,7 @@ also fetch from Supabase with `cache: 'no-store'` as a second layer.
     node tests/test_ical_connected.js    # "connected" per feed: no gap for the other platform's stays, Direct still checked, survives a sync; "Closed on …" hides a gap until the dates change
     node tests/test_inventory.js         # v60 Inventory: counts, money by month to the paisa, loans, wages, receipts; changes nothing
     node tests/test_one_phone.js         # v60: one login per phone's data, one phone per account (pause + take over), retired detector, sign-out clears, UUIDs, arrival instructions as data
+    STAYLOG_PG="…" node tests/test_stay_sql.js       # phase 1 `stay` schema: twice, check.sql ok, accounts/managers/staff access, composite keys, apply_change versions, receipts (concurrent), money, wages/utensils/undo/re-pricing on the server, her functions, rollback
     STAYLOG_PG="…" node tests/test_security_sql.js   # security-v60.sql: owners only, staff/stranger locked out, her page works, owner match, mark ids, refuses to lock out
     node tests/test_cancel.js            # no Delete; Cancel confirms + Undo; checked-out disabled; cancelled import stays cancelled over drains; excluded from revenue/occupancy
     node tests/test_glass.js             # clear glass bar: tint ≤ 0.15, blur ≤ 4px, halo, page seen through, solid with reduced transparency, label contrast from pixels

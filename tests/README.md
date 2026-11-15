@@ -40,6 +40,7 @@ kept outside it and was lost when the machine running them was reset.
     node tests/test_ical_connected.js # per-feed "connected" setting and per-booking "Closed on …" for the still-open check
     node tests/test_inventory.js      # v60 Inventory screen: the figures the migration must match
     node tests/test_one_phone.js      # v60: one login per phone, one phone per account, retired detector, arrival instructions
+    STAYLOG_PG="…" node tests/test_stay_sql.js       # phase 1: the new `stay` schema, access rules and server functions
     STAYLOG_PG="…" node tests/test_security_sql.js   # security-v60.sql: owners only; her page still works
     node tests/test_cancel.js         # bookings cancelled, never deleted: Cancel + Undo, checked-out disabled, cancelled imports stay cancelled
     node tests/test_glass.js          # the tab bar's glass: translucent, seen through, solid fallback, label contrast measured from pixels

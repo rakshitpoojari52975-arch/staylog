@@ -8,6 +8,20 @@ reminders — plus an **encrypted backup** it cannot read (`backups`, see
 
 Scripts are run by hand in the SQL editor, and every one is safe to run twice.
 
+## The new `stay` schema (revamp phase 1)
+
+Built beside the tables above; the app does not use it yet, and nothing in
+`public` changes.
+
+1. Project Settings → **Data API** → **Exposed schemas**: add `stay` → Save.
+2. In the SQL editor, in this order: `stay/01-schema.sql`,
+   `stay/02-functions.sql`, `stay/03-access.sql`.
+3. `stay/check.sql`: every row should say `ok` (the last rows confirm the old
+   tables are still there, unchanged).
+
+To undo: `stay/rollback-phase1.sql` (refuses once an account exists in
+`stay`), then remove `stay` from Exposed schemas.
+
 ## v60 security fixes (once)
 
 1. Dashboard → **Authentication → Sign In / Providers** → turn off
