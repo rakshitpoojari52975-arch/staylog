@@ -6,7 +6,7 @@
 // ─── Build ────────────────────────────────────────────────────────────────────
 // Bump BOTH of these together. This date sat at 28 Sept through a dozen
 // releases and was read, reasonably, as proof the upload had not landed.
-const APP_VERSION='v64', APP_BUILT='15 Nov 2026';
+const APP_VERSION='v65', APP_BUILT='15 Nov 2026';
 // The CACHE_NAME of the sw.js released with this app.js. Every release bumps
 // APP_VERSION and CACHE_NAME together, so one is derived from the other rather
 // than being a fourth thing to forget; the tests fail if they ever disagree.
@@ -53,6 +53,13 @@ function idbSet(k,v){return openDB().then(db=>new Promise((res,rej)=>{const r=db
 // login and account, and never writes the old ones: switching back finds the
 // old copy exactly as it was. Dormant until the switch-over (phase 3).
 const stayActive=()=>!!(window.StayLogSync&&window.StayLogSync.isActive());
+// ── Who may do what (v65): in the new model, my_access from the server (role,
+// each permission as stay.can() decides, the properties a manager holds).
+// The old model, or before it is known: the owner. Row-level security is the
+// real limit; this only keeps hidden what would not work anyway.
+const myAccess=()=>stayActive()?(window.StayLogSync.status().me||null):null;
+const isOwner=()=>{const m=myAccess();return !m||m.role==='owner';};
+const can=perm=>{const m=myAccess();return !m||m.role==='owner'||!!(m.permissions&&m.permissions[perm]);};
 const stayDataKey=()=>{const m=window.StayLogSync.model();return `staylog_stay_data:${m.user}:${m.account}`;};
 function saveData(d){
   if(stayActive()){
@@ -978,7 +985,17 @@ async function openStay(o){
   setTimeout(()=>{const at=[...document.querySelectorAll('[data-checkin]')].find(el=>el.dataset.checkin<=o.in);
     if(at&&at.scrollIntoView)at.scrollIntoView({block:'start'});},60);
 }
+// A team invite link (v65): #join=<code>. Kept until the app is unlocked,
+// then the Join sheet opens.
+let joinCode=(()=>{try{return sessionStorage.getItem('staylog_join')||'';}catch(e){return '';}})();
 function takeOpen(hash){
+  const j=/^#join=([A-Za-z0-9_-]{16,64})$/.exec(String(hash||''));
+  if(j){
+    joinCode=j[1];
+    try{sessionStorage.setItem('staylog_join',joinCode);history.replaceState(null,'',location.pathname+location.search);}catch(e){}
+    if(state.loggedIn&&!state._loading)setState({modal:'join'});
+    return;
+  }
   const o=parseOpen(hash);
   if(!o)return;
   pendingOpen=o;
@@ -1401,11 +1418,13 @@ function renderMenuModal(){
   const content=()=>div({style:{display:'flex',flexDirection:'column',gap:2}},
     (()=>{const n=inboxUnread();return menuRow('bell','Notifications',n?`${n} unread`:'Reminders from the last 30 days',
       ()=>setState({modal:'inbox'}));})(),
-    menuRow('plus','Add property','Rooms, base tariff and location',()=>setState({modal:'addProp',editItem:null})),
+    isOwner()?menuRow('plus','Add property','Rooms, base tariff and location',()=>setState({modal:'addProp',editItem:null})):null,
+    // The team (v65): members, invites, a manager's properties and permissions.
+    stayActive()&&isOwner()?menuRow('users','Team','Managers, the properties they hold and what they may do',()=>setState({modal:'team'})):null,
     // The only backup there is: encrypted on this phone (backup.js). There is no
     // plain export — a readable file would carry guest names, phone and ID numbers.
-    menuRow('lock','Encrypted backup',bkSubtitle(),openBackupPanel),
-    menuRow('list-check','Inventory','Counts and totals on this phone — screenshot before the move',()=>setState({modal:'inventory'})),
+    isOwner()?menuRow('lock','Encrypted backup',bkSubtitle(),openBackupPanel):null,
+    isOwner()?menuRow('list-check','Inventory','Counts and totals on this phone — screenshot before the move',()=>setState({modal:'inventory'})):null,
     // Phase 3: shown only while the old model is live and 05-migrate.sql has run.
     (!stayActive()&&cloudStatus().signedIn&&cloudStatus().model==='public')
       ?menuRow('cloud','Move to the new system','Copy, compare, then switch — nothing changes until you say so',()=>setState({modal:'move'})):null,
@@ -1432,6 +1451,154 @@ function renderMenuModal(){
   );
   return modal('StayLog',content);
 }
+// ─── The team (v65) ───────────────────────────────────────────────────────────
+// The owner invites managers by link, gives each the properties they hold and
+// what they may do, and can switch a manager off. Row-level security does the
+// limiting (03-access.sql); this is where the owner sets it.
+const PERMS=[['edit_bookings','Add and edit bookings',true],['send_messages','Send guest messages',true],
+  ['mark_paid','Mark paid and send receipts',true],['add_expenses','Add expenses',true],
+  ['see_money','See money — totals, revenue, reports',false],['manage_staff','Manage staff and pay wages',false],
+  ['edit_properties','Edit property settings',false]];
+const permsOf=p=>Object.fromEntries(PERMS.map(([k,,def])=>[k,p&&k in p?!!p[k]:def]));
+const tm={loading:false,err:'',data:null,form:null,link:''};
+async function loadTeam(){
+  tm.loading=true;tm.err='';
+  try{tm.data=await window.StayLogSync.team();}catch(e){tm.err=e.message||String(e);}
+  tm.loading=false;if(state.modal==='team')render();
+}
+const inviteLink=code=>`${location.origin}${location.pathname}#join=${code}`;
+async function shareInvite(code,label){
+  const url=inviteLink(code);
+  const text=`${label?label+', y':'Y'}ou're invited to help manage our homestay on StayLog. Open this link on your phone to join (it works once, for 7 days): ${url}`;
+  if(navigator.share){try{await navigator.share({text});return;}catch(e){if(e&&e.name==='AbortError')return;}}
+  try{await navigator.clipboard.writeText(url);showToast('Invite link copied');}catch(e){tm.link=url;render();}
+}
+function renderTeamModal(){
+  if(!tm.data&&!tm.loading&&!tm.err)loadTeam();
+  const props=state.data.properties;
+  const pname=id=>(props.find(p=>p.id===id)||{}).name||'a property no longer here';
+  const toggleRow=(label,on,onChange,attr)=>{
+    const cb=h('input',{type:'checkbox',[attr]:'1',style:{width:20,height:20,flexShrink:0}});cb.checked=on;
+    cb.addEventListener('change',()=>onChange(cb.checked,cb));
+    return h('label',{style:{display:'flex',alignItems:'center',gap:10,minHeight:40,fontSize:13.5}},cb,label);
+  };
+  const content=()=>{
+    const w=div({'data-team':'1',style:{display:'flex',flexDirection:'column',gap:11}});
+    if(tm.loading&&!tm.data){w.appendChild(div({style:{color:'var(--muted)',fontSize:13}},'Loading…'));return w;}
+    if(tm.err)w.appendChild(div({style:{color:'var(--danger)',fontSize:12.5}},tm.err));
+    const T=tm.data||{members:[],invites:[]};
+    for(const m of T.members){
+      const card=div({'data-member':m.user_id,className:'card',style:{padding:'12px 13px'}});
+      card.appendChild(div({style:{display:'flex',justifyContent:'space-between',gap:8,alignItems:'baseline'}},
+        div({style:{minWidth:0}},div({style:{fontWeight:700,fontSize:14}},(m.name||m.email||'Member')+(m.me?' (you)':'')),
+          m.email?div({style:{fontSize:11.5,color:'var(--muted)'}},m.email):null),
+        span({style:{fontSize:11,fontWeight:700,color:m.role==='owner'?'var(--accent)':'var(--gold)',flexShrink:0}},
+          m.role==='owner'?'Owner':m.active?'Manager':'Manager · switched off')));
+      if(m.role==='manager'){
+        card.appendChild(div({className:'kicker',style:{marginTop:10}},'Properties'));
+        const held=new Set(m.properties||[]);
+        props.forEach(p=>card.appendChild(toggleRow(p.name,held.has(p.id),async(on,cb)=>{
+          on?held.add(p.id):held.delete(p.id);
+          try{await window.StayLogSync.setMemberProperties(m.user_id,[...held]);m.properties=[...held];}
+          catch(e){cb.checked=!on;alert(e.message);}
+        },`data-member-prop-${p.id}`)));
+        card.appendChild(div({className:'kicker',style:{marginTop:8}},'May'));
+        const perms=permsOf(m.permissions);
+        PERMS.forEach(([k,label])=>card.appendChild(toggleRow(label,perms[k],async(on,cb)=>{
+          const next={...perms,[k]:on};
+          try{await window.StayLogSync.setMember(m.user_id,{permissions:next});perms[k]=on;m.permissions=next;}
+          catch(e){cb.checked=!on;alert(e.message);}
+        },`data-member-perm-${k}`)));
+        card.appendChild(btn({className:'btn-ghost btn-sm','data-member-active':m.user_id,style:{marginTop:8},onClick:async()=>{
+          if(m.active&&!confirm(`Switch off ${m.name||m.email}? They can no longer open this account until you switch them on again.`))return;
+          try{await window.StayLogSync.setMember(m.user_id,{active:!m.active});await loadTeam();}catch(e){alert(e.message);}
+        }},m.active?'Switch off':'Switch on'));
+      }
+      w.appendChild(card);
+    }
+    if(T.invites.length){
+      w.appendChild(div({className:'kicker',style:{marginTop:4}},'Invites waiting'));
+      for(const i of T.invites)w.appendChild(div({'data-invite':i.code,className:'card',style:{padding:'11px 13px',fontSize:12.5,color:'var(--text-mid)'}},
+        div({style:{fontWeight:700,fontSize:13.5,color:'var(--text)'}},i.label||'A manager'),
+        div({},`${(i.property_ids||[]).map(pname).join(', ')||'No property'} · until ${fmtDate(String(i.expires_at).slice(0,10))}`),
+        div({style:{display:'flex',gap:8,marginTop:8}},
+          btn({className:'btn-ghost btn-sm','data-invite-share':i.code,onClick:()=>shareInvite(i.code,i.label)},'Share link'),
+          btn({className:'btn-ghost btn-sm','data-invite-withdraw':i.code,onClick:async()=>{
+            if(!confirm('Withdraw this invite? The link stops working.'))return;
+            try{await window.StayLogSync.withdrawInvite(i.code);await loadTeam();}catch(e){alert(e.message);}
+          }},'Withdraw'))));
+    }
+    if(tm.link)w.appendChild(div({'data-invite-link':'1',style:{fontSize:12,wordBreak:'break-all',background:'var(--surface-2)',padding:'9px 11px',borderRadius:'var(--radius-sm)'}},tm.link));
+    // Invite a manager
+    if(!tm.form){
+      w.appendChild(btn({className:'btn-primary','data-invite-new':'1',style:{width:'100%',minHeight:46},
+        onClick:()=>{tm.form={label:'',props:new Set(props.length===1?[props[0].id]:[]),perms:permsOf({})};render();}},'Invite a manager'));
+    }else{
+      const f=tm.form, box=div({'data-invite-form':'1',className:'card',style:{padding:'12px 13px',display:'flex',flexDirection:'column',gap:6}});
+      box.appendChild(div({style:{fontWeight:700,fontSize:14}},'Invite a manager'));
+      const name=h('input',{type:'text',placeholder:'Who is it for? (their name)','data-invite-label':'1',value:f.label});
+      name.addEventListener('input',e=>f.label=e.target.value);box.appendChild(name);
+      box.appendChild(div({className:'kicker',style:{marginTop:6}},'Properties they will manage'));
+      props.forEach(p=>box.appendChild(toggleRow(p.name,f.props.has(p.id),on=>{on?f.props.add(p.id):f.props.delete(p.id);},`data-invite-prop-${p.id}`)));
+      box.appendChild(div({className:'kicker',style:{marginTop:6}},'They may'));
+      PERMS.forEach(([k,label])=>box.appendChild(toggleRow(label,f.perms[k],on=>{f.perms[k]=on;},`data-invite-perm-${k}`)));
+      box.appendChild(div({style:{fontSize:11.5,color:'var(--muted)',lineHeight:1.45}},
+        'They see the guests of these properties only, and never your calendar links. You can change all of this later.'));
+      box.appendChild(btn({className:'btn-primary','data-invite-create':'1',style:{width:'100%',minHeight:44,marginTop:4},onClick:async()=>{
+        if(!f.props.size){alert('Pick at least one property for them.');return;}
+        try{const code=await window.StayLogSync.invite({label:f.label.trim(),propertyIds:[...f.props],permissions:f.perms});
+          tm.form=null;await loadTeam();await shareInvite(code,f.label.trim());}
+        catch(e){alert(e.message);}
+      }},'Create invite link'));
+      box.appendChild(btn({className:'btn-ghost',style:{width:'100%'},onClick:()=>{tm.form=null;render();}},'Cancel'));
+      w.appendChild(box);
+    }
+    return w;
+  };
+  return modal('Team',content);
+}
+
+// Joining from an invite link (v65): see what it is for, make a login (or use
+// the one signed in), join, and the app moves onto that account.
+const jn={peek:null,err:'',busy:false,loaded:false};
+function renderJoinModal(){
+  const C=window.StayLogCloud, Y=window.StayLogSync;
+  if(!jn.loaded&&Y){jn.loaded=true;Y.joinCall({action:'peek',code:joinCode}).then(r=>{jn.peek=r;render();},e=>{jn.err=e.message;render();});}
+  const signedIn=cloudStatus().signedIn;
+  const done=()=>{joinCode='';try{sessionStorage.removeItem('staylog_join');}catch(e){}Object.assign(jn,{peek:null,err:'',busy:false,loaded:false});};
+  const content=()=>{
+    const w=div({'data-join':'1',style:{display:'flex',flexDirection:'column',gap:11}});
+    if(jn.err&&!jn.peek){w.appendChild(div({style:{color:'var(--danger)',fontSize:13,lineHeight:1.5}},jn.err));
+      w.appendChild(btn({className:'btn-ghost',style:{width:'100%'},onClick:()=>{done();closeModal();}},'Close'));return w;}
+    if(!jn.peek){w.appendChild(div({style:{color:'var(--muted)',fontSize:13}},'Checking the invite…'));return w;}
+    const P=jn.peek;
+    w.appendChild(div({style:{fontSize:13.5,lineHeight:1.55}},
+      `${P.label?P.label+', y':'Y'}ou are invited to help manage ${P.properties.join(', ')||'a property'}${P.business?' for '+P.business:''}.`));
+    const name=h('input',{type:'text',placeholder:'Your name','data-join-name':'1',value:P.label||''});
+    const email=h('input',{type:'email',placeholder:'Your email (to sign in with)','data-join-email':'1',autocapitalize:'none'});
+    const pass=h('input',{type:'password',placeholder:'Choose a password (at least 8 characters)','data-join-pass':'1'});
+    if(!signedIn){w.appendChild(name);w.appendChild(email);w.appendChild(pass);}
+    else w.appendChild(div({style:{fontSize:12.5,color:'var(--muted)'}},`You will join as ${cloudStatus().email}.`));
+    const msg=div({style:{fontSize:12.5,color:'var(--danger)',minHeight:18}},jn.err||'');
+    w.appendChild(msg);
+    w.appendChild(btn({className:'btn-primary','data-join-go':'1',style:{width:'100%',minHeight:46},disabled:jn.busy,onClick:async()=>{
+      jn.busy=true;jn.err='';render();
+      try{
+        const r=await Y.joinCall(signedIn?{action:'accept',code:joinCode,name:name.value.trim()}
+          :{action:'accept',code:joinCode,name:name.value.trim(),email:email.value.trim(),password:pass.value});
+        if(!signedIn)await C.signIn(email.value.trim(),pass.value);
+        done();closeModal();
+        if(stayActive()){Y.switchAccount(r.account);state.data=await loadDataFromIDB();Y.start();}
+        else{await C.refreshModel();await followModel();}
+        showToast(`Welcome to the team${r.business?' at '+r.business:''}`);render();
+      }catch(e){jn.busy=false;jn.err=e.message||String(e);render();}
+    }},jn.busy?'Joining…':'Join'));
+    w.appendChild(btn({className:'btn-ghost',style:{width:'100%'},onClick:()=>{done();closeModal();}},'Not now'));
+    return w;
+  };
+  return modal('Join the team',content);
+}
+
 function renderNotesPickModal(){
   return modal('House notes for which property?',()=>div({'data-notes-pick':'1',style:{display:'flex',flexDirection:'column',gap:6}},
     ...state.data.properties.map(p=>btn({className:'btn-ghost',style:{width:'100%',minHeight:48,textAlign:'left'},
@@ -1458,12 +1625,14 @@ function renderPropPickerModal(){
       const r=row(p.id,p.name,`${p.location||'No location'} · ${n} booking${n===1?'':'s'}`);
       r.style.flex='1';
       line.appendChild(r);
-      line.appendChild(btn({className:'btn-icon','aria-label':`Edit ${p.name}`,
+      if(can('edit_properties'))line.appendChild(btn({className:'btn-icon','aria-label':`Edit ${p.name}`,
         onClick:()=>setState({modal:'addProp',editItem:p})},ico('edit',{style:{fontSize:16}})));
       wrap.appendChild(line);
     });
-    wrap.appendChild(div({style:{height:1,background:'var(--border-soft)',margin:'6px 0'}}));
-    wrap.appendChild(menuRow('plus','Add property','',()=>setState({modal:'addProp',editItem:null})));
+    if(isOwner()){
+      wrap.appendChild(div({style:{height:1,background:'var(--border-soft)',margin:'6px 0'}}));
+      wrap.appendChild(menuRow('plus','Add property','',()=>setState({modal:'addProp',editItem:null})));
+    }
     return wrap;
   };
   return modal('Property',content);
@@ -1476,9 +1645,17 @@ function renderPropPickerModal(){
 // the top, restores it. The class is toggled in place, so a scroll never
 // re-renders the app.
 let navCompact=false, navLastY=0;
+// A manager sees only the tabs their permissions open (v65).
+function tabAllowed(t){
+  if(t==='expenses')return can('add_expenses')||can('see_money');
+  if(t==='loans')return can('manage_staff');
+  if(t==='reports')return can('see_money');
+  return true;
+}
 function renderNav(){
   const tabs=[['dashboard','home','Home'],['bookings','calendar','Bookings'],
-    ['expenses','receipt','Expenses'],['loans','wallet','Loans'],['reports','chart-bar','Reports']];
+    ['expenses','receipt','Expenses'],['loans','wallet','Loans'],['reports','chart-bar','Reports']]
+    .filter(([t])=>tabAllowed(t));
   const nav=h('nav',{className:'tabbar'+(navCompact?' compact':''),'data-tabbar':'1','aria-label':'Sections'});
   const pill=div({className:'pill'});
   tabs.forEach(([t,icon,label])=>{
@@ -1710,24 +1887,24 @@ function bookingCard(b){   // dense row; expands into the full detail
     }
     if(b.notes)detail.appendChild(div({style:{fontSize:12.5,color:'var(--muted)',fontStyle:'italic',margin:'6px 0 10px',lineHeight:1.5,background:'var(--white)',padding:'8px 10px',borderRadius:8,border:'1px solid var(--border)'}},`"${b.notes}"`));
     const actions=div({style:{display:'flex',gap:7,flexWrap:'wrap',marginTop:8}});
-    if(b.status==='confirmed')actions.appendChild(btn({className:'btn-primary btn-sm',onClick:()=>updateStatus(b.id,'checkedin')},ico('door-enter',{style:{marginRight:5}}),'Check In'));
-    if(b.status==='checkedin')actions.appendChild(btn({className:'btn-primary btn-sm',onClick:()=>updateStatus(b.id,'checkedout')},ico('door-exit',{style:{marginRight:5}}),'Check Out'));
+    if(can('edit_bookings')&&b.status==='confirmed')actions.appendChild(btn({className:'btn-primary btn-sm',onClick:()=>updateStatus(b.id,'checkedin')},ico('door-enter',{style:{marginRight:5}}),'Check In'));
+    if(can('edit_bookings')&&b.status==='checkedin')actions.appendChild(btn({className:'btn-primary btn-sm',onClick:()=>updateStatus(b.id,'checkedout')},ico('door-exit',{style:{marginRight:5}}),'Check Out'));
     // Bookings are never deleted from the app: Cancel keeps it on record.
-    if(b.status==='confirmed'||b.status==='checkedin')actions.appendChild(btn({className:'btn-ghost btn-sm','data-cancel-booking':'1',
+    if(can('edit_bookings')&&(b.status==='confirmed'||b.status==='checkedin'))actions.appendChild(btn({className:'btn-ghost btn-sm','data-cancel-booking':'1',
       onClick:()=>cancelBooking(b.id)},'Cancel'));
-    else if(b.status==='checkedout')actions.appendChild(div({style:{display:'flex',alignItems:'center',gap:6}},
+    else if(can('edit_bookings')&&b.status==='checkedout')actions.appendChild(div({style:{display:'flex',alignItems:'center',gap:6}},
       btn({className:'btn-ghost btn-sm','data-cancel-booking':'1',disabled:true,'aria-disabled':'true',
         style:{opacity:.45,cursor:'not-allowed'},onClick:()=>{}},'Cancel'),
       span({'data-cancel-note':'1',style:{fontSize:11.5,color:'var(--muted)'}},'Checked out — can’t be cancelled')));
-    actions.appendChild(btn({className:'btn-ghost btn-sm',onClick:()=>setState({modal:'addBooking',editItem:b})},ico('edit',{style:{marginRight:4}}),'Edit'));
-    if(waNumber(b.phone))actions.appendChild(btn({className:'btn-ghost btn-sm',style:{color:'var(--accent)',borderColor:'var(--accent-line)'},onClick:()=>setState({modal:'sendConfirm',editItem:b})},ico('brand-whatsapp',{style:{marginRight:4,fontSize:15}}),'Send'));
+    if(can('edit_bookings'))actions.appendChild(btn({className:'btn-ghost btn-sm',onClick:()=>setState({modal:'addBooking',editItem:b})},ico('edit',{style:{marginRight:4}}),'Edit'));
+    if(waNumber(b.phone)&&can('send_messages'))actions.appendChild(btn({className:'btn-ghost btn-sm',style:{color:'var(--accent)',borderColor:'var(--accent-line)'},onClick:()=>setState({modal:'sendConfirm',editItem:b})},ico('brand-whatsapp',{style:{marginRight:4,fontSize:15}}),'Send'));
     actions.appendChild(btn({className:'btn-gold btn-sm',onClick:()=>downloadConfirmation(b)},ico('file-text',{style:{marginRight:4,fontSize:14}}),'PDF'));
-    if(canReceipt(b)&&b.status!=='cancelled'&&balanceDue(b)>0)actions.appendChild(btn({className:'btn-primary btn-sm','data-mark-paid':'1',
+    if(can('mark_paid')&&canReceipt(b)&&b.status!=='cancelled'&&balanceDue(b)>0)actions.appendChild(btn({className:'btn-primary btn-sm','data-mark-paid':'1',
       onClick:()=>markBookingPaid(b)},ico('circle-check',{style:{marginRight:4,fontSize:14}}),'Mark paid'));
     // Airbnb and the other platforms pay out the full amount themselves.
-    if(!paysUsDirectly(b)&&b.status!=='cancelled'&&balanceDue(b)>0)actions.appendChild(btn({className:'btn-primary btn-sm','data-mark-payout':'1',
+    if(can('mark_paid')&&!paysUsDirectly(b)&&b.status!=='cancelled'&&balanceDue(b)>0)actions.appendChild(btn({className:'btn-primary btn-sm','data-mark-payout':'1',
       onClick:()=>markPayoutReceived(b)},ico('circle-check',{style:{marginRight:4,fontSize:14}}),'Mark payout received'));
-    if(canReceipt(b))actions.appendChild(btn({className:'btn-gold btn-sm',onClick:()=>shareReceipt(b)},
+    if(can('mark_paid')&&canReceipt(b))actions.appendChild(btn({className:'btn-gold btn-sm',onClick:()=>shareReceipt(b)},
       ico('receipt',{style:{marginRight:4,fontSize:14}}),b.receiptNo?'Receipt again':'Receipt'));
     detail.appendChild(actions);card.appendChild(detail);
   }
@@ -3156,8 +3333,8 @@ function renderStaySyncModal(){
       wrap.appendChild(div({style:{fontSize:12.5,color:'var(--text-mid)',lineHeight:1.55}},
         'Sign in to sync. Your changes are kept on this phone meanwhile.'));
     }
-    if(c.signedIn){wrap.appendChild(calendarSyncBox(c));wrap.appendChild(calendarLinksBox());}
-    wrap.appendChild(btn({className:'btn-ghost',style:{width:'100%'},onClick:()=>openBackupPanel()},'Encrypted backup'));
+    if(c.signedIn&&isOwner()){wrap.appendChild(calendarSyncBox(c));wrap.appendChild(calendarLinksBox());}
+    if(isOwner())wrap.appendChild(btn({className:'btn-ghost',style:{width:'100%'},onClick:()=>openBackupPanel()},'Encrypted backup'));
     return wrap;
   };
   return modal('Sync',content);
@@ -3491,8 +3668,8 @@ function renderCalDayModal(){
       ));
       card.appendChild(div({style:{fontSize:12,color:'var(--muted)'}},`${fmtDate(b.checkIn)} → ${fmtDate(b.checkOut)}`));
       const acts=div({style:{display:'flex',gap:6,marginTop:8,flexWrap:'wrap'}});
-      acts.appendChild(btn({className:'btn-ghost btn-sm',onClick:()=>{closeModal();setState({modal:'addBooking',editItem:b});}},ico('edit',{style:{marginRight:3}}),'Edit'));
-      if(waNumber(b.phone))acts.appendChild(btn({className:'btn-ghost btn-sm',style:{padding:'6px 10px',fontSize:12,color:'var(--accent)',borderColor:'var(--accent-line)'},onClick:()=>{closeModal();setState({modal:'sendConfirm',editItem:b});}},ico('brand-whatsapp',{style:{marginRight:3,fontSize:14}}),'Send'));
+      if(can('edit_bookings'))acts.appendChild(btn({className:'btn-ghost btn-sm',onClick:()=>{closeModal();setState({modal:'addBooking',editItem:b});}},ico('edit',{style:{marginRight:3}}),'Edit'));
+      if(waNumber(b.phone)&&can('send_messages'))acts.appendChild(btn({className:'btn-ghost btn-sm',style:{padding:'6px 10px',fontSize:12,color:'var(--accent)',borderColor:'var(--accent-line)'},onClick:()=>{closeModal();setState({modal:'sendConfirm',editItem:b});}},ico('brand-whatsapp',{style:{marginRight:3,fontSize:14}}),'Send'));
       acts.appendChild(btn({className:'btn-gold btn-sm',style:{padding:'6px 10px',fontSize:12},onClick:()=>downloadConfirmation(b)},ico('file-text',{style:{marginRight:3,fontSize:13}}),'PDF'));
       card.appendChild(acts);wrap.appendChild(card);
     });
@@ -3593,7 +3770,7 @@ function renderDashboard(){
       div({className:'num',style:{fontSize:15,fontWeight:700,color:c,marginTop:2}},fmtCur(v))));
   });
   hero.appendChild(split);
-  wrap.appendChild(hero);
+  if(can('see_money'))wrap.appendChild(hero);
   // A property's figures leave out Shared costs; say so when there are some (v63).
   if(filterProp!=='all'){
     const shared=r2(filterByMonth(data.expenses.filter(e=>!e.propertyId),'date',dashMonth).reduce((s,e)=>s+Number(e.amount||0),0));
@@ -3659,9 +3836,9 @@ function renderDashboard(){
           div({style:{fontSize:11.5,color:'var(--muted)',marginTop:1,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}},
             kind==='in'?`Arriving · ${b.guests||1} guest${(b.guests||1)>1?'s':''} · ${diffDays(b.checkIn,b.checkOut)} nights`
                        :`Checking out${due>0?` · ${fmtCur(due)} due`:''}${prop&&filterProp==='all'?' · '+prop.name:''}`)),
-        btn({style:{flexShrink:0,minHeight:36,padding:'7px 12px',fontSize:12,fontWeight:700,borderRadius:20,
+        can('edit_bookings')?btn({style:{flexShrink:0,minHeight:36,padding:'7px 12px',fontSize:12,fontWeight:700,borderRadius:20,
           border:'1.5px solid var(--accent)',background:'transparent',color:'var(--accent)'},
-          onClick:()=>updateStatus(b.id,kind==='in'?'checkedin':'checkedout')},kind==='in'?'Check in':'Check out'));
+          onClick:()=>updateStatus(b.id,kind==='in'?'checkedin':'checkedout')},kind==='in'?'Check in':'Check out'):null);
     };
     todayOut.forEach(b=>card.appendChild(line(b,'out')));
     todayIn.forEach(b=>card.appendChild(line(b,'in')));
@@ -3676,7 +3853,7 @@ function renderDashboard(){
     const occ=occupancyOf(props,allB,dashMonth.year,dashMonth.month,daysIn);
     const avg=nights>0?Math.round(revenue/nights):0;
     const stats=div({style:{display:'flex',gap:8}});
-    [['Occupancy',occ===null?'—':occ+'%'],['Nights',String(nights)],['Avg tariff',avg?fmtCur(avg):'—']]
+    [['Occupancy',occ===null?'—':occ+'%'],['Nights',String(nights)],...(can('see_money')?[['Avg tariff',avg?fmtCur(avg):'—']]:[])]
       .forEach(([l,v])=>stats.appendChild(div({className:'card',style:{flex:1,padding:'9px 11px'}},
         div({className:'kicker'},l),
         div({className:'num',style:{fontSize:15,fontWeight:700,marginTop:2}},v))));
@@ -3685,7 +3862,7 @@ function renderDashboard(){
 
   // ── Staff loans ────────────────────────────────────────────────────────────
   const openLoans=data.loans.filter(l=>l.status!=='writtenoff'&&loanBalance(l)>0.5);
-  if(openLoans.length>0){
+  if(openLoans.length>0&&can('manage_staff')){
     const outstanding=round2(openLoans.reduce((s,l)=>s+loanBalance(l),0));
     const overdue=round2(openLoans.reduce((s,l)=>s+loanOverdue(l),0));
     wrap.appendChild(div({style:{display:'flex',alignItems:'center',gap:11,padding:'11px 13px',
@@ -3713,14 +3890,14 @@ function renderDashboard(){
   if(upcoming.length===0){
     wrap.appendChild(div({className:'card',style:{padding:'22px',textAlign:'center'}},
       div({style:{color:'var(--muted)',fontSize:13.5,marginBottom:12}},'Nothing on the calendar yet'),
-      btn({className:'btn-primary btn-sm',onClick:()=>setState({modal:'addBooking',editItem:null})},'Add booking')));
+      can('edit_bookings')?btn({className:'btn-primary btn-sm',onClick:()=>setState({modal:'addBooking',editItem:null})},'Add booking'):null));
   } else {
     const list=div({});
     upcoming.forEach(b=>list.appendChild(bookingCard(b)));
     wrap.appendChild(list);
   }
 
-  wrap.appendChild(btn({className:'btn-primary',style:{width:'100%',marginTop:4},
+  if(can('edit_bookings'))wrap.appendChild(btn({className:'btn-primary',style:{width:'100%',marginTop:4},
     onClick:()=>setState({modal:'addBooking',editItem:null})},ico('plus',{style:{marginRight:7}}),'New Booking'));
   return wrap;
 }
@@ -3737,8 +3914,8 @@ function renderBookings(){
     div({style:{display:'flex',gap:7}},
       btn({className:'btn-ghost btn-sm','aria-label':'Calendar',onClick:()=>setState({tab:'calendar',stayHint:null})},
         ico('calendar-month',{style:{fontSize:16}})),
-      btn({className:'btn-primary btn-sm',onClick:()=>setState({modal:'addBooking',editItem:null})},
-        ico('plus',{style:{marginRight:4}}),'Add'))
+      can('edit_bookings')?btn({className:'btn-primary btn-sm',onClick:()=>setState({modal:'addBooking',editItem:null})},
+        ico('plus',{style:{marginRight:4}}),'Add'):null)
   ));
   const counts=s=>s==='all'?all.length:all.filter(b=>b.status===s).length;
   const chips=div({style:{display:'flex',gap:6,marginBottom:12,overflowX:'auto',paddingBottom:2,scrollbarWidth:'none'}});
@@ -5461,6 +5638,9 @@ function recallProp(data){
 }
 function render(){
   rememberProp();
+  // A tab this login may not open (v65) is never left showing.
+  if(!state._loading&&state.tab&&!tabAllowed(state.tab==='calendar'?'bookings':state.tab))state.tab='dashboard';
+  if(state.loggedIn&&joinCode&&!state.modal)state.modal='join';
   const app=document.getElementById('app');
   if(state._loading){
     app.innerHTML='';
@@ -5509,6 +5689,8 @@ function render(){
   else if(state.modal==='move')     {currentModal=renderMoveModal();      document.body.appendChild(currentModal);}
   else if(state.modal==='notesPick'){currentModal=renderNotesPickModal(); document.body.appendChild(currentModal);}
   else if(state.modal==='staffLogin'){currentModal=renderStaffLoginModal(); document.body.appendChild(currentModal);}
+  else if(state.modal==='team')     {currentModal=renderTeamModal();      document.body.appendChild(currentModal);}
+  else if(state.modal==='join')     {currentModal=renderJoinModal();      document.body.appendChild(currentModal);}
   else if(state.modal==='inbox')    {currentModal=renderInboxModal();     document.body.appendChild(currentModal);}
 }
 
