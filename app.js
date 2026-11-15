@@ -6,7 +6,7 @@
 // ─── Build ────────────────────────────────────────────────────────────────────
 // Bump BOTH of these together. This date sat at 28 Sept through a dozen
 // releases and was read, reasonably, as proof the upload had not landed.
-const APP_VERSION='v63', APP_BUILT='15 Nov 2026';
+const APP_VERSION='v64', APP_BUILT='15 Nov 2026';
 // The CACHE_NAME of the sw.js released with this app.js. Every release bumps
 // APP_VERSION and CACHE_NAME together, so one is derived from the other rather
 // than being a fourth thing to forget; the tests fail if they ever disagree.
@@ -3601,6 +3601,23 @@ function renderDashboard(){
       `Shared costs of ${fmtCur(shared)} are not counted in this property’s figures.`));
   }
 
+  // ── Her marks waiting for a rate (new model, v64): the server holds a mark
+  // with no daily wage (or utensil rate) set and makes the line once it is.
+  if(stayActive()){
+    const held=(window.StayLogSync.status().heldMarks||[]);
+    const by={};
+    held.forEach(m=>{(by[m.staff_id]=by[m.staff_id]||{attendance:0,utensils:0})[m.kind]++;});
+    Object.entries(by).forEach(([sid,n])=>{
+      const s=data.staff.find(x=>x.id===sid); if(!s)return;
+      const bits=[n.attendance?`${n.attendance} day${n.attendance>1?'s':''} marked present`:'',
+        n.utensils?`${n.utensils} utensil cleaning${n.utensils>1?'s':''}`:''].filter(Boolean).join(' and ');
+      wrap.appendChild(div({'data-held-marks':sid,className:'card',style:{padding:'11px 13px',borderColor:'var(--gold-line)',
+        background:'var(--gold-light)',fontSize:12.5,lineHeight:1.5,color:'var(--text-mid)',cursor:'pointer'},
+        onClick:()=>setState({tab:'loans',showStaffPanel:true,modal:'addStaff',editItem:s})},
+        h('b',{},s.name+': '),`${bits} waiting for a rate. Set ${n.attendance?'the daily wage':'the utensil rate'} in Staff and the wages appear by themselves.`));
+    });
+  }
+
   // ── Calendar trouble ───────────────────────────────────────────────────────
   {
     const clashed=allB.filter(b=>b.status!=='cancelled'&&clashesFor(b).length);
@@ -4063,7 +4080,7 @@ function syncExpenseLoan(d,exp){
     const l=d.loans.find(x=>x.id===exp.loanId);
     if(l){
       (l.repayments=l.repayments||[]).push({
-        id:keepId||uid(),date:exp.date,amount:amt,mode:'payout',expenseId:exp.id,
+        id:keepId||uid(),date:exp.paidOn||exp.date,amount:amt,mode:'payout',expenseId:exp.id,
         note:`Deducted from ${exp.description||'staff payout'}`
       });
     }
@@ -4189,15 +4206,89 @@ function renderLoans(){
 }
 
 // ─── Staff panel ──────────────────────────────────────────────────────────────
+// Staff logins (new model, v64): loaded with the panel, changed through the
+// staff-login Edge Function. Old model: nothing here (logins were made in SQL).
+const sl={loaded:false,loading:false,err:'',logins:[],code:'',ownerName:''};
+async function loadStaffLogins(force){
+  if(!stayActive()||sl.loading||(sl.loaded&&!force))return;
+  sl.loading=true;
+  try{Object.assign(sl,await window.StayLogSync.staffLogins(),{err:'',loaded:true});}
+  catch(e){sl.err=e.message||String(e);sl.loaded=true;}
+  sl.loading=false;
+  if(state.tab==='loans')render();
+}
+function staffLoginLine(s){
+  if(!stayActive())return null;
+  if(!sl.loaded){loadStaffLogins();return null;}
+  const l=sl.logins.find(x=>x.staff_id===s.id);
+  const line=div({'data-staff-login':s.id,style:{fontSize:12,color:'var(--muted)',marginTop:4,display:'flex',flexWrap:'wrap',gap:6,alignItems:'center'}});
+  if(!l){
+    line.appendChild(span({},'No login for the staff page.'));
+    line.appendChild(btn({className:'btn-ghost btn-sm','data-login-create':s.id,style:{padding:'3px 9px',fontSize:12},
+      onClick:()=>setState({modal:'staffLogin',editItem:{staff:s,mode:'create'}})},'Create login'));
+    return line;
+  }
+  line.appendChild(span({},`Login: ${l.username} · account code ${sl.code}${l.active?'':' · switched off'}`));
+  line.appendChild(btn({className:'btn-ghost btn-sm','data-login-reset':s.id,style:{padding:'3px 9px',fontSize:12},
+    onClick:()=>setState({modal:'staffLogin',editItem:{staff:s,mode:'reset',login:l}})},'Reset password'));
+  line.appendChild(btn({className:'btn-ghost btn-sm','data-login-toggle':s.id,style:{padding:'3px 9px',fontSize:12},
+    onClick:async()=>{
+      if(l.active&&!confirm(`Switch off ${s.name}'s login? The staff page stops working for her until you switch it on again.`))return;
+      try{await window.StayLogSync.staffLogin(l.active?'disable':'enable',{staff_id:s.id});await loadStaffLogins(true);}
+      catch(e){alert(e.message);}
+    }},l.active?'Switch off':'Switch on'));
+  return line;
+}
+function renderStaffLoginModal(){
+  const{staff,mode,login}=state.editItem||{};
+  const content=()=>{
+    const wrap=div({style:{display:'flex',flexDirection:'column',gap:11}});
+    wrap.appendChild(div({style:{fontSize:13,color:'var(--text-mid)',lineHeight:1.55}},
+      mode==='create'
+        ?`${staff.name} signs in to the staff page with the account code ${sl.code}, this username and this password. Give them to her in person.`
+        :`A new password for ${staff.name} (username ${login.username}). Her old one stops working.`));
+    const user=h('input',{type:'text',placeholder:'Username (e.g. her first name)','data-login-user':'1',autocapitalize:'none',spellcheck:false,
+      value:mode==='create'?String(staff.name||'').trim().split(/\s+/)[0].toLowerCase().replace(/[^a-z0-9_-]/g,''):login.username});
+    if(mode!=='create')user.disabled=true;
+    const pass=h('input',{type:'text',placeholder:'Password (at least 8 characters)','data-login-pass':'1',autocapitalize:'none',spellcheck:false});
+    const msg=div({style:{fontSize:12.5,color:'var(--danger)',minHeight:18}});
+    wrap.appendChild(user);wrap.appendChild(pass);wrap.appendChild(msg);
+    const go=btn({className:'btn-primary','data-login-save':'1',style:{width:'100%',minHeight:46},onClick:async()=>{
+      if(pass.value.length<8){msg.textContent='The password needs at least 8 characters.';return;}
+      go.disabled=true;msg.style.color='var(--muted)';msg.textContent='Saving…';
+      try{
+        await window.StayLogSync.staffLogin(mode==='create'?'create':'reset',{staff_id:staff.id,username:user.value.trim().toLowerCase(),password:pass.value});
+        await loadStaffLogins(true);
+        closeModal();
+        showToast(mode==='create'?`Login made for ${staff.name}`:`New password set for ${staff.name}`);
+      }catch(e){go.disabled=false;msg.style.color='var(--danger)';msg.textContent=e.message;}
+    }},mode==='create'?'Create login':'Set new password');
+    wrap.appendChild(go);
+    wrap.appendChild(btn({className:'btn-ghost',style:{width:'100%'},onClick:closeModal},'Cancel'));
+    return wrap;
+  };
+  return modal(mode==='create'?'Staff login':'Reset password',content);
+}
 function staffPanel(){
-  const{data}=state;
+  const{data:all,filterProp}=state;
+  // The property picker filters staff too: those who work there, or everywhere (v64).
+  const data={...all,staff:filterProp==='all'?all.staff:all.staff.filter(s=>!(s.worksAt&&s.worksAt.length)||s.worksAt.includes(filterProp))};
   const card=div({className:'card',style:{padding:'14px',marginBottom:14}});
   card.appendChild(div({style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:data.staff.length?12:0}},
     div({style:{fontWeight:600,fontSize:14}},`Staff (${data.staff.length})`),
     btn({className:'btn-ghost btn-sm',style:{padding:'5px 11px'},onClick:()=>setState({modal:'addStaff',editItem:null})},ico('plus',{style:{marginRight:4,fontSize:13}}),'Add')
   ));
+  if(stayActive()&&sl.loaded&&!sl.err){
+    card.appendChild(div({'data-owner-name':'1',style:{fontSize:12,color:'var(--muted)',marginBottom:10,display:'flex',gap:6,alignItems:'center',flexWrap:'wrap'}},
+      span({},sl.ownerName?`The staff page says “Ask ${sl.ownerName} if you’re stuck”.`:'The staff page does not know your name yet.'),
+      btn({className:'btn-ghost btn-sm',style:{padding:'3px 9px',fontSize:12},onClick:async()=>{
+        const n=prompt('Your name, as your staff should see it:',sl.ownerName||'');
+        if(n===null)return;
+        try{await window.StayLogSync.setOwnerName(n);await loadStaffLogins(true);}catch(e){alert(e.message);}
+      }},sl.ownerName?'Change':'Add your name')));
+  }
   if(data.staff.length===0){
-    card.appendChild(div({style:{fontSize:13,color:'var(--muted)',marginTop:8}},'No staff added yet.'));
+    card.appendChild(div({style:{fontSize:13,color:'var(--muted)',marginTop:8}},filterProp==='all'?'No staff added yet.':'No staff work at this property.'));
     return card;
   }
   data.staff.forEach((s,i)=>{
@@ -4210,6 +4301,7 @@ function staffPanel(){
          s.dailyWage?`${fmtCur(s.dailyWage)}/day`:null,Number(s.checkoutWage)>0?`${fmtCur(s.checkoutWage)} checkout day`:null,
          Number(s.utensilRate)>0?`${fmtCur(s.utensilRate)} utensils`:null,s.phone].filter(Boolean).join(' · ')||'—'),
       bal>0?div({style:{fontSize:12,color:'var(--gold)',fontWeight:600,marginTop:3}},`Loan outstanding: ${fmtCur(bal)}`):null,
+      staffLoginLine(s),
       (()=>{const due=pendingWageTotal(data,s.id),n=pendingWages(data,s.id).length;
         return due>0?btn({className:'btn-ghost btn-sm',style:{marginTop:6,padding:'5px 10px',
           color:'var(--gold)',borderColor:'var(--gold-line)',background:'var(--gold-light)'},
@@ -4654,6 +4746,7 @@ function renderSettleModal(){
             e.amount=round2(gross-share);
           }
           e.paid=true;
+          e.paidOn=today();                     // payday (v64): the repayment is dated by it
           syncExpenseLoan(d,e);                 // records the instalment against the loan
         });
       });
@@ -4678,6 +4771,23 @@ function renderStaffModal(){
       'The daily wage is what one attendance mark becomes. Leave it blank and her marks are held until you set it. '+
       'On a day a guest checks out (turnover days too) the checkout-day wage is paid instead, once however many leave; leave it blank to pay the daily wage. '+
       'The utensil cleaning rate is paid on top, for a day she reports cleaning the utensils herself — only when a guest did not pay her for it. Leave it blank and those marks are held.'));
+    // ── Works at (v64): which properties; none ticked = every property. It
+    // decides her calendar, which checkouts make a checkout day, and where her
+    // wage is charged.
+    if(state.data.properties.length>1){
+      const wa=new Set(Array.isArray(f.worksAt)?f.worksAt:[]);
+      const box=div({'data-works-at':'1',style:{border:'1.5px solid var(--border)',borderRadius:'var(--radius-sm)',padding:'8px 12px'}},
+        div({className:'label',style:{marginBottom:4}},'Works at'));
+      state.data.properties.forEach(p=>{
+        const cb=h('input',{type:'checkbox','data-works-at-prop':p.id,style:{width:20,height:20}});
+        cb.checked=wa.has(p.id);
+        cb.addEventListener('change',()=>{cb.checked?wa.add(p.id):wa.delete(p.id);f.worksAt=state.data.properties.map(x=>x.id).filter(id=>wa.has(id));});
+        box.appendChild(h('label',{style:{display:'flex',alignItems:'center',gap:10,minHeight:40,fontSize:14}},cb,p.name));
+      });
+      box.appendChild(div({style:{fontSize:11.5,color:'var(--muted)',lineHeight:1.45,marginTop:2}},
+        'None ticked means every property. It sets which bookings she sees, which check-outs make a checkout day, and where her wages are charged.'));
+      wrap.appendChild(box);
+    }
     const joinWrap=div({},div({className:'label'},'Joined on'));
     const joinInp=h('input',{type:'date',value:f.joinedOn||today()});joinInp.addEventListener('change',e=>f.joinedOn=e.target.value);joinWrap.appendChild(joinInp);wrap.appendChild(joinWrap);
     if(isEdit){
@@ -5284,7 +5394,8 @@ function renderExpenseModal(){
     const notesTA=h('textarea',{placeholder:'Notes (optional)',rows:2,style:{resize:'none'}});notesTA.textContent=f.notes||'';notesTA.addEventListener('input',e=>f.notes=e.target.value);wrap.appendChild(notesTA);
     wrap.appendChild(btn({className:'btn-primary',style:{marginTop:4,width:'100%'},onClick:()=>{
       const gross=round2(g.val);
-      if(!f.description||!(gross>0)||!f.propertyId){alert('Description, amount and property are required.');return;}
+      // No property = Shared (v63); only the description and amount are required.
+      if(!f.description||!(gross>0)){alert('Description and amount are required.');return;}
       const ded=f.loanId?round2(f.loanDeduction):0;
       if(f.loanId&&!(ded>0)){alert('Enter the instalment amount to deduct, or switch the deduction off.');return;}
       if(ded>gross){alert(`The ${fmtCur(ded)} deduction is more than the ${fmtCur(gross)} payout.`);return;}
@@ -5297,6 +5408,7 @@ function renderExpenseModal(){
       f.loanDeduction=ded;
       f.grossAmount=gross;
       f.amount=round2(gross-ded);
+      f.paidOn=f.paid?(f.paidOn||today()):'';     // the day it was paid (v64)
       if(!f.id)f.id=uid();
       mutateData(d=>{
         if(isEdit)d.expenses=d.expenses.map(e=>e.id===f.id?{...f}:e);
@@ -5396,6 +5508,7 @@ function render(){
   else if(state.modal==='inventory'){currentModal=renderInventoryModal(); document.body.appendChild(currentModal);}
   else if(state.modal==='move')     {currentModal=renderMoveModal();      document.body.appendChild(currentModal);}
   else if(state.modal==='notesPick'){currentModal=renderNotesPickModal(); document.body.appendChild(currentModal);}
+  else if(state.modal==='staffLogin'){currentModal=renderStaffLoginModal(); document.body.appendChild(currentModal);}
   else if(state.modal==='inbox')    {currentModal=renderInboxModal();     document.body.appendChild(currentModal);}
 }
 

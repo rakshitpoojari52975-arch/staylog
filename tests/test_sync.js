@@ -35,6 +35,15 @@ for (const m of schema.matchAll(/create table if not exists stay\.(\w+) \(([\s\S
     }
   }
 }
+// later scripts' added columns on top (07-staff.sql: works_at, …)
+for (const f of fs.readdirSync(path.join(ROOT, 'supabase/stay')).filter(f => /^0[4-9]-.*\.sql$/.test(f)).sort())
+  for (const m of fs.readFileSync(path.join(ROOT, 'supabase/stay', f), 'utf8').matchAll(/alter table stay\.(\w+) add column if not exists (\w+) ([a-z]+(?:\[\])?)([^;]*);/g)) {
+    if (!COLS[m[1]] || COLS[m[1]].includes(m[2])) continue;
+    COLS[m[1]].push(m[2]);
+    if (/not null/.test(m[4])) NOTNULL[m[1]].push(m[2]);
+    const d = m[4].match(/default ('\{\}'|true|false|-?\d+)/);
+    if (d) DEFAULTS[m[1]][m[2]] = d[1] === "'{}'" ? [] : d[1] === 'true' ? true : d[1] === 'false' ? false : Number(d[1]);
+  }
 // 04-phase2.sql's changes on top
 for (const m of fs.readFileSync(path.join(ROOT, 'supabase/stay/04-phase2.sql'), 'utf8').matchAll(/alter table stay\.(\w+) alter column (\w+) drop not null/g))
   NOTNULL[m[1]] = NOTNULL[m[1]].filter(c => c !== m[2]);

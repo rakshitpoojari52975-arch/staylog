@@ -301,6 +301,49 @@ Agreed decisions (his answers, 15 Nov 2026):
   "Shared costs" line under Property Performance; the CSV says "Shared".
 - **House notes PDF** asks which property under All properties.
 
+### Phase 5 — v64 (staff)
+- **`supabase/stay/07-staff.sql`** (after 06): `stay.staff.works_at text[]`
+  ("Works at"; empty = every property), filled once from `staff_properties`;
+  a trigger keeps `staff_properties` equal to it (a property not the
+  account's is refused by the FK, the whole change with it), so her calendar,
+  the checkout-day rate and where a wage is charged follow the app.
+  `stay.my_properties()` (hers, or every live one when none),
+  **`stay.staff_profile()`** (her name, business = `accounts.name`, owner =
+  `accounts.owner_name` else an owner member's display name, her properties
+  with check-in / check-out times — no guests, no money) and
+  **`stay.staff_mark_today_at(property)`** (only one of hers; the line is
+  charged there). Public wrappers `public.staff_profile()`,
+  `public.staff_mark_today_at(text)` for her page. `check.sql` checks it.
+- **Edge Function `staff-login`** (Verify JWT off; uses the caller's token):
+  `create` / `reset` / `disable` / `enable`, for an owner or a manager with
+  manage_staff of that account only. A login is an Auth user
+  `<username>.<code>@staff.staylog.invalid` (username 2–24 of a-z 0-9 - _,
+  unique per account; password ≥ 8, never stored or returned) plus a
+  `stay.staff_logins` row; if the row cannot be saved the user is deleted
+  again. Disable = Auth ban + `active` false. Works on logins made before
+  v64 (Laxmi's old address). `tests/test_staff_login_function.js`.
+- **App:** staff form **Works at** (more than one property); the staff list
+  follows the property picker; in the new model each staff member shows
+  "Login: <username> · account code <code>" with Reset password / Switch
+  off–on, or **Create login** (`renderStaffLoginModal`; through
+  `StayLogSync.staffLogin`); the owner's name the staff page uses is set
+  there (`accounts.owner_name`); **Home names marks the server holds for a
+  missing rate** (`StayLogSync.status().heldMarks`, read each sync).
+  Pay sheet sets `paidOn` = payday, and `syncExpenseLoan` dates the
+  repayment by it (the old open item). A Shared expense saves (the form
+  had still required a property).
+- **Staff page (`staff.js` v12):** sign-in with **account code** (remembered,
+  `staylog_staff_code`), username and password → the new address; no code,
+  or no match, → the old `@staff.raayavasyam.invalid` one, so Laxmi's login
+  works either way. Wrong password and no internet say different things.
+  Every name from `staff_profile` (business, hers, the owner's; "Your
+  workplace" / "the owner" when unknown): no business, owner or staff name
+  is written in `staff.js` or `staff.html` (`test_staff_page.js` checks).
+  More than one property: "Where are you working today?" (remembered,
+  `staylog_staff_prop`) and `staff_mark_today_at`. Times from her
+  properties. Offline copy per login (`staylog_staff_cache:<user id>`; the old
+  shared `rv_staff_cache` is removed). Without 07 (no profile) it still works.
+
 ## Deploying
 
 - GitHub Pages serves `main`. Work on a branch and open a PR; Rakshit merges.
@@ -942,6 +985,10 @@ also fetch from Supabase with `cache: 'no-store'` as a second layer.
     node tests/test_sync.js              # phase 2 engine: two devices, field merges, conflicts (money flagged), offline, no delete by absence + brake, receipts, calendar; STAYLOG_PG adds a real apply_change round trip
     node tests/test_sync_app.js          # phase 2 in the app: hashed PIN (old plain one converted), dormant, own storage key, cloud.js stands down, Sync panel, server receipts, stable repayment id
     node tests/test_property_data.js     # phase 4: texts out of the code (messages word for word), neutral defaults, form, receipt series, whole-unit occupancy, remembered property, Shared expenses, house notes picker (+ 06 SQL with STAYLOG_PG)
+    node tests/test_staff_page.js        # phase 5 staff page: code sign-in + old login, wrong password vs no internet, names from data, property pick, per-login cache
+    node tests/test_staff_app.js         # phase 5 app: Works at + filter, staff logins (create/reset/switch off), owner name, held marks on Home, payday-dated loan cut, Shared expense saves
+    node tests/test_staff_login_function.js   # the staff-login Edge Function: who may, the address, nothing half-made, reset/disable on old logins
+    STAYLOG_PG="…" node tests/test_staff_sql.js      # 07-staff.sql: works_at ↔ staff_properties, her profile, marking at a property
     node tests/test_move_app.js          # phase 3 in the app: Move to the new system — copy, compare (match / mismatch), switch, another phone joins, rollback
     node tests/test_notify_stay.js       # notify in the new model: by account, every owner, own devices/prefs/inbox, amounts + pays_directly_sources, marks, test push
     node tests/test_ical_stay.js         # ical-sync in the new model: stay feeds/events by account, Import now = owned accounts only
@@ -1043,8 +1090,3 @@ areas are changed.
   work). A database set up again from scratch needs the purge run again.
 - Her page shows "Received so far ₹0" — wages may be paid in cash without being
   marked paid in the app. Raise it before it becomes a misunderstanding.
-- Pay-sheet loan repayments are dated by each wage's day, not the payday
-  (`syncExpenseLoan` uses `exp.date`, as single payouts do). Arrears are
-  unaffected, but the CSV's monthly "Loan repayments" section files an
-  instalment taken on 2 Nov for October's wages under October. Fix by recording a
-  paid-on date on the expense and using it for the repayment row.
