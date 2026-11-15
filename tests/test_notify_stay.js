@@ -139,12 +139,26 @@ const post = (body, headers = {}) => new Request('https://proj.supabase.co/funct
     await F.handle(post({ type: 'INSERT', table: 'attendance', schema: 'stay', record: { id: mark.id } }, CRON), ENV, W.fetch, NOW);
     ok('a pointer without its account sends nothing', (await got(W, iphone)).length === 1); }
 
-  console.log('\n— new stays from the calendar —');
-  { const W = world({ ...base(), ical_events: [{ account_id: ACC, feed_id: 'f1', uid: 'u1', property_id: 'p1', platform: 'Airbnb',
-      start_date: '2026-10-25', end_date: '2026-10-27', kind: 'reserved', gone_at: null }] });
-    await F.handle(post({ job: 'new-bookings', events: [{ feed_id: 'f1', uid: 'u1' }] }, CRON), ENV, W.fetch, NOW);
+  console.log('\n— new stays from the calendar (v68: the import made the booking) —');
+  { const F2 = F; const own = F2.icalBookingId({ feed_id: 'f1', uid: 'u1' });
+    const ev = (uid, extra) => ({ account_id: ACC, feed_id: 'f1', uid, property_id: 'p1', platform: 'Airbnb',
+      start_date: '2026-10-25', end_date: '2026-10-27', kind: 'reserved', gone_at: null, imported_booking_id: null, announced_at: null, ...extra });
+    const W = world({ ...base(), ical_events: [ev('u1', { imported_booking_id: own }),
+        ev('u2', { start_date: '2026-11-01', end_date: '2026-11-03', imported_booking_id: 'typed-in' }),
+        ev('u3', { start_date: '2026-11-05', end_date: '2026-11-07', imported_booking_id: F2.icalBookingId({ feed_id: 'f1', uid: 'u3' }), announced_at: '2026-10-19T00:00:00Z' })],
+      bookings: [B({ id: own, check_in: '2026-10-25', check_out: '2026-10-27', status: 'confirmed' }),
+                 B({ id: 'typed-in', check_in: '2026-11-01', check_out: '2026-11-03', status: 'confirmed' })] });
+    let r = await (await F.handle(post({ job: 'new-bookings', account: ACC, events: [{ feed_id: 'f1', uid: 'u1' }, { feed_id: 'f1', uid: 'u2' }, { feed_id: 'f1', uid: 'u3' }] }, CRON), ENV, W.fetch, NOW)).json();
     const m = await got(W, iphone);
-    ok('announced, with the account\'s property name', m.length === 1 && m[0].title === 'New Airbnb booking' && /Raaya Vasyam/.test(m[0].body), m); }
+    ok('the import\'s own booking: announced, with the account\'s property name', m.length === 1 && m[0].title === 'New Airbnb booking' && /Raaya Vasyam/.test(m[0].body), m);
+    ok('a stay linked to a booking typed in by hand: not announced', r.report.some(x => x.skipped === 'linked to a booking already there'), r.report);
+    ok('one already announced: left alone', r.report.some(x => x.skipped === 'already announced') && W.stay.ical_events[2].announced_at === '2026-10-19T00:00:00Z');
+    ok('both looked-at events are stamped announced_at (sent or not)', W.stay.ical_events[0].announced_at && W.stay.ical_events[1].announced_at, W.stay.ical_events);
+    r = await (await F.handle(post({ job: 'new-bookings', events: [{ feed_id: 'f1', uid: 'u1' }] }, CRON), ENV, W.fetch, NOW)).json();
+    ok('without its account: nothing read, nothing sent', r.report.length === 0 && (await got(W, iphone)).length === 1, r);
+    const W2 = world({ ...base(), ical_events: [ev('u1', { imported_booking_id: own })], bookings: [B({ id: own, check_in: '2026-10-25', check_out: '2026-10-27', status: 'cancelled' })] });
+    await F.handle(post({ job: 'new-bookings', account: ACC, events: [{ feed_id: 'f1', uid: 'u1' }] }, CRON), ENV, W2.fetch, NOW);
+    ok('its booking cancelled since: not announced', W2.pushes.length === 0 && W2.stay.ical_events[0].announced_at); }
 
   console.log('\n— Send test —');
   { const W = world(base());

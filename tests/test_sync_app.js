@@ -61,7 +61,7 @@ function q(schema,table){
 window.supabase={createClient:()=>({
   auth:{getSession:async()=>({data:{session:window.__auth.session}}),signOut:async()=>({error:null}),
         onAuthStateChange:()=>({data:{subscription:{unsubscribe(){}}}})},
-  functions:{async invoke(){return{data:{},error:null};}},
+  functions:{async invoke(){return{data:window.__invokeData||{},error:null};}},
   from:t=>q('public',t),
   rpc:async()=>({data:null,error:null}),
   schema:s=>({from:t=>q(s,t),async rpc(name,a){
@@ -189,6 +189,25 @@ const SEED = { properties: [{ id: 'p1', name: 'Raaya Vasyam' }], staff: [{ id: '
     const no = await page.evaluate(async () => { const b = state.data.bookings.find(x => x.id === 'b9'); await stayReceiptNo(b); return b.receiptNo; });
     ok('the number comes from stay.issue_receipt', no === 'RV/2026-27/041', no);
     ok('and is kept on the booking', await page.evaluate(() => state.data.bookings.find(b => b.id === 'b9').receiptNo === 'RV/2026-27/041'));
+    ok('no page errors', errs.length === 0, errs);
+    await ctx.close(); }
+
+  console.log('\n— v68: the calendar import is the server\'s —');
+  { const st = JSON.parse(JSON.stringify(stay));
+    st.stay.ical_feeds = { f1: { account_id: 'acct-1', id: 'f1', property_id: 'p1', platform: 'Airbnb', url: 'https://www.airbnb.com/calendar/ical/1.ics?s=made-up',
+      connected: true, last_fetched_at: '2026-11-15T03:30:00Z', last_ok_at: '2026-11-15T03:30:00Z', last_error: null, last_count: 3, updated_at: '2026-11-15T03:30:00Z' } };
+    st.stay.ical_runs = { 'acct-1': { account_id: 'acct-1', last_run_at: new Date(Date.now() - 10 * 60e3).toISOString(),
+      result: { created: 1, updated: 0, gone: 0, held: 0, feeds: {} }, updated_at: '2026-11-15T03:30:00Z' } };
+    const { ctx, page, errs } = await unlocked({ model: true, stay: st });
+    await page.evaluate(() => window.StayLogSync.sync()); await page.waitForTimeout(300);
+    await page.evaluate(() => { state.modal = 'cloud'; render(); }); await page.waitForTimeout(400);
+    const log = await page.locator('[data-ical-log]').innerText().catch(() => '');
+    ok('Calendar sync shows what the server\'s last run did, not an old log', /1 new booking/.test(log) && /checked/.test(log), log);
+    ok('…and says the server makes the bookings, phone open or not', /even when no phone is open/.test(await page.locator('[data-ical-server]').innerText().catch(() => '')));
+    await page.evaluate(() => { window.__invokeData = { ok: true, throttled: [{ account: 'acct-1', next_at: new Date(Date.now() + 3 * 60e3).toISOString() }] }; });
+    await page.click('[data-ical-check]'); await page.waitForTimeout(600);
+    const toast = await page.locator('[data-toast]').innerText().catch(() => '');
+    ok('Check now within 5 minutes: says when it can be asked again', /Checked a few minutes ago\. You can check again at/.test(toast), toast);
     ok('no page errors', errs.length === 0, errs);
     await ctx.close(); }
 

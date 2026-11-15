@@ -296,6 +296,20 @@
       if (error) throw error;
       return data || [];
     },
+    // The server's import record (09-calendar.sql). Missing table, no row,
+    // or not the owner: null — the phone then imports as before.
+    async icalRun(account) {
+      const db = await stay();
+      const { data, error } = await db.from('ical_runs').select('last_run_at,result').eq('account_id', account);
+      if (error) return null;
+      return (data || [])[0] || null;
+    },
+    async feeds(account) {
+      const db = await stay();
+      const { data, error } = await db.from('ical_feeds').select('id,property_id,platform,last_ok_at,last_error,connected').eq('account_id', account);
+      if (error) return null;
+      return data || [];
+    },
     async stamp(account, feed, uid, booking) {
       const db = await stay();
       const { error } = await db.from('ical_events').update({ imported_booking_id: booking })
@@ -466,23 +480,53 @@
     S.lastPush = new Date().toISOString();
   }
 
-  // ── Calendar import on the new tables (today's drainIcal, unchanged in its
-  // rules; phase 7 moves it to the server). New stays become bookings and go
-  // up through the ordinary outbox; events are stamped once they are there.
+  // ── Calendar import on the new tables ─────────────────────────────────────
+  // From v68 the server makes the bookings (ical-sync, with the same rules);
+  // its run record in stay.ical_runs says so, and the phone then only works
+  // out what the Calendar sync panel shows: the per-feed figures, from the
+  // events and bookings as they stand, and the "Still open on …" check. Until
+  // the server has run once, the owner's phone imports as before: new stays become
+  // bookings and go up through the ordinary outbox, and events are stamped
+  // once their booking is on the server.
   async function drainIcal(account) {
-    const plan = C() && C()._planIcal;
+    const cl = C(), plan = cl && cl._planIcal;
     if (!plan) return 0;
     let events;
     try { events = await srv.events(account); } catch { return 0; }
     S.events = events;
-    if (!events.length) return 0;
-    const p = plan(events, S.data, (window.STAYLOG_TODAY && window.STAYLOG_TODAY()) || localToday());
-    S.data.bookings = S.data.bookings || [];
-    for (const b of p.create) if (!S.data.bookings.some(x => x.id === b.id)) S.data.bookings.push({ ...b });
-    for (const u of p.update) { const b = S.data.bookings.find(x => x.id === u.id); if (b) Object.assign(b, u.fields); }
-    const seen = new Set((S.stamps || []).map(s => s.feed_id + '|' + s.uid));
-    S.stamps = (S.stamps || []).concat(p.stamp.filter(s => !seen.has(s.feed_id + '|' + s.uid)));
-    return p.create.length + p.update.length;
+    const run = await srv.icalRun(account).catch(() => null);
+    const today = (window.STAYLOG_TODAY && window.STAYLOG_TODAY()) || localToday();
+    const p = plan(events, S.data, today);
+    // A manager's phone never imports (it cannot stamp the events, and the
+    // calendar is the owner's): the server, or the owner's phone, does.
+    const owner = !S.me || S.me.role === 'owner';
+    let made = 0;
+    if (!run && owner) {
+      S.data.bookings = S.data.bookings || [];
+      for (const b of p.create) if (!S.data.bookings.some(x => x.id === b.id)) S.data.bookings.push({ ...b });
+      for (const u of p.update) { const b = S.data.bookings.find(x => x.id === u.id); if (b) Object.assign(b, u.fields); }
+      const seen = new Set((S.stamps || []).map(s => s.feed_id + '|' + s.uid));
+      S.stamps = (S.stamps || []).concat(p.stamp.filter(s => !seen.has(s.feed_id + '|' + s.uid)));
+      made = p.create.length + p.update.length;
+    }
+    // What the panel shows. The server's own record, when there is one, says
+    // what its runs did and when; the per-feed totals are worked out here.
+    const res = (run && run.result) || {};
+    const feeds = {};
+    for (const [fid, F] of Object.entries(p.feeds || {}))
+      feeds[fid] = { ...F, lastChange: (res.feeds && res.feeds[fid] && res.feeds[fid].lastChange) || null };
+    let cover = null;
+    const feedRows = events.length ? await srv.feeds(account).catch(() => null) : [];
+    if (feedRows && cl._coverageGaps) {
+      const stamped = new Map(p.stamp.map(x => [x.feed_id + '|' + x.uid, x.booking_id]));
+      const evs = events.map(e => ({ ...e, imported_booking_id: e.imported_booking_id || stamped.get(e.feed_id + '|' + e.uid) || null }));
+      cover = cl._coverageGaps(evs, feedRows, S.data.bookings || [], today);
+    }
+    S.ical = run
+      ? { server: true, at: run.last_run_at || null, created: res.created || 0, updated: res.updated || 0, gone: res.gone || 0, held: res.held || 0,
+          error: res.error || '', feeds, gaps: cover ? cover.gaps : {}, proven: cover ? cover.proven : {} }
+      : { server: false, at: new Date().toISOString(), ...p.counts, error: '', feeds, gaps: cover ? cover.gaps : {}, proven: cover ? cover.proven : {} };
+    return made;
   }
   async function stampEvents(account) {
     const left = [];
@@ -724,6 +768,8 @@
     },
     switchAccount(account) { const m = model(); if (!m) return; this.activate(m.user, account); },
     events: () => (S && S.events) || [],
+    // the Calendar sync panel's figures in the new model (null until a sync has read them)
+    icalLog: () => (S && S.ical) || null,
     migration: {
       // ⋯ → Move to the new system (phase 3). Each step can be run again.
       account: (name, code) => rpc('migration_account', { p_name: name, p_code: code }),

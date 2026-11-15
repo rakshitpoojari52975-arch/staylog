@@ -8,6 +8,15 @@ Reads the Booking.com and Airbnb calendar export links every 30 minutes and
 records what is in them in `public.ical_events`. The phone turns new stays into
 bookings at its next sync. The app works the same whether or not this is set up.
 
+**New model (v68 and later, after the switch-over):** the function makes the
+bookings itself, with the phone's rules, so a stay reaches every phone even
+when none is open. To move to it: run `supabase/stay/09-calendar.sql` (after
+`08-team.sql`), then paste the new `index.ts` over the deployed function
+(Edge Functions → `ical-sync` → Code → Deploy). Nothing else changes: the
+same secrets, the same cron. Until the new code has run once, phones keep
+importing as before. Feeds are read 5 at a time, oldest first; Import now
+works once in 5 minutes per account.
+
 Do these in order, once.
 
 1. **Run the SQL.** Supabase → SQL editor → paste `supabase/ical.sql` → Run,

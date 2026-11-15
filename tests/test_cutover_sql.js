@@ -69,7 +69,7 @@ r = sql(`insert into public.properties (id,owner_id,name) values ('p1','${OWNER}
   insert into public.push_log (owner_id,key,title,body,url,alert,delivered,read_at) values ('${OWNER}','arrival:b1:x','Guest arriving tomorrow','2 guests','./#open=b1','arrivals',true,now());
   insert into public.backups (owner_id,ciphertext,salt,iv,iterations,app_version,size) values ('${OWNER}','CIPHER','SALT','IV',600000,'v61',6);`);
 ok('the old tables seeded (a stamped mark whose line is on the phone, one deleted on purpose, one from today not yet made)', !r.err, r.err);
-for (const f of ['stay/01-schema.sql', 'stay/02-functions.sql', 'stay/03-access.sql', 'stay/04-phase2.sql', 'stay/05-migrate.sql', 'stay/05-migrate.sql', 'stay/07-staff.sql', 'stay/08-team.sql']) {
+for (const f of ['stay/01-schema.sql', 'stay/02-functions.sql', 'stay/03-access.sql', 'stay/04-phase2.sql', 'stay/05-migrate.sql', 'stay/05-migrate.sql', 'stay/07-staff.sql', 'stay/08-team.sql', 'stay/09-calendar.sql']) {
   r = psql(DB, ['-c', 'set client_min_messages=warning', '-f', F(f)]); ok(f + ' loads', !r.err, r.err);
 }
 const check = psql(DB, ['-F', '|', '-f', F('stay/check.sql')]).out.trim().split('\n').filter(Boolean);

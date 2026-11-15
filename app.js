@@ -6,7 +6,7 @@
 // ─── Build ────────────────────────────────────────────────────────────────────
 // Bump BOTH of these together. This date sat at 28 Sept through a dozen
 // releases and was read, reasonably, as proof the upload had not landed.
-const APP_VERSION='v67', APP_BUILT='16 Nov 2026';
+const APP_VERSION='v68', APP_BUILT='16 Nov 2026';
 // The CACHE_NAME of the sw.js released with this app.js. Every release bumps
 // APP_VERSION and CACHE_NAME together, so one is derived from the other rather
 // than being a fourth thing to forget; the tests fail if they ever disagree.
@@ -3022,12 +3022,20 @@ function calendarSyncBox(s){
     div({className:'kicker'},'Calendar sync'),go));
   const sum=icalSummary(s.icalLog);
   if(sum)box.appendChild(div({'data-ical-log':'1',style:{fontSize:12.5,color:sum.tone,lineHeight:1.5,marginTop:6}},sum.text));
+  // v68: in the new model the server makes the bookings, phone open or not
+  if(s.icalLog&&s.icalLog.server)box.appendChild(div({'data-ical-server':'1',style:{fontSize:11.5,color:'var(--muted)',lineHeight:1.45,marginTop:4}},
+    'New stays become bookings on the server every 30 minutes, even when no phone is open.'));
   const body=div({},div({style:{fontSize:12.5,color:'var(--muted)',marginTop:6}},'Loading…'));
   box.appendChild(body);
   // Fetches every feed now (the function), then syncs, which imports.
   go.addEventListener('click',async()=>{
     go.disabled=true;go.textContent='Checking…';
-    try{ await window.StayLogCloud.importNow(); render(); }
+    try{
+      const r=await window.StayLogCloud.importNow(); render();
+      // once in 5 minutes per account: say when it can be asked again
+      const t=r&&r.throttled&&r.throttled[0];
+      if(t)showToast(`Checked a few minutes ago. You can check again at ${new Date(t.next_at).toLocaleTimeString('en-IN',{hour:'numeric',minute:'2-digit'})}.`);
+    }
     catch(err){ go.disabled=false;go.textContent='Check now'; alert('Calendar check failed: '+(err.message||err)); }
   });
   window.StayLogCloud.listFeeds().then(feeds=>{

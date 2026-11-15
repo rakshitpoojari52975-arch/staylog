@@ -398,6 +398,51 @@ Agreed decisions (his answers, 15 Nov 2026):
   shares Chrome's storage, so joining in Chrome is enough.
 - Not yet (phase 8): notifications to managers; inbox per property.
 
+### Phase 7 — v68 (the calendar import on the server)
+- **`ical-sync` makes the bookings** in the new model: a stay is on every
+  phone (owner's and managers') whether or not the owner's phone is open.
+  The rules are the phone's own: `planIcal` and its helpers are copied word
+  for word into the function (`tests/test_ical_server.js` runs both on 400
+  mixed cases and fails if they differ — change them together). New stays
+  are inserted only if their id is free (`resolution=ignore-duplicates`);
+  moves and flags are PATCHed **only on the version planned from**, so an
+  edit made meanwhile on a phone wins and the next run plans again. Stamps
+  last. "Past" is judged by the account's `time_zone` (`dayIn`).
+- **A run:** feeds read in parallel (`POOL` 5), oldest `last_fetched_at`
+  first, none started after `FETCH_DEADLINE_MS` (45 s; the rest are oldest
+  next time), at most `MAX_FEEDS_PER_ACCOUNT` (20) per account per run; then
+  each account planned and written in its own try/catch (one failing never
+  stops the others; its error goes on its run record). **Import now** (an
+  owner's token) is once in 5 minutes per account, claimed atomically on
+  `ical_runs.last_manual_at`; the answer carries `throttled` (`next_at`) and
+  the app says when it can be asked again. The cron is never held back.
+- **`announced_at`:** a new event waits (null) unless it is the feed's first
+  good read or a block. After writing, each waiting event is settled: news =
+  reserved, on the feed, check-in today or later, and its booking is the
+  import's own (`imported_booking_id === icalBookingId(e)`, live) → sent to
+  notify with its `account`; anything else (an echo, a stay typed in by hand,
+  past) is stamped at once. notify re-reads each, checks the same, pushes
+  (claimed once per `stay:<property>:<in>:<out>`) and stamps announced_at,
+  sent or not. A run cut short leaves them null; the next run asks again.
+- **`supabase/stay/09-calendar.sql`** (after 08): `stay.ical_runs` (one row
+  per account: `last_run_at`, `last_manual_at`, `result` — counts and per
+  feed figures with `lastChange`; owner reads, only the function writes); its
+  first run marks every stored event announced (a second run leaves new ones
+  alone); `min_version` raised to 68 in the new model (never lowered).
+- **The phone** (`sync.js` `drainIcal`): once its account has an `ical_runs`
+  row, it makes no bookings of its own; it works out the per-feed figures and
+  the "Still open on …" check from the events and bookings, with the server's
+  `lastChange` and run time (`StayLogSync.icalLog()`, which `cloud.js`
+  `status().icalLog` returns in the new model — before v68 the panel showed
+  the old model's stale log). No row yet → the owner's phone imports as
+  before; a manager's phone never imports (`S.me.role`).
+- **Pasted before 09 has run** (no `ical_runs` table): the function still
+  imports, but announces nothing (every stored event's `announced_at` is
+  empty and would look new) and does not throttle Import now.
+- Events and bookings are read a page (1000) at a time.
+- The old model (`public`) is unchanged: events only, the phone imports, the
+  fresh list goes to notify. Feeds are read in parallel there too.
+
 ## Deploying
 
 - GitHub Pages serves `main`. Work on a branch and open a PR; Rakshit merges.
@@ -1056,7 +1101,8 @@ also fetch from Supabase with `cache: 'no-store'` as a second layer.
     node tests/test_checkboxes.js        # v66: every checkbox keeps its tick — appearance, a tap ticks it, and it looks different ticked (pixels), light and dark
     node tests/test_move_app.js          # phase 3 in the app: Move to the new system — copy, compare (match / mismatch), switch, another phone joins, rollback
     node tests/test_notify_stay.js       # notify in the new model: by account, every owner, own devices/prefs/inbox, amounts + pays_directly_sources, marks, test push
-    node tests/test_ical_stay.js         # ical-sync in the new model: stay feeds/events by account, Import now = owned accounts only
+    node tests/test_ical_server.js       # phase 7: the import on the server — same plan as the phone (400 cases), bookings written, echoes, cancelled stays, moved/gone, version guard, announced once (cut short, notify down), parallel/deadline/cap, Import now throttle, one account failing, time zone, old model
+    STAYLOG_PG="…" node tests/test_ical_server_sql.js   # 09-calendar.sql: twice, announced backfill only once, ical_runs owner-only, min_version 68
     STAYLOG_PG="…" node tests/test_cutover_sql.js    # 05-migrate.sql + rollback-cutover.sql: account, rows, placeholders, prune, copy, switch, her page on stay, read-only old tables, rollback, again
     STAYLOG_PG="…" node tests/test_stay_sql.js       # phase 1 `stay` schema: twice, check.sql ok, accounts/managers/staff access, composite keys, apply_change versions, receipts (concurrent), money, wages/utensils/undo/re-pricing on the server, her functions, rollback
     STAYLOG_PG="…" node tests/test_security_sql.js   # security-v60.sql: owners only, staff/stranger locked out, her page works, owner match, mark ids, refuses to lock out
