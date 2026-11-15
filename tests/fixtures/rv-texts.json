@@ -1,0 +1,72 @@
+{
+ "houseRules": [
+  [
+   "Home by 10 PM",
+   "Ours is a quiet neighbourhood and the evenings here are wonderfully serene. We kindly ask that everyone is back at the house by 10 PM. It keeps us on good terms with our neighbours and gives you the restful night you deserve after a day of exploring."
+  ],
+  [
+   "A home, not a party venue",
+   "This house is meant as a calm, intimate retreat. Please keep gatherings to your own group and avoid large get-togethers or loud events. Good conversation and laughter are always welcome — just keep it cosy."
+  ],
+  [
+   "A smoke-free home",
+   "The entire property, indoors and outdoors, is strictly non-smoking. If you do need a smoke, we kindly ask that you step outside the property gates. Thank you for understanding."
+  ],
+  [
+   "Switch off when you step out",
+   "When you head out, please turn off the lights, fans and air conditioners. A small habit that makes a real difference — to the environment and to keeping things running smoothly."
+  ],
+  [
+   "A clean kitchen is a happy kitchen",
+   "The kitchen is yours to use and enjoy. We only ask that utensils, pots, pans and dishes are washed and put back after use, so the space stays ready for your next meal."
+  ],
+  [
+   "Shoes off at the door",
+   "We follow the lovely tradition of leaving footwear outside the entrance. There is a dedicated spot for shoes right at the door — step in and feel at home."
+  ]
+ ],
+ "houseNotes": [
+  [
+   "Hot Water",
+   "We rely on solar heating, so on sunny days you’ll have hot water in all bathrooms. As a backup, geysers are installed in the living room bathroom and the 1st floor bedroom bathroom. Their switches (marked 16A) are located just outside the respective bedrooms — please switch them on about 20–30 minutes before use if the solar water isn’t warm enough."
+  ],
+  [
+   "Water Supply",
+   "If the water flow stops, it likely means the overhead tank has run dry. Simply switch on the motor, located above the washing machine in the kitchen area. If water still doesn’t resume, please also check the corresponding switch on the MCB board."
+  ],
+  [
+   "Vessels & Utensils",
+   "As mentioned in the house rules, please clean vessels after use. If you’d prefer, our househelp can do this for you at a nominal charge of Rs. 100, payable directly to her."
+  ],
+  [
+   "Housekeeping",
+   "Our househelp comes daily to clean the house. Please let us know your convenient time — we’d suggest either 7:30–8:00 AM or after 2:00 PM."
+  ],
+  [
+   "Main Gate",
+   "Please keep the main gate closed, especially through the night. It keeps the house secure and keeps stray animals out of the compound."
+  ],
+  [
+   "Footwear",
+   "Please leave shoes and chappals in the shoe rack rather than outside the door — stray dogs in the area are known to carry footwear away."
+  ]
+ ],
+ "checkin": "1:00 PM",
+ "checkout": "11:00 AM",
+ "stayText": "*Welcome in, Anita*\n\nA few things to make the stay easy:\n\n*Wi-Fi:* RV-Home · password *pass1234*\n*Kitchen:* yours to use — we only ask that everything is washed and put back after each use.\n*Stepping out:* please switch off the lights, fans and AC, and pull the door shut behind you.\n*Evenings:* the neighbourhood turns in early, so do keep things quiet and plan to be back by 10 PM.\n*Footwear:* there is a spot at the entrance — shoes stay outside.\n\nThe house is entirely non-smoking, indoors and out.\n\nAnything you cannot find, just message here. Enjoy Udupi.",
+ "arrivalText": "*Seeing you on 10 Dec 2026 — Raaya Vasyam*\n\nNamaste Anita, everything is ready for your arrival on 10 Dec 2026, any time after 1:00 PM.\n\n*Getting here:* https://maps.example/x\n\nRing the bell.\n\nSafe travels.",
+ "confirmText": "*Booking confirmed — Raaya Vasyam*\n\nNamaste Anita, your stay is confirmed. We're looking forward to hosting you.\n\n*Reference:* SL-123456\n*Check-in:* 10 Dec 2026 from 1:00 PM\n*Check-out:* 12 Dec 2026 by 11:00 AM\n*Stay:* 2 nights · 2 guests\n*Address:* Kaup\n*Total:* ₹6,000 · *Balance due:* ₹4,000 (payable at check-in)\n\nI'll send the detailed confirmation right after this. Do reach out any time before your arrival.",
+ "departureText": "*Checking out on 12 Dec 2026*\n\nAnita, a small reminder that check-out is by 11:00 AM on 12 Dec 2026.\n\nOn your way out, it would help us a lot if you could:\n• Switch off the lights, fans, AC and geyser\n• Wash up anything used in the kitchen\n• Pull the main door shut behind you\n\nLeave the keys where you found it.\n\nA balance of ₹4,000 is pending — you can settle it before you leave.\n\nIt has been lovely having you. If the stay was good to you, a review would mean a great deal — and do come back.",
+ "seed": {
+  "houseRules": [
+   "Home by 10 PM\nOurs is a quiet neighbourhood and the evenings here are wonderfully serene. We kindly ask that everyone is back at the house by 10 PM. It keeps us on good terms with our neighbours and gives you the restful night you deserve after a day of exploring.",
+   "A home, not a party venue\nThis house is meant as a calm, intimate retreat. Please keep gatherings to your own group and avoid large get-togethers or loud events. Good conversation and laughter are always welcome — just keep it cosy.",
+   "A smoke-free home\nThe entire property, indoors and outdoors, is strictly non-smoking. If you do need a smoke, we kindly ask that you step outside the property gates. Thank you for understanding.",
+   "Switch off when you step out\nWhen you head out, please turn off the lights, fans and air conditioners. A small habit that makes a real difference — to the environment and to keeping things running smoothly.",
+   "A clean kitchen is a happy kitchen\nThe kitchen is yours to use and enjoy. We only ask that utensils, pots, pans and dishes are washed and put back after use, so the space stays ready for your next meal.",
+   "Shoes off at the door\nWe follow the lovely tradition of leaving footwear outside the entrance. There is a dedicated spot for shoes right at the door — step in and feel at home."
+  ],
+  "houseNotes": "Hot Water\nWe rely on solar heating, so on sunny days you’ll have hot water in all bathrooms. As a backup, geysers are installed in the living room bathroom and the 1st floor bedroom bathroom. Their switches (marked 16A) are located just outside the respective bedrooms — please switch them on about 20–30 minutes before use if the solar water isn’t warm enough.\n\nWater Supply\nIf the water flow stops, it likely means the overhead tank has run dry. Simply switch on the motor, located above the washing machine in the kitchen area. If water still doesn’t resume, please also check the corresponding switch on the MCB board.\n\nVessels & Utensils\nAs mentioned in the house rules, please clean vessels after use. If you’d prefer, our househelp can do this for you at a nominal charge of Rs. 100, payable directly to her.\n\nHousekeeping\nOur househelp comes daily to clean the house. Please let us know your convenient time — we’d suggest either 7:30–8:00 AM or after 2:00 PM.\n\nMain Gate\nPlease keep the main gate closed, especially through the night. It keeps the house secure and keeps stray animals out of the compound.\n\nFootwear\nPlease leave shoes and chappals in the shoe rack rather than outside the door — stray dogs in the area are known to carry footwear away.",
+  "welcomeText": "*Kitchen:* yours to use — we only ask that everything is washed and put back after each use.\n*Stepping out:* please switch off the lights, fans and AC, and pull the door shut behind you.\n*Evenings:* the neighbourhood turns in early, so do keep things quiet and plan to be back by 10 PM.\n*Footwear:* there is a spot at the entrance — shoes stay outside.\n\nThe house is entirely non-smoking, indoors and out.\n\nAnything you cannot find, just message here. Enjoy Udupi."
+ }
+}
