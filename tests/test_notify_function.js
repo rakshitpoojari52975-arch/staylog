@@ -43,7 +43,7 @@ const OWNER='owner-1', OTHER='owner-2';
 // "Now" is 20 Oct 2026, 03:30 UTC = 9:00 AM IST. Tomorrow (IST) is 21 Oct.
 const NOW=Date.parse('2026-10-20T03:30:00Z');
 function world(over={}){
-  const W={tables:{push_subscriptions:[],notification_prefs:[],sync_status:[],push_log:[],bookings:[],properties:[],staff:[]},
+  const W={tables:{push_subscriptions:[],notification_prefs:[],sync_status:[],push_log:[],bookings:[],properties:[],staff:[],attendance:[],utensil_marks:[]},
     pushes:[],gone:new Set(),users:{'tok-owner':OWNER}};
   Object.assign(W.tables,over);
   const res=(s,b)=>new Response(s===204||s===201&&b==null||b==null?null:JSON.stringify(b),{status:s});
@@ -230,29 +230,47 @@ console.log('\n— once, and only when wanted —');
   ok('another owner\'s device is untouched', W.tables.push_subscriptions.some(s=>s.endpoint===someoneElse.row.endpoint)); }
 
 console.log('\n— Laxmi\'s marks —');
-const att=(type,rec,old)=>post({type,table:'attendance',schema:'public',record:rec,old_record:old||null},CRON);
+// A webhook names a row that is really in the table: the mark is written to
+// the fake database as it now stands, then the hook fires. notify re-reads it.
+const att=(type,rec,old)=>({type,table:'attendance',schema:'public',record:rec,old_record:old||null});
+const fire=async(W,p,now=NOW)=>{const T=W.tables[p.table];
+  if(T&&p.record){const i=T.findIndex(r=>r.id===p.record.id);i<0?T.push({...p.record}):(T[i]={...p.record});}
+  return F.handle(post(p,CRON),ENV,W.fetch,now);};
 const mark={id:'att_stf1_20261020',owner_id:OWNER,staff_id:'stf1',date:'2026-10-20',marked_at:'2026-10-20T03:42:00Z',expense_id:null,deleted_at:null};
 { const W=world(base());
-  await F.handle(att('INSERT',mark),ENV,W.fetch,NOW);
+  await fire(W,att('INSERT',mark));
   let ms=await pushesFor(W,iphone);
   ok('she marks attendance: a push', ms.length===1&&ms[0].title==='Laxmi came in today'&&/Marked present at 9:12\s?am, 20 Oct/i.test(ms[0].body), ms);
   ok('opening the cloud panel', ms[0]&&ms[0].url==='./#open=cloud');
-  await F.handle(att('UPDATE',{...mark,expense_id:'wag_stf1_20261020'},mark),ENV,W.fetch,NOW);
+  await fire(W,att('UPDATE',{...mark,expense_id:'wag_stf1_20261020'},mark));
   ok('the app stamping it is not news', (await pushesFor(W,iphone)).length===1);
-  await F.handle(att('UPDATE',{...mark,deleted_at:'2026-10-20T03:45:00Z'},mark),ENV,W.fetch,NOW);
+  await fire(W,att('UPDATE',{...mark,deleted_at:'2026-10-20T03:45:00Z'},mark));
   ok('nor is her undo', (await pushesFor(W,iphone)).length===1);
-  await F.handle(att('UPDATE',mark,{...mark,deleted_at:'2026-10-20T03:45:00Z'}),ENV,W.fetch,NOW);
+  await fire(W,att('UPDATE',mark,{...mark,deleted_at:'2026-10-20T03:45:00Z'}));
   ok('marking again after an undo does not notify a second time', (await pushesFor(W,iphone)).length===1);
-  await F.handle(post({type:'INSERT',table:'utensil_marks',record:{...mark,id:'ute_stf1_20261020'}},CRON),ENV,W.fetch,NOW);
+  await fire(W,{type:'INSERT',table:'utensil_marks',record:{...mark,id:'ute_stf1_20261020'}});
   ms=await pushesFor(W,iphone);
   ok('she reports utensil cleaning: a push', ms.length===2&&ms[1].title==='Laxmi cleaned the utensils'&&/to be paid by you/.test(ms[1].body), ms[1]);
   await F.handle(post({type:'INSERT',table:'bookings',record:{id:'x',owner_id:OWNER}},CRON),ENV,W.fetch,NOW);
   ok('another table\'s webhook sends nothing', (await pushesFor(W,iphone)).length===2); }
 { const W=world({...base(),notification_prefs:[{owner_id:OWNER,prefs:{attendance:false}}]});
-  await F.handle(att('INSERT',mark),ENV,W.fetch,NOW);
+  await fire(W,att('INSERT',mark));
   ok('with attendance alerts off, her mark sends nothing', W.pushes.length===0);
-  await F.handle(post({type:'INSERT',table:'utensil_marks',record:{...mark,id:'ute_x'}},CRON),ENV,W.fetch,NOW);
+  await fire(W,{type:'INSERT',table:'utensil_marks',record:{...mark,id:'ute_x'}});
   ok('while utensil alerts still do', W.pushes.length===1); }
+{ // v60 (review 1.6): the request body is only a pointer; the row is re-read
+  const W=world({...base(),staff:[{id:'stf1',owner_id:OTHER,name:'Someone Else'},{id:'stf1',owner_id:OWNER,name:'Laxmi Walikar'}]});
+  W.tables.attendance.push({...mark});
+  await F.handle(post(att('INSERT',{...mark,owner_id:OTHER,date:'2030-01-01'}),CRON),ENV,W.fetch,NOW);
+  let ms=await pushesFor(W,iphone);
+  ok('a body naming another owner still notifies the mark\'s real owner, with its real date', ms.length===1&&/20 Oct/.test(ms[0].body)
+     &&(await pushesFor(W,someoneElse)).length===0, ms);
+  ok('and names his own staff member, not another account\'s with the same id', ms[0]&&ms[0].title==='Laxmi came in today', ms[0]);
+  await F.handle(post(att('INSERT',{...mark,id:'att_stf1_20991231',date:'2099-12-31'}),CRON),ENV,W.fetch,NOW);
+  ok('a body for a mark that does not exist sends nothing', (await pushesFor(W,iphone)).length===1);
+  W.tables.attendance.push({...mark,id:'att_stf1_20261019',date:'2026-10-19',deleted_at:'2026-10-19T04:00:00Z'});
+  await F.handle(post(att('INSERT',{...mark,id:'att_stf1_20261019',date:'2026-10-19',deleted_at:null}),CRON),ENV,W.fetch,NOW);
+  ok('nor one for a mark that is in fact withdrawn', (await pushesFor(W,iphone)).length===1); }
 
 console.log('\n— the inbox: every reminder is kept in push_log —');
 { const W=world({...base(),bookings:[B({id:'arr',check_in:'2026-10-21',check_out:'2026-10-24',status:'confirmed'})]});
@@ -269,7 +287,7 @@ console.log('\n— the inbox: every reminder is kept in push_log —');
   const old=(k,at,read)=>({owner_id:OWNER,key:k,title:'x',body:'y',url:'./',alert:'stale',sent_at:at,delivered:true,read_at:read||null,claimed_at:null});
   const W=world({...base(),push_log:[old('a','2026-10-18T03:30:00Z'),old('b','2026-10-19T03:30:00Z','2026-10-19T05:00:00Z'),
     old('c','2026-09-01T03:30:00Z')]});
-  await F.handle(att('INSERT',mark),ENV,W.fetch,NOW);
+  await fire(W,att('INSERT',mark));
   const [m]=await pushesFor(W,iphone);
   ok('badge = unread in the last 30 days (read and older rows left out)', m&&m.badge===2, m&&m.badge); }
 { // no device took it: kept, not delivered; next time it comes up it is retried, once

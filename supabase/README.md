@@ -8,6 +8,18 @@ reminders — plus an **encrypted backup** it cannot read (`backups`, see
 
 Scripts are run by hand in the SQL editor, and every one is safe to run twice.
 
+## v60 security fixes (once)
+
+1. Dashboard → **Authentication → Sign In / Providers** → turn off
+   **Allow new users to sign up**.
+2. **`utensils.sql`** again — her `staff_standing()` now matches every row by
+   owner.
+3. **`security-v60.sql`** — only owners can read or write; mark ids must match
+   staff and date; `sync_status` gains `device_id`; `app_status` is created. It
+   refuses (changing nothing) if `public.owners` is empty or step 2 was
+   skipped. Its last query should say `ok` for every table.
+4. Redeploy **`notify`** (paste `functions/notify/index.ts`).
+
 ## Moving to the minimal cloud (once)
 
 1. **`backups.sql`**, then in StayLog: Cloud sync → Encrypted backup → set a

@@ -307,12 +307,16 @@ export async function dailyPushes(owner: string, d: ReturnType<typeof db>, nowMs
 // undo, or the same mark again is not (push_log keeps it to once per mark).
 export async function eventPush(payload: Record<string, any>, d: ReturnType<typeof db>):
     Promise<{ owner: string; key: string; alert: string; push: Push } | null> {
-  const table = payload.table, rec = payload.record || {}, old = payload.old_record || null;
+  const table = payload.table, sent = payload.record || {}, old = payload.old_record || null;
   if (table !== 'attendance' && table !== 'utensil_marks') return null;
-  if (!rec.owner_id || !rec.id || rec.deleted_at) return null;
+  if (!sent.id) return null;
   const fresh = payload.type === 'INSERT' || (payload.type === 'UPDATE' && old && old.deleted_at);
   if (!fresh) return null;
-  const staff = (await d.get(`staff?id=eq.${encodeURIComponent(rec.staff_id)}&select=name`) || [])[0];
+  // The body is only a pointer (v60, review 1.6): the mark is re-read by id,
+  // and its owner, staff and date come from the row, never from the request.
+  const rec = (await d.get(`${table}?id=eq.${encodeURIComponent(sent.id)}&select=id,owner_id,staff_id,date,marked_at,deleted_at`) || [])[0];
+  if (!rec || !rec.owner_id || rec.deleted_at) return null;
+  const staff = (await d.get(`staff?id=eq.${encodeURIComponent(rec.staff_id)}&owner_id=eq.${rec.owner_id}&select=name`) || [])[0];
   const who = (staff && String(staff.name).split(/\s+/)[0]) || 'Your house help';
   const at = rec.marked_at ? ` at ${istTime(rec.marked_at)}` : '';
   return table === 'attendance'

@@ -186,10 +186,12 @@ create trigger attendance_undo_utensils after update of deleted_at on public.att
 create or replace function public.staff_standing()
 returns jsonb
 language sql security definer set search_path = public stable as $$
+  -- Every row below is matched by owner as well as by id (v60, review 1.2):
+  -- a row written under another account with her staff_id never shows here.
   with me as (
-    select a.display_name, s.id as staff_id
+    select a.display_name, s.id as staff_id, a.owner_id
     from public.staff_access a
-    join public.staff s on s.id = a.staff_id and s.deleted_at is null
+    join public.staff s on s.id = a.staff_id and s.owner_id = a.owner_id and s.deleted_at is null
     where a.user_id = auth.uid() and a.active
   ),
   today as (select (now() at time zone 'Asia/Kolkata')::date as d),
@@ -198,7 +200,7 @@ language sql security definer set search_path = public stable as $$
   -- loan instalment has come off; loan_deduction is what went to the loan.
   wages as (
     select e.* from public.expenses e
-    join me on e.staff_id = me.staff_id
+    join me on e.staff_id = me.staff_id and e.owner_id = me.owner_id
     where e.deleted_at is null
   )
   select jsonb_build_object(
@@ -216,12 +218,12 @@ language sql security definer set search_path = public stable as $$
                                and a.expense_id is null
                                and a.marked_at > now() - public.attendance_undo_window(), false),
         'this_month', (select count(*) from public.attendance x
-                        where x.staff_id = me.staff_id and x.deleted_at is null
+                        where x.staff_id = me.staff_id and x.owner_id = me.owner_id and x.deleted_at is null
                           and x.date >= date_trunc('month', t.d))
       )
       from today t
       left join public.attendance a
-        on a.id = public.attendance_id(me.staff_id, t.d)
+        on a.id = public.attendance_id(me.staff_id, t.d) and a.owner_id = me.owner_id
     ),
     -- Today's utensil mark, beside attendance. 'available' is whether she is
     -- marked present today: the only time the button is offered.
@@ -229,7 +231,7 @@ language sql security definer set search_path = public stable as $$
       select jsonb_build_object(
         'available',  exists (select 1 from public.attendance x
                               where x.id = public.attendance_id(me.staff_id, t.d)
-                                and x.deleted_at is null),
+                                and x.owner_id = me.owner_id and x.deleted_at is null),
         'marked',     u.id is not null and u.deleted_at is null,
         'marked_at',  case when u.deleted_at is null then u.marked_at end,
         'undone_at',  u.deleted_at,
@@ -240,7 +242,7 @@ language sql security definer set search_path = public stable as $$
       )
       from today t
       left join public.utensil_marks u
-        on u.id = public.utensil_mark_id(me.staff_id, t.d)
+        on u.id = public.utensil_mark_id(me.staff_id, t.d) and u.owner_id = me.owner_id
     ),
     'pending', jsonb_build_object(
       'amount', coalesce((select sum(amount) from wages where not paid), 0),
@@ -288,10 +290,10 @@ language sql security definer set search_path = public stable as $$
                'status',       l.status,
                'repaid',       coalesce((
                    select sum(r.amount) from public.loan_repayments r
-                   where r.loan_id = l.id and r.deleted_at is null), 0)
+                   where r.loan_id = l.id and r.owner_id = me.owner_id and r.deleted_at is null), 0)
              ) order by l.disbursed_on desc)
       from public.loans l
-      where l.staff_id = me.staff_id and l.deleted_at is null
+      where l.staff_id = me.staff_id and l.owner_id = me.owner_id and l.deleted_at is null
     ), '[]'::jsonb)
   )
   from me;

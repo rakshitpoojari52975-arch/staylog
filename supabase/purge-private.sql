@@ -136,6 +136,9 @@ begin
     end if;
   end if;
   grant select, insert, update, delete on public.backups to authenticated;
+  if to_regclass('public.app_status') is not null then
+    grant select on public.app_status to anon, authenticated;              -- security-v60.sql: "retired" flag
+  end if;
 
   raise notice 'Purged. The cloud now holds only what Laxmi''s page, the drains and the reminders need.';
 end $purge$;
