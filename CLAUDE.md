@@ -565,7 +565,10 @@ also fetch from Supabase with `cache: 'no-store'` as a second layer.
   no names.
 - Runs after each successful sync (`StayLogCloud.onSynced`, debounced 15 s),
   skipped when nothing changed since a backup made the same day (IST). Keeps
-  the latest plus the newest of each day for 30 days (`planPrune`).
+  the latest plus the newest of each IST calendar day for 30 days
+  (`planPrune`): two backups an hour apart across 12:00 AM IST are two days,
+  both kept. Tests that need "the same day" place times by the IST calendar,
+  never `Date.now()` ± hours (that check once failed after 11 PM IST).
 - **Test restore** decrypts the latest with the passphrase typed now and
   compares counts per table with the phone ("Backup verified"); changes
   nothing. **Restore from backup** (latest, a dated one, or a saved file):
@@ -1079,7 +1082,7 @@ also fetch from Supabase with `cache: 'no-store'` as a second layer.
     node tests/test_new_bookings.js      # ical-sync + notify together: new stays announced once, echoes/blocks/first reads never; the tap
     node tests/test_minimal_cloud.js     # the mirror is the allowlist only; no pull; empty phone tombstones nothing; first sync explained once
     STAYLOG_PG="…" node tests/test_purge_sql.js      # minimal-cloud.sql + purge-private.sql: refuses unsafely, drops, revokes; Laxmi's page identical
-    node tests/test_backup.js            # encrypted backup: round trip, wrong passphrase, nothing readable sent, key non-extractable, restore, change (+ backups.sql)
+    node tests/test_backup.js            # encrypted backup: round trip, wrong passphrase, nothing readable sent, key non-extractable, restore, change (+ backups.sql); STAYLOG_TEST_NOW=2026-11-15T18:29:00Z starts the page clock there (11:59 PM IST)
     node tests/test_payout.js            # platform bookings: one-tap Mark payout received + Undo; Direct/Booking.com unchanged
     node tests/test_round_off.js         # round off ≤ ₹5: form, Mark paid, receipt, revenue, CSV, sync, notify (+ round-off.sql with STAYLOG_PG)
     node tests/test_balance.js           # under ₹1 is paid: card, Home, stamp, PDF, CSV, requests, notify

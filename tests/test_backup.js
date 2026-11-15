@@ -71,6 +71,9 @@ const base='http://127.0.0.1:'+srv.address().port, br=await chromium.launch();
 let CLOUD={};
 const phone=async(seed)=>{
   const ctx=await br.newContext({serviceWorkers:'block',viewport:{width:390,height:844}});
+  // STAYLOG_TEST_NOW=<ISO time>: start each phone's clock there (it keeps running), to
+  // check the day-boundary cases, e.g. 2026-11-15T18:29:00Z is 11:59 PM IST.
+  if(process.env.STAYLOG_TEST_NOW)await ctx.clock.install({time:new Date(process.env.STAYLOG_TEST_NOW)});
   for(const g of ['**://*.supabase.co/**','**fonts.googleapis.com**','**cdn.jsdelivr.net**'])await ctx.route(g,r=>r.abort());
   await ctx.route('**vendor/supabase.umd.js',r=>r.fulfill({contentType:'text/javascript',body:STUB}));
   const page=await ctx.newPage(); const errs=[], dialogs=[];
@@ -187,10 +190,14 @@ console.log('\n— keeping: the latest, plus one a day for 30 days —');
   ok('one per day kept', plan.kept.length>=29&&plan.kept.length<=31, plan.kept.length);
   ok('the very latest kept', plan.kept.includes('d0h2'));
   ok('nothing older than 30 days', !plan.kept.some(id=>Number(id.slice(1,id.indexOf('h')))>30), plan.kept.slice(-3));
-  const after=await page.evaluate(async()=>{const now=Date.now();
+  // The two copies of one day are placed by the IST calendar, at 10:00 and 11:00 IST twelve
+  // days ago. They were once now−12 days and an hour later: run after 11 PM IST, the
+  // second fell on the next IST day, so both were rightly kept and the check failed.
+  const after=await page.evaluate(async()=>{const now=Date.now(), IST=5.5*3600e3;
+    const istMidnight=Math.floor((now+IST)/86400e3)*86400e3-IST, day12=istMidnight-12*86400e3;
     window.__db.backups.push({...window.__db.backups[0],id:'old-1',created_at:new Date(now-45*86400e3).toISOString()},
-      {...window.__db.backups[0],id:'old-2',created_at:new Date(now-12*86400e3).toISOString()},
-      {...window.__db.backups[0],id:'old-3',created_at:new Date(now-12*86400e3+3600e3).toISOString()});
+      {...window.__db.backups[0],id:'old-2',created_at:new Date(day12+10*3600e3).toISOString()},
+      {...window.__db.backups[0],id:'old-3',created_at:new Date(day12+11*3600e3).toISOString()});
     await StayLogBackup.prune(); return window.__db.backups.map(b=>b.id);});
   ok('pruning in the cloud drops the 45-day-old one and a second copy of a day', !after.includes('old-1')&&(after.includes('old-2')!==after.includes('old-3')), after); }
 
