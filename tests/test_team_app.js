@@ -152,6 +152,31 @@ const SEED = { properties: [{ id: 'p1', name: 'Raaya Vasyam' }, { id: 'p2', name
     ok('no page errors', errs.length === 0, errs);
     await ctx.close(); }
 
+  console.log('\n— from the Home Screen (the link does not come along) —');
+  { const { ctx, page, errs } = await open('none');
+    await page.evaluate(() => setState({ modal: 'cloud' })); await page.waitForTimeout(300);
+    ok('a new phone: sign in, and your properties come down from the cloud', /Your properties and bookings come down from the cloud/.test(await page.locator('[data-signin-note]').innerText()));
+    ok('…with a place to paste an invite link', await page.locator('[data-invite-paste-input]').count() === 1);
+    await page.fill('[data-invite-paste-input]', 'not a link');
+    await page.click('[data-invite-paste-go]'); await page.waitForTimeout(200);
+    ok('something that is not a link: nothing opens', await page.locator('[data-join]').count() === 0);
+    await page.fill('[data-invite-paste-input]', base + '/index.html#join=' + CODE);
+    await page.click('[data-invite-paste-go]'); await page.waitForTimeout(500);
+    ok('the pasted link opens the Join sheet', /you are invited to help manage Sea View/.test(await page.locator('[data-join]').innerText()));
+    ok('it says to sign in with the same email and password in the Home Screen app', /Home Screen/.test(await page.locator('[data-join-homescreen]').innerText()));
+    await page.fill('[data-join-email]', 'priya@example.com'); await page.fill('[data-join-pass]', 'priya-pass-1');
+    await page.click('[data-join-go]'); await page.waitForTimeout(900);
+    ok('joined from the Home Screen app, and moved onto the account', await page.evaluate(() => window.StayLogSync.isActive()));
+    ok('no page errors', errs.length === 0, errs);
+    await ctx.close(); }
+  { const { ctx, page, errs } = await open('none');
+    await page.evaluate(() => { window.__server.role = 'manager'; setState({ modal: 'cloud' }); }); await page.waitForTimeout(300);
+    await page.fill('input[type=email]', 'priya@example.com'); await page.fill('input[type=password]', 'priya-pass-1');
+    await page.click('button:has-text("Sign in")'); await page.waitForTimeout(1200);
+    ok('already joined in Safari: signing in here is enough — the account comes down', await page.evaluate(() => window.StayLogSync.isActive() && window.StayLogSync.model().account === 'acct-1'));
+    ok('no page errors', errs.length === 0, errs);
+    await ctx.close(); }
+
   await br.close(); srv.close();
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
