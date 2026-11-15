@@ -1136,6 +1136,14 @@ also fetch from Supabase with `cache: 'no-store'` as a second layer.
   `input[type=checkbox], input[type=radio]` now set `appearance: auto`, 22px,
   `accent-color: var(--accent)`. `tests/test_checkboxes.js` compares a box's
   pixels before and after a tap, light and dark.
+- **The app icon** (v72, Rakshit's choice "B": cream background, green house,
+  gold roof): drawn in `icons/icon.svg` (512 square, full bleed, the house
+  inside the maskable safe zone); the PNGs are rendered from it with
+  Playwright — `icon-512.png`, `icon-192.png`, `apple-touch-icon.png` (180,
+  what iOS uses) and `favicon-32.png`, all opaque RGB (iOS fills transparency
+  with black). The manifest lists "any" and a separate "maskable" icon. iOS
+  keeps a Home Screen icon until the app is removed and added again.
+  `tests/test_icon.js`.
 - `today()` is local (IST). Never `toISOString().slice(0,10)` — that is UTC and
   is a day behind between midnight and 05:30. In SQL use
   `(now() at time zone 'Asia/Kolkata')::date`.
@@ -1183,6 +1191,7 @@ also fetch from Supabase with `cache: 'no-store'` as a second layer.
     node tests/test_team_app.js          # phase 6: Team (members, permissions, properties, switch off, invites, withdraw), a manager's hidden areas, joining from a link
     node tests/test_team_invite_function.js   # the team-invite Edge Function: peek, accept (new login / signed in), once only, expired, owner invites refused, nothing half-made; v71 owner-peek / owner-accept: a new owner's login and account through open_account
     STAYLOG_PG="…" node tests/test_team_sql.js       # 08-team.sql: manager-only invites, my_access, team(), what a manager reads
+    node tests/test_icon.js              # v72: every icon there, the size it claims, opaque; any + maskable; 180 apple-touch-icon on both pages
     node tests/test_checkboxes.js        # v66: every checkbox keeps its tick — appearance, a tap ticks it, and it looks different ticked (pixels), light and dark
     node tests/test_move_app.js          # phase 3 in the app: Move to the new system — copy, compare (match / mismatch), switch, another phone joins, rollback
     node tests/test_notify_stay.js       # notify in the new model: by account, every owner, own devices/prefs/inbox, amounts + pays_directly_sources, marks, test push
