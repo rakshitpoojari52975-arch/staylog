@@ -118,8 +118,16 @@ ok('each says which it is', days.some(d=>d.kind==='wage'&&d.net===500&&d.checkou
 ok('the total owed counts both', st.pending.amount===600&&st.pending.count===2, st.pending);
 const standingAfter=sql(`select pg_get_functiondef('public.staff_standing()'::regprocedure)`).out;
 const strip=s=>s.replace(/\s+/g,' ');
+// v60 (review 1.2) also matches every row by owner: set those aside, then
+// the utensil additions are the only other difference.
+const ownerMatch=/owner_id = me\.owner_id/.test(standingAfter)&&/s\.owner_id = a\.owner_id/.test(standingAfter);
+ok('staff_standing matches every row by owner (v60)', ownerMatch);
+const withoutOwner=standingAfter
+  .replace(/\s*-- Every row below is matched by owner[^\n]*\n[^\n]*\n/,'\n')
+  .replace(/, a\.owner_id\n/,'\n').replace(/ and s\.owner_id = a\.owner_id/,'')
+  .replace(/ and [a-z]\.owner_id = me\.owner_id/g,'');
 ok('staff_standing only gained the utensils state and the line kind',
-   strip(standingAfter
+   strip(withoutOwner
      .replace(/,\s*-- which line this is[^\n]*\n[^\n]*\n\s*'kind',[^\n]*\n/,'\n')
      .replace(/order by d\.date desc, d\.id\)/,'order by d.date desc)')
      .replace(/\s*-- Today's utensil mark, beside attendance[\s\S]*?on u\.id = public\.utensil_mark_id\(me\.staff_id, t\.d\)\s*\),/,''))

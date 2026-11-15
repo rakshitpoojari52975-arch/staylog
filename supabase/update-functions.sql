@@ -29,7 +29,7 @@ language sql security definer set search_path = public stable as $$
   select b.check_in, b.check_out, b.guests, b.status, p.name
   from public.staff_access a
   join public.bookings b  on b.owner_id = a.owner_id
-  left join public.properties p on p.id = b.property_id
+  left join public.properties p on p.id = b.property_id and p.owner_id = b.owner_id
   cross join today t
   where a.user_id = auth.uid()
     and a.active

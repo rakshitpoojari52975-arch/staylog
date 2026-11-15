@@ -22,6 +22,42 @@
   const CFG = window.STAYLOG_CLOUD || {};
   const SDK = './vendor/supabase.umd.js';
   const LAST_SYNC = 'staylog_last_sync';
+  // ── Whose data, and which phone (v60, review 1.7 and 1.8) ───────────────────
+  // The phone's data belongs to the login that first synced it (OWNER_KEY).
+  // Signing in as anyone else is refused while the phone holds data: pushing
+  // it would put one owner's records into another's account and tombstone
+  // theirs. And only one phone syncs an account (DEVICE_KEY, recorded in
+  // sync_status.device_id): a second phone pauses until told "this is now my
+  // only phone", because two whole-state pushes delete each other's rows.
+  const OWNER_KEY = 'staylog_owner', DEVICE_KEY = 'staylog_device';
+  const OTHER_LOGIN = 'This phone\u2019s StayLog belongs to another login. Sign in with that one — your data is safe on this phone.';
+  const lsGet = k => { try { return localStorage.getItem(k) || ''; } catch { return ''; } };
+  const lsSet = (k, v) => { try { v ? localStorage.setItem(k, v) : localStorage.removeItem(k); } catch {} };
+  const newId = () => (window.crypto && crypto.randomUUID) ? crypto.randomUUID()
+    : Date.now().toString(36) + Math.random().toString(36).slice(2);
+  function deviceId() { let d = lsGet(DEVICE_KEY); if (!d) { d = newId(); lsSet(DEVICE_KEY, d); } return d; }
+  const deviceLabel = () => { const ua = navigator.userAgent || '';
+    return /iPhone/.test(ua) ? 'iPhone' : /iPad/.test(ua) ? 'iPad' : /Android/.test(ua) ? 'Android phone' : 'this browser'; };
+  // A login may take this phone when the phone is already its, unclaimed, or empty.
+  function mayUse(userId) {
+    const bound = lsGet(OWNER_KEY);
+    if (!bound || bound === userId) return true;
+    const d = window.STAYLOG_GET_DATA && window.STAYLOG_GET_DATA();
+    return !!d && isEmpty(d);
+  }
+  let devicePaused = null, takeover = false;
+  // Retired: the cloud says this version is too old (public.app_status, set at
+  // the cutover to the new cloud). It stops syncing and the app asks to be
+  // reopened — once, plainly, not as a failing sync. Before security-v60.sql
+  // the table is missing, and nothing is retired.
+  let retired = false;
+  const myVersion = () => Number(String(window.STAYLOG_APP_VERSION || '').replace(/^v/, '')) || 0;
+  async function checkRetired(c) {
+    const { data, error } = await c.from('app_status').select('min_version').eq('id', 1);
+    if (error || !data || !data[0]) return retired;
+    retired = myVersion() < (Number(data[0].min_version) || 0);
+    return retired;
+  }
 
   let sb = null;          // supabase client, once the SDK is loaded
   let session = null;     // current auth session, if signed in
@@ -181,6 +217,11 @@
       const c = await client();
       const { data } = await c.auth.getSession();
       session = data.session || null;
+      checkRetired(c).then(r => { if (r) notify(); }).catch(() => {});
+      if (session && !mayUse(session.user.id)) {      // kept from before v60: let go, quietly
+        await c.auth.signOut().catch(() => {});
+        session = null; lastError = OTHER_LOGIN;
+      }
       return session;
     } catch { return null; }
   }
@@ -189,15 +230,35 @@
     const c = await client();
     const { data, error } = await c.auth.signInWithPassword({ email: email.trim(), password });
     if (error) throw error;
+    if (!mayUse(data.session.user.id)) {
+      await c.auth.signOut().catch(() => {});
+      session = null;
+      throw new Error(OTHER_LOGIN);
+    }
     session = data.session;
     lastError = '';
     checkIn(true);
     return session;
   }
 
+  // Signing out forgets what belonged to that login's cloud: the backup key
+  // (the next login sets its own), the logs, the inbox cache and this phone's
+  // push subscription. The phone's data and which login owns it stay.
   async function signOut() {
+    try {
+      if (session && navigator.serviceWorker) {
+        // ready never settles where no worker is registered: give up after 1.5 s
+        const reg = await Promise.race([navigator.serviceWorker.ready.catch(() => null), new Promise(r => setTimeout(() => r(null), 1500))]);
+        const sub = reg && reg.pushManager && await reg.pushManager.getSubscription().catch(() => null);
+        if (sub) { await pushRemove(sub.endpoint).catch(() => {}); await sub.unsubscribe().catch(() => {}); }
+      }
+    } catch {}
     try { const c = await client(); await c.auth.signOut(); } catch {}
     session = null;
+    try { if (window.StayLogBackup && window.StayLogBackup.forgetKey) await window.StayLogBackup.forgetKey(); } catch {}
+    [LAST_SYNC, ATT_LOG_KEY, ATT_LAST_KEY, ICAL_LOG_KEY, UT_LAST_KEY, 'staylog_inbox', 'staylog_backup_log'].forEach(k => lsSet(k, ''));
+    devicePaused = null; takeover = false;
+    notify();
   }
 
   // ── Push ───────────────────────────────────────────────────────────────────
@@ -815,6 +876,21 @@
     const owner = session.user.id;
     const c = await client();
     try {
+      if (await checkRetired(c).catch(() => retired)) { lastError = ''; return; }
+      if (!mayUse(owner)) throw new Error(OTHER_LOGIN);
+      // One phone per account: another device's id in sync_status pauses this
+      // one before anything is written. Until security-v60.sql adds the
+      // column there is nothing to compare, and it syncs as before.
+      const me = deviceId();
+      const { data: st, error: stErr } = await c.from('sync_status').select('device_id,device_name,last_sync_at').eq('owner_id', owner);
+      const other = !stErr && st && st[0] && st[0].device_id && st[0].device_id !== me ? st[0] : null;
+      if (other && !takeover) {
+        devicePaused = { device: other.device_name || 'another phone', at: other.last_sync_at || '' };
+        lastError = '';
+        return;
+      }
+      devicePaused = null;
+      if (!lsGet(OWNER_KEY)) lsSet(OWNER_KEY, owner);
       // Before pushing, not after: expenses born from her marks have to go up
       // in this same cycle, or the tombstone pass below would see rows the
       // server has and this phone does not.
@@ -894,9 +970,13 @@
       // push.sql has run the table is missing; that is not a sync failure.
       // With the app version, so purge-private.sql can tell this phone runs the
       // minimal cloud (it refuses to run until it does).
-      const beat = { owner_id: owner, last_sync_at: new Date().toISOString(), app_version: window.STAYLOG_APP_VERSION || null };
-      const { error: sErr } = await c.from('sync_status').upsert(beat, { onConflict: 'owner_id' }).then(r => r || {}, e => ({ error: e }));
+      const beat = { owner_id: owner, last_sync_at: new Date().toISOString(), app_version: window.STAYLOG_APP_VERSION || null,
+        device_id: me, device_name: deviceLabel() };
+      let { error: sErr } = await c.from('sync_status').upsert(beat, { onConflict: 'owner_id' }).then(r => r || {}, e => ({ error: e }));
+      if (sErr) { delete beat.device_id; delete beat.device_name;
+        ({ error: sErr } = await c.from('sync_status').upsert(beat, { onConflict: 'owner_id' }).then(r => r || {}, e => ({ error: e }))); }
       if (sErr) { delete beat.app_version; await c.from('sync_status').upsert(beat, { onConflict: 'owner_id' }).then(() => {}, () => {}); }
+      takeover = false;
       if (privacyNote && !explained()) { try { localStorage.setItem(EXPLAINED, new Date().toISOString()); } catch {} }
       synced.forEach(fn => { try { fn(); } catch {} });   // the encrypted backup follows a good sync
     } catch (err) {
@@ -1013,6 +1093,7 @@
       online: navigator.onLine,
       dirty, pushing, lastSync: last, lastError, brake, icalLog, schemaBehind, privacyNote,
       utensils: { held: utHeld, error: utError, setUp: utSetUp, last: utLast }, heldMarks: held, attError, attLog, attLast,
+      devicePaused, deviceId: lsGet(DEVICE_KEY), boundOwner: lsGet(OWNER_KEY), retired,
     };
   }
 
@@ -1056,6 +1137,10 @@
   window.StayLogCloud = {
     restoreSession, signIn, signOut, push, status, markDirty, checkIn,
     listFeeds, saveFeed, importNow, setFeedConnected,
+    // "This is now my only phone": the next sync claims the account for this device.
+    takeOver: async () => { takeover = true; devicePaused = null; notify();
+      const d = window.STAYLOG_GET_DATA && window.STAYLOG_GET_DATA(); if (d) await push(d, { manual: true }); },
+    deviceId, newId,
     pushSave, pushRemove, pushPrefs, savePushPrefs, pushTest,
     inboxList, inboxRead,
     _planIcal: planIcal, _icalBookingId: icalBookingId, _coverageGaps: coverageGaps,   // for the tests

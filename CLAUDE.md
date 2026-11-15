@@ -8,6 +8,87 @@ from `main`, backed by Supabase. The house help (Lakshmi Walikar) uses
 Every rule below was learned from a real failure. Read them before changing
 anything.
 
+## The revamp in progress (Nov 2026) — read first
+
+Rakshit approved a multi-account redesign (his spec, "You are revamping
+StayLog", Nov 2026; it wins over this file on design): accounts with owners,
+managers (per-property access and permissions) and several staff; **guest data
+moves into Supabase, readable, protected by login and RLS** (his decision —
+it reverses the minimal cloud below). Supabase becomes the source of truth;
+each device keeps a local copy and syncs per row (pull + merge + outbox), no
+more whole-state push with tombstones. The sections below describe the app as
+it is **today** and stay true until each phase replaces them.
+
+Agreed decisions (his answers, 15 Nov 2026):
+- The new tables live in a new schema **`stay`**, beside the old `public`
+  ones, exposed to the API; primary keys `(account_id, id)`; every existing
+  id kept; unknown fields go to a `legacy jsonb` column, never dropped.
+- **Guest ID photos are not uploaded** and not in new backups: they stay
+  viewable from the phone's old local copy until the clean-up (phase 10).
+- **Order changed from the spec:** the new sync engine (and server-side
+  wages/utensils) comes **before** the migration cutover, so the app has
+  something to sync with the moment it switches.
+- **Revenue is per property. Expenses are per property or "Shared"**
+  (property_id null). Wage expenses that already exist keep the property they
+  have (so the migration matches the Inventory screenshot); new ones follow
+  the new rule.
+- Phases, one PR each: 0 safety net (v60) · 1 `stay` schema + RLS + functions
+  + `check.sql` · 2 sync engine (dormant until switch-over) · 3 migration +
+  report + cutover + rollback (**gate**: he checks) · 4 properties as data ·
+  5 staff · 6 team · 7 calendar import on the server · 8 notifications ·
+  9 onboarding · 10 clean-up (after 90 days, his written OK).
+- Cutover: old `public` tables become read-only; `public.app_status.min_version`
+  is raised so any older copy stops syncing and says "StayLog has been updated
+  — close and reopen"; her `staff_*` functions are redefined over `stay`
+  (same names and output; old ones kept as `*_v58` for the rollback).
+- Every release from v60 bumps `APP_VERSION`/`APP_BUILT`, `CACHE_NAME`
+  (`staylog-v<N>`), and `PAGE_VERSION` when `staff.js` changes.
+
+### Phase 0 — v60 (safety net)
+- **⋯ → Inventory** (`inventoryOf(data)`, pure; `renderInventoryModal`):
+  counts per table (cancelled included, ID photos counted), per month
+  revenue / expenses / net / paid / due / round off (bookings by check-in
+  month, cancelled left out, the money rule's functions), per loan principal /
+  repaid / outstanding, per staff unpaid wages, highest receipt per series.
+  He screenshots it; the migration report must match it. Phase 3 reuses
+  `inventoryOf` for the phone's side.
+- **`supabase/security-v60.sql`** (after `utensils.sql`): a RESTRICTIVE policy
+  "owners only" (`public.is_owner()`) on every owner table — ANDed with the
+  existing owner policies, so re-running older scripts cannot undo it; staff
+  logins and strangers read and write nothing; her page is unaffected (SECURITY
+  DEFINER functions); `staff_access` also lets her read her own row. It refuses
+  if `public.owners` is empty (would lock him out) or if `staff_standing` lacks
+  the owner match. Mark ids must equal `attendance_id(staff,date)` /
+  `utensil_mark_id(...)` (NOT VALID + validate; misfits listed, kept).
+  `attendance` loses the default ALL. `sync_status` gains `device_id`,
+  `device_name`. `public.app_status(min_version)` readable by anyone.
+  **Public sign-up must be off** (dashboard). Composite foreign keys (review
+  1.3) wait for the `stay` schema: with sign-up off and owners-only, no second
+  owner can exist.
+- `staff_standing()` (`utensils.sql`) and `staff_calendar()` match every row by
+  owner (review 1.2).
+- **Arrival instructions are property data** (`arrivalInstructions`, phone and
+  backup only, not mirrored): the key location and house-finding text left the
+  code. Blank → the arrival message leaves it out and the Send sheet says so.
+  The old text is still in the public git history before v60 (not rewritten);
+  `tests/test_one_phone.js` fails if any later commit adds it back.
+- `notify` re-reads a webhook's mark by id and takes owner, staff and date from
+  the row; staff looked up with `owner_id` (review 1.6).
+- **One login per phone's data** (`staylog_owner`, set by the first sync):
+  another login is refused while the phone holds data (an empty phone is
+  free); a kept session for another login is dropped at start. Sign-out
+  forgets the backup key, the logs, the inbox cache and this phone's push
+  subscription; the data and its owner stay (review 1.7).
+- **One phone per account** (`staylog_device`, a UUID, written to
+  `sync_status.device_id` each good sync): a phone whose id is not the one on
+  record pauses before writing anything ("Sync paused on this phone"), until
+  **This is now my only phone** (confirm) takes over (review 1.8). A record
+  without a device id is claimed by the first phone to sync.
+- **Retired detector**: each push and each start read
+  `public.app_status.min_version`; an app below it writes nothing and shows
+  "StayLog has been updated — close and reopen" (a strip, not an error).
+- New ids are `crypto.randomUUID()` (`uid()`, `StayLogCloud.newId`).
+
 ## Deploying
 
 - GitHub Pages serves `main`. Work on a branch and open a PR; Rakshit merges.
@@ -643,6 +724,9 @@ also fetch from Supabase with `cache: 'no-store'` as a second layer.
     node tests/test_notify_function.js   # Node 22.18+; every alert's condition, decrypts each push, checks VAPID
     node tests/test_push_app.js          # menu, subscribe/unsubscribe, quiet re-subscribe, deep links, sw.js handlers
     node tests/test_ical_connected.js    # "connected" per feed: no gap for the other platform's stays, Direct still checked, survives a sync; "Closed on …" hides a gap until the dates change
+    node tests/test_inventory.js         # v60 Inventory: counts, money by month to the paisa, loans, wages, receipts; changes nothing
+    node tests/test_one_phone.js         # v60: one login per phone's data, one phone per account (pause + take over), retired detector, sign-out clears, UUIDs, arrival instructions as data
+    STAYLOG_PG="…" node tests/test_security_sql.js   # security-v60.sql: owners only, staff/stranger locked out, her page works, owner match, mark ids, refuses to lock out
     node tests/test_cancel.js            # no Delete; Cancel confirms + Undo; checked-out disabled; cancelled import stays cancelled over drains; excluded from revenue/occupancy
     node tests/test_glass.js             # clear glass bar: tint ≤ 0.15, blur ≤ 4px, halo, page seen through, solid with reduced transparency, label contrast from pixels
     node tests/test_tabbar.js            # floating tab bar: 34px home indicator, light/dark, 44px targets, last card clear, ⋯ + dot, shrink on scroll, reduced motion
@@ -660,6 +744,11 @@ loans, PDFs, staff page, theme) did not and should be rebuilt here before those
 areas are changed.
 
 ## Open items
+
+- **The key location was in the public repository** until v60 (git history
+  before commit a7115d7 still has it; history is not rewritten). Changing the
+  key's hiding place is the only real fix. Type the arrival instructions into
+  the property once (Properties → Edit → Arrival instructions).
 
 - **Push notifications have not met a real iPhone or the real project yet.**
   After setup, Send test from the Home Screen app; if it never arrives,

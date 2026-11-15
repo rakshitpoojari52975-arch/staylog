@@ -6,7 +6,7 @@
 // ─── Build ────────────────────────────────────────────────────────────────────
 // Bump BOTH of these together. This date sat at 28 Sept through a dozen
 // releases and was read, reasonably, as proof the upload had not landed.
-const APP_VERSION='v58', APP_BUILT='5 Nov 2026';
+const APP_VERSION='v60', APP_BUILT='15 Nov 2026';
 // The CACHE_NAME of the sw.js released with this app.js. Every release bumps
 // APP_VERSION and CACHE_NAME together, so one is derived from the other rather
 // than being a fourth thing to forget; the tests fail if they ever disagree.
@@ -73,7 +73,8 @@ async function loadAuth(){
   return null;
 }
 function saveAuth(a){try{localStorage.setItem(AUTH_KEY,JSON.stringify(a));}catch{} idbSet(AUTH_KEY,a).catch(()=>{});}
-function uid(){return Date.now().toString(36)+Math.random().toString(36).slice(2);}
+// New ids are random UUIDs (v60): unique across phones and, later, accounts.
+function uid(){return (window.crypto&&crypto.randomUUID)?crypto.randomUUID():Date.now().toString(36)+Math.random().toString(36).slice(2);}
 
 // ─── Formatters ───────────────────────────────────────────────────────────────
 const MONTH_NAMES=['January','February','March','April','May','June','July','August','September','October','November','December'];
@@ -582,6 +583,16 @@ function checkSwMatch(){
     if(state.swMismatch!==was&&state.loggedIn)render();
   });
 }
+// The cloud has moved on (public.app_status.min_version, set at a cutover):
+// this copy of the app stops syncing and says so plainly, every time it is
+// shown, until it is reopened and the new version loads.
+function retiredBanner(){
+  if(!cloudStatus().retired)return null;
+  return div({'data-retired':'1',role:'alert',style:{margin:'8px 12px 0',padding:'10px 12px',background:'var(--warn-light)',
+      border:'1px solid var(--warn-line)',borderRadius:'var(--radius-sm)',fontSize:13,color:'var(--text)',lineHeight:1.5}},
+    div({style:{fontWeight:700,marginBottom:2}},'StayLog has been updated — close and reopen'),
+    'This copy is older than the cloud and has stopped syncing. Nothing is lost: close StayLog fully (swipe it away) and open it again.');
+}
 function swBanner(){
   if(!state.swMismatch||state.swBannerHidden)return null;
   const running=state.swMismatch.startsWith('(')?'an older offline cache':`offline cache ${state.swMismatch}`;
@@ -1066,6 +1077,87 @@ function renderInboxModal(){
   return modal('Notifications',content);
 }
 
+// ─── Inventory ────────────────────────────────────────────────────────────────
+// A read-only count of everything on this phone, and the money it adds up to.
+// Screenshot it before the move to the new cloud: the Migration report must
+// match these figures exactly. Pure and side-effect free (inventoryOf), so the
+// report can compute the phone's side with the same code.
+// Months: bookings by check-in, expenses by their date. Cancelled stays are
+// counted, but left out of every money figure, as everywhere else.
+function inventoryOf(data){
+  const D=data||{}, B=D.bookings||[], E=D.expenses||[], L=D.loans||[], S=D.staff||[];
+  const reps=L.reduce((n,l)=>n+(l.repayments||[]).length,0);
+  const counts={properties:(D.properties||[]).length,bookings:B.length,
+    cancelled:B.filter(b=>b.status==='cancelled').length,expenses:E.length,staff:S.length,loans:L.length,repayments:reps,
+    attendance:(D.attendance||[]).length,idPhotos:B.filter(b=>b.idProofImage).length};
+  const months={};
+  const m=k=>months[k]||(months[k]={month:k,revenue:0,expenses:0,net:0,paid:0,due:0,roundOff:0,bookings:0});
+  B.forEach(b=>{ if(b.status==='cancelled'||!b.checkIn)return; const r=m(String(b.checkIn).slice(0,7));
+    r.bookings++; r.revenue=r2(r.revenue+bookingRevenue(b)); r.paid=r2(r.paid+Number(b.paid||0));
+    r.due=r2(r.due+balanceDue(b)); r.roundOff=r2(r.roundOff+roundOffOf(b)); });
+  E.forEach(e=>{ if(!e.date)return; const r=m(String(e.date).slice(0,7)); r.expenses=r2(r.expenses+Number(e.amount||0)); });
+  const monthList=Object.values(months).map(r=>({...r,net:r2(r.revenue-r.expenses)})).sort((a,b)=>b.month.localeCompare(a.month));
+  const sum=k=>r2(monthList.reduce((t,r)=>t+r[k],0));
+  const totals={revenue:sum('revenue'),expenses:sum('expenses'),net:sum('net'),paid:sum('paid'),due:sum('due'),roundOff:sum('roundOff')};
+  const name=id=>(S.find(x=>x.id===id)||{}).name||'Unknown staff';
+  const loans=L.map(l=>{const repaid=r2((l.repayments||[]).reduce((t,r)=>t+Number(r.amount||0),0));
+    return {id:l.id,staff:name(l.staffId),principal:r2(Number(l.principal||0)),repaid,outstanding:r2(Number(l.principal||0)-repaid),
+      status:l.status||'active'};});
+  const staff=S.map(x=>({id:x.id,name:x.name,unpaid:r2(E.filter(e=>e.category==='staff'&&e.staffId===x.id&&!e.paid)
+    .reduce((t,e)=>t+Number(e.amount||0),0)),unpaidDays:E.filter(e=>e.category==='staff'&&e.staffId===x.id&&!e.paid).length}));
+  const receipts={};
+  B.forEach(b=>{ const no=String(b.receiptNo||''); const x=/^(.+)\/([^/]+)\/(\d+)$/.exec(no); if(!x)return;
+    const k=x[1]+'/'+x[2], n=parseInt(x[3],10), r=receipts[k]||(receipts[k]={series:k,highest:-1,last:'',count:0});
+    r.count++; if(n>r.highest){r.highest=n;r.last=no;} });
+  return {counts,months:monthList,totals,loans,staff,receipts:Object.values(receipts).sort((a,b)=>a.series.localeCompare(b.series))};
+}
+function renderInventoryModal(){
+  const inv=inventoryOf(state.data);
+  const cell=(t,o={})=>h('td',{style:{padding:'5px 6px',borderBottom:'1px solid var(--border-soft)',textAlign:o.left?'left':'right',
+    whiteSpace:'nowrap',fontWeight:o.bold?700:400,fontVariantNumeric:'tabular-nums'}},t);
+  const head=cols=>h('tr',{},...cols.map((c,i)=>h('th',{style:{padding:'5px 6px',textAlign:i?'right':'left',fontSize:11,
+    color:'var(--muted)',fontWeight:700,borderBottom:'1px solid var(--border)'}},c)));
+  const table=(attr,cols,rows)=>{const t=h('table',{[attr]:'1',style:{width:'100%',borderCollapse:'collapse',fontSize:12.5}});
+    t.appendChild(head(cols)); rows.forEach(r=>t.appendChild(r)); return div({style:{overflowX:'auto'}},t);};
+  const sec=(t,sub)=>div({style:{marginTop:14}},div({className:'kicker'},t),sub?div({style:{fontSize:11.5,color:'var(--muted)',marginTop:2}},sub):null);
+  const money=n=>n<0?'-'+fmtCur(-n):fmtCur(n);
+  const monthName=k=>{const [y,mo]=k.split('-');return new Date(+y,+mo-1,1).toLocaleDateString('en-IN',{month:'short',year:'numeric'});};
+  const content=()=>{
+    const w=div({'data-inventory':'1'});
+    w.appendChild(div({style:{fontSize:12.5,color:'var(--text-mid)',lineHeight:1.5}},
+      `Everything on this phone, as of ${new Date().toLocaleString('en-IN',{day:'numeric',month:'short',year:'numeric',hour:'numeric',minute:'2-digit'})}. `+
+      'Take screenshots of this whole screen: the move to the new cloud must match these numbers exactly. Nothing here changes your data.'));
+    const C=inv.counts;
+    w.appendChild(sec('Records'));
+    w.appendChild(table('data-inv-counts',['Table','Count'],[
+      ['Properties',C.properties],['Bookings (all)',C.bookings],['  of them cancelled',C.cancelled],['Expenses',C.expenses],
+      ['Staff',C.staff],['Loans',C.loans],['Loan repayments',C.repayments],['Bookings with an ID photo',C.idPhotos]]
+      .map(([k,v])=>h('tr',{'data-inv-count':k.trim()},cell(k,{left:true}),cell(String(v),{bold:true})))));
+    w.appendChild(sec('Money by month','Bookings by check-in month, expenses by date. Cancelled stays left out.'));
+    const T=inv.totals;
+    w.appendChild(table('data-inv-months',['Month','Revenue','Expenses','Net','Paid','Due','Round off'],[
+      h('tr',{'data-inv-month':'total'},cell('All time',{left:true,bold:true}),...['revenue','expenses','net','paid','due','roundOff'].map(k=>cell(money(T[k]),{bold:true}))),
+      ...inv.months.map(r=>h('tr',{'data-inv-month':r.month},cell(monthName(r.month),{left:true}),
+        ...['revenue','expenses','net','paid','due','roundOff'].map(k=>cell(money(r[k])))))]));
+    w.appendChild(sec('Loans'));
+    w.appendChild(inv.loans.length?table('data-inv-loans',['Loan','Principal','Repaid','Outstanding'],inv.loans.map(l=>
+      h('tr',{'data-inv-loan':l.id},cell(`${l.staff}${l.status==='writtenoff'?' (written off)':''}`,{left:true}),
+        cell(fmtCur(l.principal)),cell(fmtCur(l.repaid)),cell(fmtCur(l.outstanding),{bold:true})))):
+      div({style:{fontSize:12.5,color:'var(--muted)'}},'No loans.'));
+    w.appendChild(sec('Unpaid wages'));
+    w.appendChild(inv.staff.length?table('data-inv-staff',['Staff','Unpaid lines','Unpaid total'],inv.staff.map(x=>
+      h('tr',{'data-inv-staff-row':x.id},cell(x.name,{left:true}),cell(String(x.unpaidDays)),cell(fmtCur(x.unpaid),{bold:true})))):
+      div({style:{fontSize:12.5,color:'var(--muted)'}},'No staff.'));
+    w.appendChild(sec('Receipts','The highest number issued in each series.'));
+    w.appendChild(inv.receipts.length?table('data-inv-receipts',['Series','Issued','Highest'],inv.receipts.map(r=>
+      h('tr',{'data-inv-receipt':r.series},cell(r.series,{left:true}),cell(String(r.count)),cell(r.last,{bold:true})))):
+      div({style:{fontSize:12.5,color:'var(--muted)'}},'No receipts issued yet.'));
+    w.appendChild(div({style:{fontSize:11,color:'var(--light)',marginTop:14}},`StayLog ${APP_VERSION} · built ${APP_BUILT}`));
+    return w;
+  };
+  return modal('Inventory',content);
+}
+
 function renderMenuModal(){
   const{data}=state;
   const content=()=>div({style:{display:'flex',flexDirection:'column',gap:2}},
@@ -1075,6 +1167,7 @@ function renderMenuModal(){
     // The only backup there is: encrypted on this phone (backup.js). There is no
     // plain export — a readable file would carry guest names, phone and ID numbers.
     menuRow('lock','Encrypted backup',bkSubtitle(),openBackupPanel),
+    menuRow('list-check','Inventory','Counts and totals on this phone — screenshot before the move',()=>setState({modal:'inventory'})),
     menuRow('cloud','Cloud sync',cloudMenuSub(),()=>setState({modal:'cloud'})),
     menuRow('notes','House notes PDF','The instructions guests get after check-in',()=>{
       downloadHouseNotes(data.properties.find(p=>p.id===state.filterProp)||data.properties[0]);closeModal();}),
@@ -2096,10 +2189,11 @@ function arrivalText(b){
   L.push(`Namaste ${firstNameOf(b)}, everything is ready for your arrival ${when}, any time after ${CHECKIN_TIME}.`,'');
   if(prop?.mapsLink)L.push(`*Getting here:* ${prop.mapsLink}`);
   else if(prop?.location)L.push(`*Address:* ${prop.location}`);
-  L.push('','It\u2019s a self checkin property. You can find the key behind the pot beside the door, the key need to be put in the slot in the lock handle.');
-  L.push('','Just for Identification of the house while you reach the destination via Map:');
-  L.push('- House name Vrudhi is written on compound wall');
-  L.push('- House is in the left side just 2 house before the end of the road.');
+  // How to get in and find the house is property data (v60): typed in the
+  // property's settings, kept on this phone and in the encrypted backup, never
+  // in this public code. Blank: the message simply leaves it out.
+  const how=String(prop?.arrivalInstructions||'').trim();
+  if(how)L.push('',how);
   L.push('','Safe travels.');
   return L.join('\n');
 }
@@ -2356,7 +2450,9 @@ function cloudMenuSub(){
   if(!s.configured)return 'Not configured';
   if(!s.signedIn)  return 'Not signed in — this phone only';
   if(!s.online)    return s.dirty?'Offline · changes waiting':'Offline';
+  if(s.retired)    return 'Updated — close and reopen StayLog';
   if(s.pushing)    return 'Syncing…';
+  if(s.devicePaused)return 'Paused — another phone syncs this account';
   if(s.lastError)  return 'Last sync failed';
   if(s.dirty)      return 'Changes waiting to sync';
   return `Synced ${fmtAgo(s.lastSync)}`;
@@ -2704,6 +2800,25 @@ function renderCloudModal(){
         `Run ${s.schemaBehind} in the Supabase SQL editor. Until then the newest wage fields are kept on this phone only, and sync once it has run.`):null
     ));
 
+    // ── One phone per account (v60) ──────────────────────────────────────────
+    // Until the new cloud, each sync sends the whole of this phone's data and
+    // removes what it lacks, so two phones would delete each other's work.
+    if(s.devicePaused){
+      const p=s.devicePaused;
+      const box=div({'data-device-paused':'1',style:{background:'var(--warn-light)',border:'1px solid var(--warn-line)',
+        borderRadius:'var(--radius-sm)',padding:'11px 13px',fontSize:12.5,lineHeight:1.55,color:'var(--text-mid)'}},
+        div({style:{fontSize:13.5,fontWeight:700,color:'var(--warn)',marginBottom:3}},'Sync paused on this phone'),
+        `This account was last synced from ${p.device}${p.at?' on '+fmtDate(String(p.at).slice(0,10)):''}. `+
+        'Only one phone can sync it for now, or the two would undo each other’s changes. If that phone is gone or no longer used, make this your only phone. '+
+        'Make sure this phone has everything first: whatever it does not have will be removed from the cloud.');
+      box.appendChild(btn({className:'btn-primary btn-sm','data-take-over':'1',style:{marginTop:9},onClick:async()=>{
+        if(!confirm('Make this your only phone for StayLog? The other phone will stop syncing. Whatever this phone does not have will be removed from the cloud.'))return;
+        try{ await window.StayLogCloud.takeOver(); }catch(err){}
+        render();
+      }},'This is now my only phone'));
+      wrap.appendChild(box);
+    }
+
     // ── The first minimal sync: said once ────────────────────────────────────
     if(s.privacyNote&&s.privacyNote.length){
       const n=s.privacyNote.reduce((t,x)=>t+x.count,0);
@@ -2924,6 +3039,8 @@ function renderSendModal(){
         onClick:()=>sendMessage(b,kind)},sent?'Resend':'Send'));
       wrap.appendChild(row);
 
+      if(kind==='arrival'&&!String(prop?.arrivalInstructions||'').trim())
+        wrap.appendChild(hintLine('No arrival instructions on this property — the arrival message leaves out how to get in. Add them from the property list.'));
       if(kind==='arrival'&&!prop?.mapsLink)
         wrap.appendChild(hintLine('No Google Maps link on this property — the arrival message falls back to the address. Add one from the property list.'));
       if(kind==='stay'&&!prop?.wifiName)
@@ -4300,7 +4417,7 @@ function prepareQrImage(file){
 function renderPropertyModal(){
   const{editItem}=state; const isEdit=!!editItem;
   const f=isEdit?{...editItem}:{name:'',location:'',rooms:'',pricePerNight:'',description:'',
-    mapsLink:'',wifiName:'',wifiPassword:'',signature:'',signatureRatio:'',
+    mapsLink:'',arrivalInstructions:'',wifiName:'',wifiPassword:'',signature:'',signatureRatio:'',
     upiId:'',upiPayee:'',upiQr:'',bankDetails:''};
   const content=()=>{
     const wrap=div({style:{display:'flex',flexDirection:'column',gap:11}});
@@ -4317,6 +4434,10 @@ function renderPropertyModal(){
 
     wrap.appendChild(heading('For guest messages'));
     wrap.appendChild(field('mapsLink','Google Maps link','url'));
+    const arr=area('arrivalInstructions','Arrival instructions — how to get in, and how to recognise the house',4);
+    arr.setAttribute('data-arrival-instructions','1'); wrap.appendChild(arr);
+    wrap.appendChild(div({style:{fontSize:11.5,color:'var(--muted)',marginTop:-6,lineHeight:1.45}},
+      'Sent in the arrival message. Kept on this phone and in your encrypted backup only.'));
     const wifi=div({style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}});
     wifi.appendChild(field('wifiName','Wi-Fi name'));
     wifi.appendChild(field('wifiPassword','Wi-Fi password'));
@@ -4762,6 +4883,7 @@ function render(){
   state._gaps=((cloudStatus().icalLog)||{}).gaps||{};
   app.innerHTML='';
   app.appendChild(renderHeader());
+  const rtb=retiredBanner(); if(rtb)app.appendChild(rtb);
   const swb=swBanner(); if(swb)app.appendChild(swb);
   const main=div({'data-main':'1',style:{flex:1,paddingBottom:'calc(var(--nav-top, 80px) + 20px)'}});
   if(state.tab==='dashboard') main.appendChild(renderDashboard());
@@ -4789,6 +4911,7 @@ function render(){
   else if(state.modal==='paidReceipt'){currentModal=renderPaidReceiptModal();document.body.appendChild(currentModal);}
   else if(state.modal==='faceId')   {currentModal=renderFaceIdModal();    document.body.appendChild(currentModal);}
   else if(state.modal==='backup')   {currentModal=renderBackupModal();    document.body.appendChild(currentModal);}
+  else if(state.modal==='inventory'){currentModal=renderInventoryModal(); document.body.appendChild(currentModal);}
   else if(state.modal==='inbox')    {currentModal=renderInboxModal();     document.body.appendChild(currentModal);}
 }
 
@@ -4805,6 +4928,7 @@ Promise.all([loadDataFromIDB(),loadAuth(),checkFaceId()]).then(([data,auth])=>{
   if(window.StayLogCloud){
     window.StayLogCloud.onChange(st=>{
       if(state.modal==='cloud'||state.modal==='menu')render();
+      else if(st&&st.retired&&!state._retiredShown&&state.loggedIn){state._retiredShown=true;render();}
       // The first minimal sync says once what it took out of the cloud.
       if(st&&st.privacyNote&&!privacyToastShown&&state.loggedIn){privacyToastShown=true;
         showToast('Removing private details from the cloud','Why',()=>setState({modal:'cloud'}));}
