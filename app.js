@@ -6,7 +6,7 @@
 // ─── Build ────────────────────────────────────────────────────────────────────
 // Bump BOTH of these together. This date sat at 28 Sept through a dozen
 // releases and was read, reasonably, as proof the upload had not landed.
-const APP_VERSION='v71', APP_BUILT='16 Nov 2026';
+const APP_VERSION='v72', APP_BUILT='16 Nov 2026';
 // The CACHE_NAME of the sw.js released with this app.js. Every release bumps
 // APP_VERSION and CACHE_NAME together, so one is derived from the other rather
 // than being a fourth thing to forget; the tests fail if they ever disagree.
