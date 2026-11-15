@@ -8,7 +8,7 @@ with expected(t) as (values
   ('properties'),('bookings'),('staff'),('staff_properties'),('expenses'),('loans'),('loan_repayments'),
   ('attendance'),('utensil_marks'),('receipt_series'),('ical_feeds'),('ical_events'),
   ('push_subscriptions'),('notification_prefs'),('push_log'),('sync_status'),('backups')),
-allowed_delete(t) as (values ('member_properties'),('staff_properties'),('push_subscriptions'),('backups')),
+allowed_delete(t) as (values ('member_properties'),('staff_properties'),('push_subscriptions'),('backups'),('ical_feeds')),
 checks as (
   -- 1. every table exists, with row-level security on and at least one policy
   select 'table ' || e.t as "check",

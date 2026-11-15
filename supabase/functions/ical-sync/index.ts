@@ -96,21 +96,32 @@ function db(env: Env, fetchImpl: Fetch) {
   // sb_secret_ key is accepted as apikey alone.
   const headers: Record<string, string> = { apikey: key, 'Content-Type': 'application/json' };
   if (key.startsWith('eyJ')) headers.Authorization = `Bearer ${key}`;
-  const call = async (method: string, path: string, body?: unknown, extra: Record<string, string> = {}) => {
+  // Old model or new (v62): public.app_status.model says which. In the new
+  // one every table is in `stay` and rows are by account_id.
+  const call = async (method: string, path: string, body?: unknown, extra: Record<string, string> = {}, schema?: string) => {
+    const sch = schema !== undefined ? schema : (d.stay ? 'stay' : '');
+    const prof: Record<string, string> = sch ? { 'Accept-Profile': sch, 'Content-Profile': sch } : {};
     const res = await fetchImpl(`${base}/rest/v1/${path}`, {
-      method, headers: { ...headers, ...extra }, body: body === undefined ? undefined : JSON.stringify(body),
+      method, headers: { ...headers, ...prof, ...extra }, body: body === undefined ? undefined : JSON.stringify(body),
     });
     if (!res.ok) throw new Error(`${method} ${path.split('?')[0]}: HTTP ${res.status} ${await res.text().catch(() => '')}`.trim());
     const t = await res.text();
     return t ? JSON.parse(t) : null;
   };
-  return {
+  const d = {
     base, key,
+    stay: false,
+    col: () => d.stay ? 'account_id' : 'owner_id',
+    model: async () => {
+      const rows = await call('GET', 'app_status?id=eq.1&select=model', undefined, {}, '').catch(() => null);
+      d.stay = !!(Array.isArray(rows) && rows[0] && rows[0].model === 'stay');
+    },
     get: (path: string) => call('GET', path),
     upsert: (table: string, rows: unknown[], onConflict: string) =>
       call('POST', `${table}?on_conflict=${onConflict}`, rows, { Prefer: 'resolution=merge-duplicates,return=minimal' }),
     patch: (path: string, body: unknown) => call('PATCH', path, body, { Prefer: 'return=minimal' }),
   };
+  return d;
 }
 
 function sameSecret(a: string, b: string): boolean {
@@ -149,24 +160,24 @@ async function readFeed(url: string, fetchImpl: Fetch): Promise<string> {
   } finally { clearTimeout(timer); }
 }
 
-type Feed = { id: string; owner_id: string; property_id: string; platform: string; url: string; last_ok_at?: string | null };
+type Feed = { id: string; owner_id: string; account_id?: string; property_id: string; platform: string; url: string; last_ok_at?: string | null };
 
 async function syncFeed(feed: Feed, d: ReturnType<typeof db>, fetchImpl: Fetch, now: string, fresh: { feed_id: string; uid: string }[] = []) {
   const report: Record<string, unknown> = { id: feed.id, platform: feed.platform, property_id: feed.property_id };
   try {
     const events = parseIcs(await readFeed(feed.url, fetchImpl));
     const known: { uid: string; gone_at: string | null; imported_booking_id?: string | null }[] =
-      await d.get(`ical_events?feed_id=eq.${feed.id}&select=uid,gone_at,imported_booking_id`) || [];
+      await d.get(`ical_events?${d.col()}=eq.${feed.owner_id}&feed_id=eq.${feed.id}&select=uid,gone_at,imported_booking_id`) || [];
     // Once the phone has imported a stay, its Airbnb reservation text (the
     // link, the last 4 digits of the guest's phone) is on the phone and has no
     // reason to stay in the cloud: it is not written again.
     const imported = new Set(known.filter(k => k.imported_booking_id).map(k => k.uid));
     if (events.length) {
       await d.upsert('ical_events', events.map(e => ({
-        feed_id: feed.id, uid: e.uid, owner_id: feed.owner_id, property_id: feed.property_id,
+        feed_id: feed.id, uid: e.uid, [d.col()]: feed.owner_id, property_id: feed.property_id,
         platform: feed.platform, start_date: e.start, end_date: e.end, summary: e.summary,
         description: imported.has(e.uid) ? null : e.description, kind: kindOf(feed.platform, e.summary), updated_at: now, gone_at: null,
-      })), 'feed_id,uid');
+      })), d.stay ? 'account_id,feed_id,uid' : 'feed_id,uid');
     }
     // Gone from the feed: flagged, never deleted. An empty answer where there
     // used to be several stays looks like a glitch at their end, not a wave of
@@ -186,9 +197,9 @@ async function syncFeed(feed: Feed, d: ReturnType<typeof db>, fetchImpl: Fetch, 
       warning = `the feed came back empty; ${vanished.length} stays were left as they were`;
     } else {
       for (const k of vanished)
-        await d.patch(`ical_events?feed_id=eq.${feed.id}&uid=eq.${encodeURIComponent(k.uid)}`, { gone_at: now });
+        await d.patch(`ical_events?${d.col()}=eq.${feed.owner_id}&feed_id=eq.${feed.id}&uid=eq.${encodeURIComponent(k.uid)}`, { gone_at: now });
     }
-    await d.patch(`ical_feeds?id=eq.${feed.id}`, {
+    await d.patch(`ical_feeds?${d.col()}=eq.${feed.owner_id}&id=eq.${feed.id}`, {
       last_fetched_at: now, last_ok_at: warning ? undefined : now, last_error: warning || null, last_count: events.length,
     });
     Object.assign(report, { ok: !warning, count: events.length, gone: warning ? 0 : vanished.length, error: warning || undefined });
@@ -197,7 +208,7 @@ async function syncFeed(feed: Feed, d: ReturnType<typeof db>, fetchImpl: Fetch, 
     // password. Nothing that is stored or shown may carry it.
     const msg = ((err as Error)?.message || String(err)).split(feed.url).join('(the link)')
       .replace(/https?:\/\/\S+/gi, '(the link)');
-    await d.patch(`ical_feeds?id=eq.${feed.id}`, { last_fetched_at: now, last_error: msg }).catch(() => {});
+    await d.patch(`ical_feeds?${d.col()}=eq.${feed.owner_id}&id=eq.${feed.id}`, { last_fetched_at: now, last_error: msg }).catch(() => {});
     Object.assign(report, { ok: false, error: msg });
   }
   return report;
@@ -225,9 +236,21 @@ export async function handle(req: Request, env: Env, fetchImpl: Fetch = fetch as
   const who = await whoIsAsking(req, env, fetchImpl);
   if (!who) return json({ error: 'not allowed' }, 401);
   const d = db(env, fetchImpl);
-  const feeds: Feed[] = await d.get('owner' in who
-    ? `ical_feeds?owner_id=eq.${who.owner}&select=id,owner_id,property_id,platform,url,last_ok_at`
-    : 'ical_feeds?select=id,owner_id,property_id,platform,url,last_ok_at') || [];
+  await d.model();
+  const cols = `id,${d.col()},property_id,platform,url,last_ok_at`;
+  let filter = '';
+  if ('owner' in who) {
+    // New model: the feeds of every account this login owns (links are
+    // owner-only, as before).
+    if (d.stay) {
+      const accts = (await d.get(`members?user_id=eq.${who.owner}&role=eq.owner&active=is.true&select=account_id`) || [])
+        .map((m: { account_id: string }) => m.account_id);
+      if (!accts.length) return json({ ok: true, at: new Date().toISOString(), feeds: [] });
+      filter = `account_id=in.(${accts.join(',')})&`;
+    } else filter = `owner_id=eq.${who.owner}&`;
+  }
+  const feeds: Feed[] = (await d.get(`ical_feeds?${filter}select=${cols}`) || [])
+    .map((f: Record<string, string>) => ({ ...f, owner_id: f[d.col()] }) as unknown as Feed);
   const now = new Date().toISOString();
   const results = [], fresh: { feed_id: string; uid: string }[] = [];
   for (const f of feeds) results.push(await syncFeed(f, d, fetchImpl, now, fresh));   // a handful of feeds; one at a time is polite

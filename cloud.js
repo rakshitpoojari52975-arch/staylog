@@ -52,11 +52,20 @@
   // the table is missing, and nothing is retired.
   let retired = false;
   const myVersion = () => Number(String(window.STAYLOG_APP_VERSION || '').replace(/^v/, '')) || 0;
+  // Which model is live (v62, stay/05-migrate.sql adds the column): 'public'
+  // (the old tables), 'stay' (switched over), or '' before 05 has run.
+  let model = '';
   async function checkRetired(c) {
-    const { data, error } = await c.from('app_status').select('min_version').eq('id', 1);
+    let { data, error } = await c.from('app_status').select('min_version,model').eq('id', 1);
+    if (error) { ({ data, error } = await c.from('app_status').select('min_version').eq('id', 1)); model = ''; }
+    else if (data && data[0]) model = data[0].model || 'public';
     if (error || !data || !data[0]) return retired;
     retired = myVersion() < (Number(data[0].min_version) || 0);
     return retired;
+  }
+  async function refreshModel() {
+    try { await checkRetired(await client()); } catch {}
+    return model;
   }
 
   let sb = null;          // supabase client, once the SDK is loaded
@@ -773,11 +782,18 @@
     const r2 = await c.from('ical_feeds').select(cols).eq('owner_id', owner);
     return r2.error ? r2 : { data: (r2.data || []).map(f => ({ ...f, connected: false, connectedMissing: true })), error: null };
   }
+  // In the new model (sync.js active) these tables are in `stay`, by account
+  // (and, for a person's own devices, choices and inbox, by user too).
+  const stayAcct = () => (window.StayLogSync && window.StayLogSync.isActive()) ? window.StayLogSync.model().account : null;
+  const T = (c, table) => stayAcct() ? c.schema('stay').from(table) : c.from(table);
   // Feed links live only in the cloud: they are read by the function there.
   async function listFeeds() {
     if (!session) throw new Error('not signed in');
     const c = await client();
-    const { data, error } = await selectFeeds(c, session.user.id, 'id,property_id,platform,url,last_fetched_at,last_ok_at,last_error,last_count');
+    const cols = 'id,property_id,platform,url,last_fetched_at,last_ok_at,last_error,last_count';
+    const acct = stayAcct();
+    const { data, error } = acct ? await c.schema('stay').from('ical_feeds').select(cols + ',connected').eq('account_id', acct)
+      : await selectFeeds(c, session.user.id, cols);
     if (error) throw error;
     return data || [];
   }
@@ -786,8 +802,9 @@
   async function setFeedConnected(feedId, on) {
     if (!session) throw new Error('not signed in');
     const c = await client();
-    const { error } = await c.from('ical_feeds').update({ connected: !!on })
-      .eq('owner_id', session.user.id).eq('id', feedId);
+    const acct = stayAcct();
+    const { error } = await T(c, 'ical_feeds').update({ connected: !!on })
+      .eq(acct ? 'account_id' : 'owner_id', acct || session.user.id).eq('id', feedId);
     if (error) throw new Error(columnMissing(error) ? `Run ${CONNECTED_SQL} in Supabase first.` : (error.message || String(error)));
   }
   async function saveFeed(propertyId, platform, url) {
@@ -795,6 +812,22 @@
     const c = await client();
     const owner = session.user.id;
     url = String(url || '').trim();
+    const acct = stayAcct();
+    if (acct) {
+      const F = () => c.schema('stay').from('ical_feeds');
+      const { data: have, error: e0 } = await F().select('id').eq('account_id', acct).eq('property_id', propertyId).eq('platform', platform);
+      if (e0) throw e0;
+      if (!url) {
+        if (have && have.length) { const { error } = await F().delete().eq('account_id', acct).in('id', have.map(f => f.id)); if (error) throw error; }
+        return null;
+      }
+      if (!/^https:\/\//i.test(url)) throw new Error('The link should start with https://');
+      const { error } = have && have.length
+        ? await F().update({ url }).eq('account_id', acct).eq('id', have[0].id)
+        : await F().insert({ account_id: acct, property_id: propertyId, platform, url });
+      if (error) throw error;
+      return true;
+    }
     if (!url) {
       const { error } = await c.from('ical_feeds').delete()
         .eq('owner_id', owner).eq('property_id', propertyId).eq('platform', platform);
@@ -814,6 +847,7 @@
     const c = await client();
     const { data, error } = await c.functions.invoke('ical-sync', { body: {} });
     if (error) throw new Error(error.message || 'The calendar import could not be reached.');
+    if (stayAcct()) { await window.StayLogSync.sync({ manual: true }); return data; }
     const d = window.STAYLOG_GET_DATA && window.STAYLOG_GET_DATA();
     if (d) await push(d, { manual: true });
     return data;
@@ -882,6 +916,9 @@
     const c = await client();
     try {
       if (await checkRetired(c).catch(() => retired)) { lastError = ''; return; }
+      // Switched over to the new model: the old tables are read-only now, and
+      // the app moves this phone across (it never pushes here again).
+      if (model === 'stay') { lastError = ''; return; }
       if (!mayUse(owner)) throw new Error(OTHER_LOGIN);
       // One phone per account: another device's id in sync_status pauses this
       // one before anything is written. Until security-v60.sql adds the
@@ -1020,7 +1057,12 @@
     const k = (sub && sub.keys) || {};
     if (!sub || !sub.endpoint || !k.p256dh || !k.auth) throw new Error('the browser gave no usable subscription');
     const c = await client();
-    const { error } = await c.from('push_subscriptions').upsert({
+    const acct = stayAcct();
+    const { error } = acct
+      ? await c.schema('stay').from('push_subscriptions').upsert({ account_id: acct, user_id: session.user.id, endpoint: sub.endpoint,
+          device_id: lsGet(DEVICE_KEY) || null, p256dh: k.p256dh, auth: k.auth, device: device || null, last_seen_at: new Date().toISOString() },
+          { onConflict: 'account_id,user_id,endpoint' })
+      : await c.from('push_subscriptions').upsert({
       endpoint: sub.endpoint, owner_id: session.user.id, p256dh: k.p256dh, auth: k.auth,
       device: device || null, last_seen_at: new Date().toISOString() }, { onConflict: 'endpoint' });
     if (error) throw new Error(explain(error));
@@ -1028,20 +1070,30 @@
   async function pushRemove(endpoint) {
     if (!session || !endpoint) return;
     const c = await client();
-    const { error } = await c.from('push_subscriptions').delete().eq('endpoint', endpoint);
+    const acct = stayAcct();
+    const { error } = acct
+      ? await c.schema('stay').from('push_subscriptions').delete().eq('account_id', acct).eq('user_id', session.user.id).eq('endpoint', endpoint)
+      : await c.from('push_subscriptions').delete().eq('endpoint', endpoint);
     if (error) throw new Error(explain(error));
   }
   async function pushPrefs() {
     if (!session) throw new Error('not signed in');
     const c = await client();
-    const { data, error } = await c.from('notification_prefs').select('prefs').eq('owner_id', session.user.id);
+    const acct = stayAcct();
+    const { data, error } = acct
+      ? await c.schema('stay').from('notification_prefs').select('prefs').eq('account_id', acct).eq('user_id', session.user.id)
+      : await c.from('notification_prefs').select('prefs').eq('owner_id', session.user.id);
     if (error) throw new Error(explain(error));
     return (data && data[0] && data[0].prefs) || {};
   }
   async function savePushPrefs(prefs) {
     if (!session) throw new Error('not signed in');
     const c = await client();
-    const { error } = await c.from('notification_prefs').upsert({
+    const acct = stayAcct();
+    const { error } = acct
+      ? await c.schema('stay').from('notification_prefs').upsert({ account_id: acct, user_id: session.user.id, prefs,
+          updated_at: new Date().toISOString() }, { onConflict: 'account_id,user_id' })
+      : await c.from('notification_prefs').upsert({
       owner_id: session.user.id, prefs, updated_at: new Date().toISOString() }, { onConflict: 'owner_id' });
     if (error) throw new Error(explain(error));
   }
@@ -1055,8 +1107,10 @@
     if (!session) throw new Error('not signed in');
     const c = await client();
     const since = new Date(Date.now() - 30 * 86400e3).toISOString();
-    const { data, error } = await c.from('push_log').select('key,title,body,url,alert,sent_at,delivered,read_at')
-      .eq('owner_id', session.user.id).not('title', 'is', null).gte('sent_at', since).order('sent_at', { ascending: false });
+    const acct = stayAcct();
+    let q0 = T(c, 'push_log').select('key,title,body,url,alert,sent_at,delivered,read_at');
+    q0 = acct ? q0.eq('account_id', acct).eq('recipient', session.user.id) : q0.eq('owner_id', session.user.id);
+    const { data, error } = await q0.not('title', 'is', null).gte('sent_at', since).order('sent_at', { ascending: false });
     if (error) throw new Error(inboxExplain(error));
     return data || [];
   }
@@ -1065,7 +1119,9 @@
     if (!session) throw new Error('not signed in');
     if (Array.isArray(keys) && !keys.length) return;
     const c = await client();
-    let q = c.from('push_log').update({ read_at: new Date().toISOString() }).eq('owner_id', session.user.id).is('read_at', null);
+    const acct = stayAcct();
+    let q = T(c, 'push_log').update({ read_at: new Date().toISOString() });
+    q = (acct ? q.eq('account_id', acct).eq('recipient', session.user.id) : q.eq('owner_id', session.user.id)).is('read_at', null);
     if (Array.isArray(keys)) q = q.in('key', keys);
     const { error } = await q;
     if (error) throw new Error(inboxExplain(error));
@@ -1098,7 +1154,7 @@
       online: navigator.onLine,
       dirty, pushing, lastSync: last, lastError, brake, icalLog, schemaBehind, privacyNote,
       utensils: { held: utHeld, error: utError, setUp: utSetUp, last: utLast }, heldMarks: held, attError, attLog, attLast,
-      devicePaused, deviceId: lsGet(DEVICE_KEY), boundOwner: lsGet(OWNER_KEY), retired,
+      devicePaused, deviceId: lsGet(DEVICE_KEY), boundOwner: lsGet(OWNER_KEY), retired, model,
     };
   }
 
@@ -1142,7 +1198,7 @@
   });
 
   window.StayLogCloud = {
-    restoreSession, signIn, signOut, push, status, markDirty, checkIn,
+    restoreSession, signIn, signOut, push, status, markDirty, checkIn, refreshModel,
     listFeeds, saveFeed, importNow, setFeedConnected,
     // "This is now my only phone": the next sync claims the account for this device.
     takeOver: async () => { takeover = true; devicePaused = null; notify();
