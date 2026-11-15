@@ -63,7 +63,7 @@ const oldBefore=v(`select md5(coalesce((select string_agg(row_to_json(b)::text,'
 
 console.log('\n— runs, and runs again —');
 for(const run of [1,2]){
-  for(const f of ['stay/01-schema.sql','stay/02-functions.sql','stay/03-access.sql']){
+  for(const f of ['stay/01-schema.sql','stay/02-functions.sql','stay/03-access.sql','stay/04-phase2.sql']){
     r=psql(DB,['-c','set client_min_messages=warning','-f',F(f)]); ok(`${f} (run ${run})`, !r.err, r.err);
   }
 }
@@ -298,7 +298,7 @@ console.log('\n— undoing phase 1 —');
 r=psql(DB,['-f',F('stay/rollback-phase1.sql')]);
 ok('the rollback refuses while an account exists in stay', /already holds an account/.test(r.err)&&v(`select to_regclass('stay.accounts') is not null`)==='t', r.err);
 sql(`set stay.importing='on'; drop schema stay cascade`);
-for(const f of ['stay/01-schema.sql','stay/02-functions.sql','stay/03-access.sql'])psql(DB,['-c','set client_min_messages=warning','-f',F(f)]);
+for(const f of ['stay/01-schema.sql','stay/02-functions.sql','stay/03-access.sql','stay/04-phase2.sql'])psql(DB,['-c','set client_min_messages=warning','-f',F(f)]);
 r=psql(DB,['-f',F('stay/rollback-phase1.sql')]); ok('with no account, it removes the schema', !r.err&&v(`select to_regclass('stay.accounts') is null`)==='t', r.err);
 r=psql(DB,['-f',F('stay/rollback-phase1.sql')]); ok('and runs twice', !r.err, r.err);
 ok('the old public tables are still untouched', oldBefore===v(`select md5(coalesce((select string_agg(row_to_json(b)::text,'|' order by id) from public.bookings b),'')

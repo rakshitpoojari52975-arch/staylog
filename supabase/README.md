@@ -22,6 +22,11 @@ Built beside the tables above; the app does not use it yet, and nothing in
 To undo: `stay/rollback-phase1.sql` (refuses once an account exists in
 `stay`), then remove `stay` from Exposed schemas.
 
+**Phase 2 (v61):** `stay/04-phase2.sql` after 03 (lets a loan have no staff
+member, as the house's own loans do; adds "changed since" indexes). Then
+`stay/check.sql` again: all `ok`. The app ships the new sync engine but does
+not use it until the switch-over (phase 3); nothing in `public` changes.
+
 ## v60 security fixes (once)
 
 1. Dashboard → **Authentication → Sign In / Providers** → turn off

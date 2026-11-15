@@ -1,6 +1,6 @@
 -- ─────────────────────────────────────────────────────────────────────────────
 -- StayLog — check the new `stay` schema. Read-only: changes nothing.
--- Run after 01 → 02 → 03. Every row should say "ok"; anything else names
+-- Run after 01 → 02 → 03 → 04. Every row should say "ok"; anything else names
 -- what to fix (usually: run the scripts again, in order).
 -- ─────────────────────────────────────────────────────────────────────────────
 with expected(t) as (values
@@ -47,7 +47,13 @@ checks as (
   select 'platform admin', case when exists (select 1 from stay.platform_admins) then 'ok'
                                 else 'none — is your user id in public.owners?' end
   union all
-  -- 6. the old app's tables are still there and untouched by this phase
+  -- 6. phase 2: a loan need not belong to a staff member
+  select 'loans without a staff member (04-phase2.sql)',
+         case when (select is_nullable from information_schema.columns
+                    where table_schema = 'stay' and table_name = 'loans' and column_name = 'staff_id') = 'YES'
+              then 'ok' else 'not yet — run 04-phase2.sql' end
+  union all
+  -- 7. the old app's tables are still there and untouched by this phase
   select 'old table public.' || t, case when to_regclass('public.' || t) is not null then 'ok (unchanged)' else 'not found' end
   from unnest(array['properties','bookings','expenses','staff','loans','loan_repayments','attendance']) t
 )
