@@ -6,7 +6,7 @@
 // ─── Build ────────────────────────────────────────────────────────────────────
 // Bump BOTH of these together. This date sat at 28 Sept through a dozen
 // releases and was read, reasonably, as proof the upload had not landed.
-const APP_VERSION='v69', APP_BUILT='16 Nov 2026';
+const APP_VERSION='v70', APP_BUILT='16 Nov 2026';
 // The CACHE_NAME of the sw.js released with this app.js. Every release bumps
 // APP_VERSION and CACHE_NAME together, so one is derived from the other rather
 // than being a fourth thing to forget; the tests fail if they ever disagree.
@@ -793,7 +793,8 @@ const pushUI={sub:null,checked:false,busy:false,msg:'',msgBad:false,prefs:null,p
 const isIOS=()=>/iPad|iPhone|iPod/.test(navigator.userAgent)||(navigator.platform==='MacIntel'&&navigator.maxTouchPoints>1);
 const isStandalone=()=>navigator.standalone===true||
   !!(window.matchMedia&&window.matchMedia('(display-mode: standalone)').matches);
-const deviceName=()=>/iPad/.test(navigator.userAgent)?'iPad':isIOS()?'iPhone':'this device';
+// What to call this device in "On for this …" (v70: was "this device" off iOS, read "this this device").
+const deviceName=()=>/iPad/.test(navigator.userAgent)?'iPad':isIOS()?'iPhone':/Android/.test(navigator.userAgent)?'phone':'device';
 function vapidKeyBytes(){
   const s=String((window.STAYLOG_CLOUD||{}).vapidPublicKey||'').trim();
   if(!s)return null;
@@ -887,7 +888,7 @@ async function sendTestPush(){
     // only to this device (v69)
     const r=await window.StayLogCloud.pushTest(pushUI.sub&&pushUI.sub.endpoint);
     if(r.sent)pushUI.msg=`Sent to this ${deviceName()} — it should arrive in a few seconds.`;
-    else{pushUI.msg=r.gone?'Apple says this subscription has ended. Tap Turn on notifications again.':'No device is registered in the cloud yet. Tap Turn on notifications.';pushUI.msgBad=true;}
+    else{pushUI.msg=r.gone?'This device\u2019s notification service says the subscription has ended. Tap Turn on notifications again.':'No device is registered in the cloud yet. Tap Turn on notifications.';pushUI.msgBad=true;}
   }catch(e){pushUI.msg='Test not sent: '+(e.message||e);pushUI.msgBad=true;}
   pushUI.busy=false; pushRefresh();
 }

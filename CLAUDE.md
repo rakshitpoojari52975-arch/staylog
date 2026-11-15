@@ -426,7 +426,11 @@ Agreed decisions (his answers, 15 Nov 2026):
 - Her marks name her **full name**, the time in the account's zone (old model
   too: full name). New bookings: "today" in the account's zone.
 - **Send test** goes to the device that asked (`{job:'test', endpoint}`;
-  never another person's device even when named).
+  never another person's device even when named). Its text says "this
+  device" (v70; it said "this iPhone", and managers use Android phones too).
+  The app calls a device iPhone / iPad / phone (Android) / device
+  (`deviceName()`; off iOS it once read "On for this this device"), and no
+  message names Apple.
 - **App:** `PUSH_ALERTS` names no one ("Staff mark attendance") and each has
   who may get it; `pushAlertsForMe()` shows only those switches. The inbox
   follows the property picker (`inboxRows()`: a row about no property always
