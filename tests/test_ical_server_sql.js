@@ -65,7 +65,7 @@ r = load('09-calendar.sql');
 ok('runs twice', !r.err, r.err);
 ok('…and a second run leaves an event waiting to be announced alone', v(`select count(*) from stay.ical_events where announced_at is null and uid = 'new@airbnb'`) === '1');
 const check = psql(DB, ['-F', '|', '-f', F('check.sql')]).out.trim().split('\n').filter(Boolean);
-const mine = check.filter(l => !/^old table|^platform admin/.test(l));
+const mine = check.filter(l => !/^old table|^platform admin|10-onboarding/.test(l));
 ok('check.sql: every row about the new schema ok, the calendar row among them', mine.every(l => /\|ok/.test(l)) && mine.some(l => /09-calendar/.test(l)), mine.filter(l => !/\|ok/.test(l)));
 
 console.log('\n— the run record —');

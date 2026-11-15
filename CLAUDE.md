@@ -398,6 +398,48 @@ Agreed decisions (his answers, 15 Nov 2026):
   shares Chrome's storage, so joining in Chrome is enough.
 - Phase 8 (v69) added notifications to managers and the inbox per property.
 
+### Phase 9 — v71 (onboarding new accounts)
+- **`supabase/stay/10-onboarding.sql`** (after 09): `stay.platform_invites`
+  (code, label, created_by, expires_at — 14 days, used_by/at, account_id;
+  platform admins read, insert, withdraw by `expires_at`);
+  `stay.am_platform_admin()`; **`stay.open_account(invite, user, business,
+  code, time_zone, currency, owner_name)`** — service key only; locks the
+  invite, refuses used/expired, a bad (`^[a-z0-9]{2,12}$`) or taken code,
+  makes the account and its owner member and uses the invite, all in one
+  transaction; **`stay.check_account()`** trigger on accounts: a real time
+  zone (`pg_timezone_names`), currency `^[A-Z]{3}$`, at least one source that
+  pays directly, a non-blank name, and **the code never changes** (staff
+  logins carry it). `check.sql` checks it.
+- **`team-invite`** gains `owner-peek` (only the label) and `owner-accept`
+  (business, account code, time zone, currency; a new login with
+  `email_confirm`, or the signed-in token) → `rpc/open_account`; a refusal
+  after making the login deletes it again. Public sign-up stays off.
+- **App:** `#start=<code>` (kept in sessionStorage `staylog_start`, like
+  `#join=`; the Cloud sync paste box takes either) → **Welcome to StayLog**
+  sheet (`renderStartModal`; account code suggested from the business name,
+  `codeFrom`; time zone = the device's first; `CURRENCIES`) → signs in →
+  `followModel` moves the phone onto the new account. **⋯ → Account
+  settings** (owner, new model; `renderAccountModal`, `StayLogSync.saveSettings`):
+  business name, the owner's name, the code (shown, not editable), time zone,
+  currency, "Guests who pay you directly" (ticks). **⋯ → Invite a new owner**
+  (platform admin, `status().platformAdmin` from `am_platform_admin`):
+  make / share (`#start=`) / withdraw.
+- **The app follows the account** (`acctSettings()` =
+  `StayLogSync.settings()`, read each sync with `my_access`, kept offline;
+  the old model and "not read yet" are rupees, Direct and Booking.com):
+  `fmtCur` / `fmtCurPdf` (₹ / "Rs." for INR, else the currency's symbol / code),
+  every "(₹)" label (`curSym()`), and **`paysUsDirectly` / `canReceipt` use
+  the account's `pays_directly_sources`** (`directSources()`), the same list
+  the server's balance, receipt and reminder rules use. `today()` is still
+  the phone's own date.
+- **First-run guide** (`guideCard`, top of Home): only for the owner of an
+  account not moved in from the old app (`migrated_from` empty), until every
+  step is done or **Hide this guide** (`staylog_guide_hidden:<account>`):
+  property, check-in times / house rules, payment details, calendar links,
+  staff, notifications on this phone, an encrypted backup — each tick worked
+  out from the data, each step opening its place.
+- Neutral texts: the old cloud panel says "staff wages" / "the staff page".
+
 ### Phase 8 — v69 (notifications for the team)
 - **Routing** (`notify`, new model only; the old model is unchanged for the
   rollback): every reminder carries a `Need` — a property, a set of
@@ -1139,11 +1181,13 @@ also fetch from Supabase with `cache: 'no-store'` as a second layer.
     node tests/test_staff_login_function.js   # the staff-login Edge Function: who may, the address, nothing half-made, reset/disable on old logins
     STAYLOG_PG="…" node tests/test_staff_sql.js      # 07-staff.sql: works_at ↔ staff_properties, her profile, marking at a property
     node tests/test_team_app.js          # phase 6: Team (members, permissions, properties, switch off, invites, withdraw), a manager's hidden areas, joining from a link
-    node tests/test_team_invite_function.js   # the team-invite Edge Function: peek, accept (new login / signed in), once only, expired, owner invites refused, nothing half-made
+    node tests/test_team_invite_function.js   # the team-invite Edge Function: peek, accept (new login / signed in), once only, expired, owner invites refused, nothing half-made; v71 owner-peek / owner-accept: a new owner's login and account through open_account
     STAYLOG_PG="…" node tests/test_team_sql.js       # 08-team.sql: manager-only invites, my_access, team(), what a manager reads
     node tests/test_checkboxes.js        # v66: every checkbox keeps its tick — appearance, a tap ticks it, and it looks different ticked (pixels), light and dark
     node tests/test_move_app.js          # phase 3 in the app: Move to the new system — copy, compare (match / mismatch), switch, another phone joins, rollback
     node tests/test_notify_stay.js       # notify in the new model: by account, every owner, own devices/prefs/inbox, amounts + pays_directly_sources, marks, test push
+    node tests/test_onboarding_app.js    # phase 9 app: Account settings (saved, code not sent, money and who-pays follow), Invite a new owner (platform admin), #start= sheet + code suggestion + sign-in, pasted start link, first-run guide (new accounts only, ticks, hide), managers see none
+    STAYLOG_PG="…" node tests/test_onboarding_sql.js   # 10-onboarding.sql: platform invites by admins only, open_account (service key only, atomic, refusals), account settings checks, code never changes
     node tests/test_notify_team.js       # phase 8: routing by property and permission, own inbox row + badge, her marks by manage_staff, a device's own alerts, hourly per time zone and currency, one account failing, Send test to this device only
     node tests/test_ical_server.js       # phase 7: the import on the server — same plan as the phone (400 cases), bookings written, echoes, cancelled stays, moved/gone, version guard, announced once (cut short, notify down), parallel/deadline/cap, Import now throttle, one account failing, time zone, old model
     STAYLOG_PG="…" node tests/test_ical_server_sql.js   # 09-calendar.sql: twice, announced backfill only once, ical_runs owner-only, min_version 68

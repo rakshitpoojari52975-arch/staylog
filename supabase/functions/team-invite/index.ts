@@ -14,8 +14,16 @@
 //                                    makes their login and joins them; or, with
 //                                    a signed-in user's token instead of email
 //                                    and password, joins that login
-// An invite is used once (claimed atomically) and only before it expires. It
-// can only make a manager. If joining fails half-way, the login made here is
+//   {"action":"owner-peek","code":…}  a platform invite (v71): who it is for
+//   {"action":"owner-accept","code":…,"name":…,"email":…,"password":…,
+//    "business":…,"account_code":…,"time_zone":…,"currency":…}
+//                                    a new owner: makes their login (or uses
+//                                    the signed-in one) and opens their account
+//                                    through stay.open_account (10-onboarding.sql),
+//                                    which claims the invite in the same
+//                                    transaction
+// An invite is used once (claimed atomically) and only before it expires. A
+// team invite can only make a manager. If joining fails half-way, the login made here is
 // deleted again and the invite is free again.
 // Turn OFF "Verify JWT" for this function (it checks a token itself when one comes).
 // Environment: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY (provided by Supabase).
@@ -56,6 +64,60 @@ function api(env: Env, fetchImpl: Fetch) {
   };
 }
 
+// Who is joining: the signed-in user (a token), or a new login made here.
+async function joiner(req: Request, body: Record<string, any>, d: ReturnType<typeof api>, fetchImpl: Fetch) {
+  const name = String(body.name || '').trim().slice(0, 60);
+  const token = (req.headers.get('authorization') || '').replace(/^Bearer\s+/i, '');
+  if (token) {
+    const who = await fetchImpl(`${d.base}/auth/v1/user`, { headers: { apikey: d.key, Authorization: `Bearer ${token}` } });
+    const user = who.ok ? await who.json().catch(() => null) : null;
+    if (!user || !user.id) throw new Refusal('Your sign-in has expired. Sign in again, then open the link.', 401);
+    return { userId: String(user.id), name, undo: async () => {} };
+  }
+  const email = String(body.email || '').trim().toLowerCase(), password = String(body.password || '');
+  if (!name) throw new Refusal('Please give your name.');
+  if (!EMAIL.test(email)) throw new Refusal('That email address does not look right.');
+  if (password.length < 8) throw new Refusal('The password needs at least 8 characters.');
+  return { email, password, name, userId: '', undo: async () => {} };
+}
+
+// A platform invite: a new owner opens their own account.
+const ACCOUNT_CODE = /^[a-z0-9]{2,12}$/;
+const CURRENCY = /^[A-Z]{3}$/;
+async function ownerInvite(req: Request, body: Record<string, any>, code: string, now: string, d: ReturnType<typeof api>, fetchImpl: Fetch) {
+  const inv = (await d.get(`platform_invites?code=eq.${encodeURIComponent(code)}&used_by=is.null&expires_at=gt.${encodeURIComponent(now)}&select=code,label,expires_at`))[0];
+  if (!inv) throw new Refusal('This invite has been used, withdrawn or has expired. Ask for a new link.', 404);
+  if (body.action === 'owner-peek') return { ok: true, label: inv.label || '', expires_at: inv.expires_at };
+  const business = String(body.business || '').trim().slice(0, 80);
+  const acode = String(body.account_code || '').trim().toLowerCase();
+  const zone = String(body.time_zone || 'Asia/Kolkata').trim(), currency = String(body.currency || 'INR').trim().toUpperCase();
+  if (!business) throw new Refusal('Please give your business a name.');
+  if (!ACCOUNT_CODE.test(acode)) throw new Refusal('The account code is 2 to 12 small letters or digits, like "seaview".');
+  if (!CURRENCY.test(currency)) throw new Refusal('Choose a currency.');
+  if ((await d.get(`accounts?code=eq.${encodeURIComponent(acode)}&select=id`)).length)
+    throw new Refusal('That account code is taken. Try another.', 409);
+  const j = await joiner(req, body, d, fetchImpl);
+  let userId = j.userId, made = false;
+  if (!userId) {
+    const r = await d.admin('POST', 'users', { email: j.email, password: j.password, email_confirm: true, user_metadata: { name: j.name } });
+    if (!r.ok) throw new Refusal(r.status === 422 ? 'That email already has a StayLog login. Sign in with it in the app, then open this link again.'
+      : 'Your login could not be made. Try again.', r.status === 422 ? 409 : 500);
+    userId = String((r.data as Record<string, any>).id); made = true;
+  }
+  // One transaction in the database: the invite claimed, the account opened.
+  const r = await d.write('POST', 'rpc/open_account', { p_invite: code, p_user: userId, p_business: business, p_code: acode,
+    p_time_zone: zone, p_currency: currency, p_owner_name: j.name || null });
+  if (!r.ok) {
+    if (made) await d.admin('DELETE', `users/${userId}`);
+    const msg = String((r.data as Record<string, any>)?.message || '');
+    if (/code: taken/.test(msg)) throw new Refusal('That account code is taken. Try another.', 409);
+    if (/invite:/.test(msg)) throw new Refusal('This invite has just been used. Ask for a new link.', 409);
+    if (/time zone/i.test(msg)) throw new Refusal('Choose a time zone from the list.');
+    throw new Refusal('Your account could not be opened. Try again.', 500);
+  }
+  return { ok: true, account: r.data, business, code: acode };
+}
+
 export async function handle(req: Request, env: Env, fetchImpl: Fetch = fetch as unknown as Fetch, nowMs = Date.now()): Promise<Response> {
   if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS });
   if (req.method !== 'POST') return json({ error: 'POST only' }, 405);
@@ -66,6 +128,7 @@ export async function handle(req: Request, env: Env, fetchImpl: Fetch = fetch as
     const code = String(body.code || '');
     if (!CODE.test(code)) throw new Refusal('That invite link is not complete. Ask for it again.', 404);
     const now = new Date(nowMs).toISOString();
+    if (body.action === 'owner-peek' || body.action === 'owner-accept') return json(await ownerInvite(req, body, code, now, d, fetchImpl));
     const live = async () => (await d.get(`invites?code=eq.${encodeURIComponent(code)}&used_by=is.null&expires_at=gt.${encodeURIComponent(now)}` +
       '&select=code,account_id,role,property_ids,permissions,label,expires_at'))[0];
     const inv = await live();

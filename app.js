@@ -6,7 +6,7 @@
 // ─── Build ────────────────────────────────────────────────────────────────────
 // Bump BOTH of these together. This date sat at 28 Sept through a dozen
 // releases and was read, reasonably, as proof the upload had not landed.
-const APP_VERSION='v70', APP_BUILT='16 Nov 2026';
+const APP_VERSION='v71', APP_BUILT='16 Nov 2026';
 // The CACHE_NAME of the sw.js released with this app.js. Every release bumps
 // APP_VERSION and CACHE_NAME together, so one is derived from the other rather
 // than being a fourth thing to forget; the tests fail if they ever disagree.
@@ -53,6 +53,18 @@ function idbSet(k,v){return openDB().then(db=>new Promise((res,rej)=>{const r=db
 // login and account, and never writes the old ones: switching back finds the
 // old copy exactly as it was. Dormant until the switch-over (phase 3).
 const stayActive=()=>!!(window.StayLogSync&&window.StayLogSync.isActive());
+// The account's own settings (v71, ⋯ → Account settings; the new model only):
+// its currency and the sources whose guests pay the house. The old model and
+// "not read yet" are Raaya Vasyam's: rupees, Direct and Booking.com.
+// Called for every amount on screen, so it reads no storage: sync.js holds the
+// settings only while the new model is active (none in the old model).
+const acctSettings=()=>{try{const Y=window.StayLogSync;return Y&&Y.settings?Y.settings():null;}catch(e){return null;}};
+const curCode=()=>{const s=acctSettings();return (s&&/^[A-Z]{3}$/.test(s.currency||'')&&s.currency)||'INR';};
+const SYM={INR:'₹'};
+const curSym=()=>{const c=curCode();if(SYM[c])return SYM[c];
+  try{SYM[c]=new Intl.NumberFormat('en',{style:'currency',currency:c,currencyDisplay:'narrowSymbol'}).formatToParts(0).find(p=>p.type==='currency').value;}
+  catch(e){SYM[c]=c+' ';}
+  return SYM[c];};
 // This phone's id (v60, staylog_device): a phone's own alerts name it.
 const lsDevice=()=>{try{return localStorage.getItem('staylog_device')||'';}catch(e){return '';}};
 // ── Who may do what (v65): in the new model, my_access from the server (role,
@@ -143,7 +155,7 @@ const fmtDate    =s=>s?new Date(s+'T00:00:00').toLocaleDateString('en-IN',{day:'
 const fmtDateLong=s=>s?new Date(s+'T00:00:00').toLocaleDateString('en-IN',{weekday:'long',day:'numeric',month:'long',year:'numeric'}):'—';
 // Whole rupees as they are; an amount with paise always shows two places (₹250.50).
 const moneyDigits=n=>Number(n)%1?{minimumFractionDigits:2,maximumFractionDigits:2}:{};
-const fmtCur     =n=>'₹'+Number(n||0).toLocaleString('en-IN',moneyDigits(n||0));
+const fmtCur     =n=>curSym()+Number(n||0).toLocaleString(curCode()==='INR'?'en-IN':'en',moneyDigits(n||0));
 const diffDays   =(a,b)=>Math.max(0,Math.ceil((new Date(b)-new Date(a))/86400000));
 const isoOf      =d=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
 const today      =()=>isoOf(new Date());          // local, not UTC
@@ -996,7 +1008,21 @@ async function openStay(o){
 // A team invite link (v65): #join=<code>. Kept until the app is unlocked,
 // then the Join sheet opens.
 let joinCode=(()=>{try{return sessionStorage.getItem('staylog_join')||'';}catch(e){return '';}})();
+// A platform invite for a new owner (v71): #start=<code>, kept the same way.
+let startCode=(()=>{try{return sessionStorage.getItem('staylog_start')||'';}catch(e){return '';}})();
+function takeStart(code){
+  startCode=code;
+  try{sessionStorage.setItem('staylog_start',code);}catch(e){}
+  Object.assign(sn,{peek:null,err:'',busy:false,loaded:false});
+}
 function takeOpen(hash){
+  const st=/^#start=([A-Za-z0-9_-]{16,64})$/.exec(String(hash||''));
+  if(st){
+    takeStart(st[1]);
+    try{history.replaceState(null,'',location.pathname+location.search);}catch(e){}
+    if(state.loggedIn&&!state._loading)setState({modal:'start'});
+    return;
+  }
   const j=/^#join=([A-Za-z0-9_-]{16,64})$/.exec(String(hash||''));
   if(j){
     joinCode=j[1];
@@ -1441,6 +1467,9 @@ function renderMenuModal(){
     isOwner()?menuRow('plus','Add property','Rooms, base tariff and location',()=>setState({modal:'addProp',editItem:null})):null,
     // The team (v65): members, invites, a manager's properties and permissions.
     stayActive()&&isOwner()?menuRow('users','Team','Managers, the properties they hold and what they may do',()=>setState({modal:'team'})):null,
+    // v71: the account's own settings, and (a platform admin only) new owners.
+    stayActive()&&isOwner()?menuRow('building','Account settings','Business name, time zone, currency, who pays you directly',()=>setState({modal:'account'})):null,
+    stayActive()&&window.StayLogSync.status().platformAdmin?menuRow('user-plus','Invite a new owner','A link for someone to open their own StayLog account',()=>setState({modal:'owners'})):null,
     // The only backup there is: encrypted on this phone (backup.js). There is no
     // plain export — a readable file would carry guest names, phone and ID numbers.
     isOwner()?menuRow('lock','Encrypted backup',bkSubtitle(),openBackupPanel):null,
@@ -1619,6 +1648,214 @@ function renderJoinModal(){
     return w;
   };
   return modal('Join the team',content);
+}
+
+// ─── New accounts (v71) ───────────────────────────────────────────────────────
+// Time zones and currencies offered in the forms: the device's own zone first.
+const CURRENCIES=[['INR','Indian rupee (₹)'],['USD','US dollar ($)'],['EUR','Euro (€)'],['GBP','British pound (£)'],['AED','UAE dirham'],
+  ['AUD','Australian dollar'],['CAD','Canadian dollar'],['SGD','Singapore dollar'],['LKR','Sri Lankan rupee'],['NPR','Nepalese rupee'],['THB','Thai baht']];
+function timeZones(){
+  const here=(()=>{try{return Intl.DateTimeFormat().resolvedOptions().timeZone;}catch(e){return '';}})();
+  let all=[];try{all=Intl.supportedValuesOf('timeZone');}catch(e){}
+  if(!all.length)all=['Asia/Kolkata','Asia/Dubai','Asia/Colombo','Asia/Kathmandu','Asia/Singapore','Asia/Bangkok','Europe/London','Europe/Paris','America/New_York','America/Los_Angeles','Australia/Sydney','UTC'];
+  return [...new Set([here,'Asia/Kolkata',...all].filter(Boolean))];
+}
+const selectOf=(attr,options,value)=>{
+  const sel=h('select',{[attr]:'1'});
+  options.forEach(([v,l])=>{const o=h('option',{value:v},l);if(v===value)o.selected=true;sel.appendChild(o);});
+  return sel;
+};
+// A suggested account code from the business name: small letters and digits.
+const codeFrom=name=>String(name||'').toLowerCase().normalize('NFKD').replace(/[^a-z0-9]/g,'').slice(0,12);
+
+// A new owner opens their account from a platform invite: see who it is for,
+// make a login (or use the one signed in), name the business, and the app
+// moves onto the new account. The account is made in one step on the server.
+const sn={peek:null,err:'',busy:false,loaded:false};
+function renderStartModal(){
+  const C=window.StayLogCloud, Y=window.StayLogSync;
+  if(!sn.loaded&&Y){sn.loaded=true;Y.joinCall({action:'owner-peek',code:startCode}).then(r=>{sn.peek=r;render();},e=>{sn.err=e.message;render();});}
+  const signedIn=cloudStatus().signedIn;
+  const done=()=>{startCode='';try{sessionStorage.removeItem('staylog_start');}catch(e){}Object.assign(sn,{peek:null,err:'',busy:false,loaded:false});};
+  const content=()=>{
+    const w=div({'data-start':'1',style:{display:'flex',flexDirection:'column',gap:10}});
+    if(sn.err&&!sn.peek){w.appendChild(div({style:{color:'var(--danger)',fontSize:13,lineHeight:1.5}},sn.err));
+      w.appendChild(btn({className:'btn-ghost',style:{width:'100%'},onClick:()=>{done();closeModal();}},'Close'));return w;}
+    if(!sn.peek){w.appendChild(div({style:{color:'var(--muted)',fontSize:13}},'Checking the invite…'));return w;}
+    w.appendChild(div({style:{fontSize:13.5,lineHeight:1.55}},
+      `${sn.peek.label?sn.peek.label+', y':'Y'}ou are invited to set up StayLog for your homestay. It takes a minute; you can change everything later.`));
+    const label=t=>div({className:'label',style:{marginTop:2}},t);
+    const name=h('input',{type:'text',placeholder:'Your name','data-start-name':'1'});
+    const email=h('input',{type:'email',placeholder:'Your email (to sign in with)','data-start-email':'1',autocapitalize:'none'});
+    const pass=h('input',{type:'password',placeholder:'Choose a password (at least 8 characters)','data-start-pass':'1'});
+    const biz=h('input',{type:'text',placeholder:'Business name, e.g. Sea Breeze Stays','data-start-business':'1'});
+    const code=h('input',{type:'text',placeholder:'Account code','data-start-code':'1',autocapitalize:'none',spellcheck:false,maxLength:12});
+    let codeTyped=false;
+    biz.addEventListener('input',()=>{if(!codeTyped)code.value=codeFrom(biz.value);});
+    code.addEventListener('input',()=>{codeTyped=true;code.value=codeFrom(code.value);});
+    const tz=selectOf('data-start-tz',timeZones().map(z=>[z,z.replace(/_/g,' ')]),timeZones()[0]);
+    const cur=selectOf('data-start-currency',CURRENCIES,'INR');
+    if(!signedIn){w.appendChild(name);w.appendChild(email);w.appendChild(pass);}
+    else{w.appendChild(name);w.appendChild(div({style:{fontSize:12.5,color:'var(--muted)'}},`You will sign in as ${cloudStatus().email}.`));}
+    w.appendChild(label('Your business'));w.appendChild(biz);
+    w.appendChild(code);
+    w.appendChild(div({style:{fontSize:11.5,color:'var(--muted)',lineHeight:1.45}},
+      'Your staff type the account code when they sign in. 2 to 12 small letters or digits; it cannot be changed later.'));
+    w.appendChild(label('Time zone'));w.appendChild(tz);
+    w.appendChild(label('Currency'));w.appendChild(cur);
+    if(!signedIn)w.appendChild(div({style:{fontSize:11.5,color:'var(--muted)',lineHeight:1.45}},
+      'Keep this email and password. If you add StayLog to your Home Screen, open it from there and sign in with them (⋯ → Cloud sync).'));
+    w.appendChild(div({style:{fontSize:12.5,color:'var(--danger)',minHeight:18}},sn.err||''));
+    w.appendChild(btn({className:'btn-primary','data-start-go':'1',style:{width:'100%',minHeight:46},disabled:sn.busy,onClick:async()=>{
+      sn.busy=true;sn.err='';render();
+      try{
+        const body={action:'owner-accept',code:startCode,name:name.value.trim(),business:biz.value.trim(),account_code:code.value.trim(),
+          time_zone:tz.value,currency:cur.value,...(signedIn?{}:{email:email.value.trim(),password:pass.value})};
+        const r=await Y.joinCall(body);
+        if(!signedIn)await C.signIn(email.value.trim(),pass.value);
+        done();closeModal();
+        if(stayActive()){Y.switchAccount(r.account);state.data=await loadDataFromIDB();Y.start();}
+        else{await C.refreshModel();await followModel();}
+        showToast(`Welcome to StayLog${r.business?', '+r.business:''}`);render();
+      }catch(e){sn.busy=false;sn.err=e.message||String(e);render();}
+    }},sn.busy?'Setting up…':'Open my account'));
+    w.appendChild(btn({className:'btn-ghost',style:{width:'100%'},onClick:()=>{done();closeModal();}},'Not now'));
+    return w;
+  };
+  return modal('Welcome to StayLog',content);
+}
+
+// ⋯ → Account settings (owner, the new model). The server checks each value.
+const ac={busy:false,err:''};
+function renderAccountModal(){
+  const Y=window.StayLogSync, S0=acctSettings()||{};
+  const content=()=>{
+    const w=div({'data-account':'1',style:{display:'flex',flexDirection:'column',gap:10}});
+    const label=t=>div({className:'label',style:{marginTop:2}},t);
+    const name=h('input',{type:'text','data-account-name':'1',value:S0.name||'',placeholder:'Business name'});
+    const owner=h('input',{type:'text','data-account-owner':'1',value:S0.owner_name||'',placeholder:'Your name'});
+    const tz=selectOf('data-account-tz',[...new Set([S0.time_zone||'Asia/Kolkata',...timeZones()])].map(z=>[z,z.replace(/_/g,' ')]),S0.time_zone||'Asia/Kolkata');
+    const cur=selectOf('data-account-currency',CURRENCIES.some(c=>c[0]===S0.currency)||!S0.currency?CURRENCIES:[[S0.currency,S0.currency],...CURRENCIES],S0.currency||'INR');
+    w.appendChild(label('Business name'));w.appendChild(name);
+    w.appendChild(label('Your name, as your staff see it'));w.appendChild(owner);
+    w.appendChild(label('Account code'));
+    w.appendChild(div({'data-account-code':'1',style:{fontSize:15,fontWeight:700,letterSpacing:'.04em'}},S0.code||'—'));
+    w.appendChild(div({style:{fontSize:11.5,color:'var(--muted)',lineHeight:1.45}},'Your staff type it when they sign in, so it cannot be changed.'));
+    w.appendChild(label('Time zone'));w.appendChild(tz);
+    w.appendChild(div({style:{fontSize:11.5,color:'var(--muted)',lineHeight:1.45}},'Reminders come at 9 AM here, and “today” on the server follows it.'));
+    w.appendChild(label('Currency'));w.appendChild(cur);
+    // Who pays the house: receipts, payment requests, balance reminders, round off.
+    w.appendChild(label('Guests who pay you directly'));
+    const known=[...new Set(['Direct','Booking.com','Airbnb',...state.data.bookings.map(b=>String(b.source||'').trim()).filter(Boolean),
+      ...(S0.pays_directly_sources||[])])];
+    const on=new Set(S0.pays_directly_sources||['Direct','Booking.com']);
+    const boxes=known.map(src=>{const cb=h('input',{type:'checkbox','data-account-source':src});cb.checked=on.has(src);
+      w.appendChild(h('label',{style:{display:'flex',alignItems:'center',gap:10,minHeight:40,fontSize:13.5}},cb,src));return [src,cb];});
+    w.appendChild(div({style:{fontSize:11.5,color:'var(--muted)',lineHeight:1.45}},
+      'Their bookings get receipts, payment requests and balance reminders. Platforms that collect payment themselves should stay unticked.'));
+    w.appendChild(div({style:{fontSize:12.5,color:'var(--danger)',minHeight:18}},ac.err||''));
+    w.appendChild(btn({className:'btn-primary','data-account-save':'1',style:{width:'100%',minHeight:46},disabled:ac.busy,onClick:async()=>{
+      const sources=boxes.filter(([,cb])=>cb.checked).map(([s])=>s);
+      if(!name.value.trim()){ac.err='The business needs a name.';render();return;}
+      if(!sources.length){ac.err='Tick at least one — Direct, usually.';render();return;}
+      ac.busy=true;ac.err='';render();
+      try{
+        await Y.saveSettings({name:name.value.trim(),owner_name:owner.value.trim()||null,time_zone:tz.value,currency:cur.value,pays_directly_sources:sources});
+        ac.busy=false;closeModal();showToast('Account settings saved');render();
+      }catch(e){ac.busy=false;ac.err=e.message||String(e);render();}
+    }},ac.busy?'Saving…':'Save'));
+    return w;
+  };
+  return modal('Account settings',content);
+}
+
+// ⋯ → Invite a new owner (a platform admin only): a link for someone to open
+// their own StayLog account. Public sign-up stays off; this is the only way in.
+const ow={list:null,loading:false,err:'',busy:false,link:''};
+async function loadOwnerInvites(){
+  ow.loading=true;
+  try{ow.list=await window.StayLogSync.platformInvites();ow.err='';}catch(e){ow.err=e.message||String(e);}
+  ow.loading=false;if(state.modal==='owners')render();
+}
+const startLink=code=>`${location.origin}${location.pathname}#start=${code}`;
+async function shareStart(code,label){
+  const url=startLink(code);
+  const text=`${label?label+', y':'Y'}ou're invited to set up StayLog for your homestay. Open this link on your phone (it works once, for 14 days): ${url}`;
+  if(navigator.share){try{await navigator.share({text});return;}catch(e){if(e&&e.name==='AbortError')return;}}
+  try{await navigator.clipboard.writeText(url);showToast('Invite link copied');}catch(e){ow.link=url;render();}
+}
+function renderOwnerInvitesModal(){
+  if(!ow.list&&!ow.loading&&!ow.err)loadOwnerInvites();
+  const content=()=>{
+    const w=div({'data-owners':'1',style:{display:'flex',flexDirection:'column',gap:10}});
+    w.appendChild(div({style:{fontSize:13,color:'var(--muted)',lineHeight:1.5}},
+      'Each link opens one new account, whose owner sees only their own homestay. It works once, for 14 days.'));
+    const who=h('input',{type:'text',placeholder:'Who it is for (e.g. Asha, Goa)','data-owners-label':'1'});
+    w.appendChild(who);
+    w.appendChild(btn({className:'btn-primary','data-owners-new':'1',style:{width:'100%'},disabled:ow.busy,onClick:async()=>{
+      ow.busy=true;render();
+      try{const code=await window.StayLogSync.platformInvite(who.value.trim());ow.busy=false;await loadOwnerInvites();await shareStart(code,who.value.trim());}
+      catch(e){ow.busy=false;ow.err=e.message||String(e);render();}
+    }},ow.busy?'Making the link…':'Make an invite link'));
+    if(ow.link)w.appendChild(div({'data-owners-link':'1',style:{fontSize:12,wordBreak:'break-all',userSelect:'all'}},ow.link));
+    if(ow.err)w.appendChild(div({style:{fontSize:12.5,color:'var(--danger)'}},ow.err));
+    const now=Date.now();
+    (ow.list||[]).forEach(i=>{
+      const state_=i.used_by?'Used':Date.parse(i.expires_at)<=now?'Expired or withdrawn':'Waiting';
+      const row=div({'data-owner-invite':i.code,style:{border:'1px solid var(--border)',borderRadius:'var(--radius-sm)',padding:'10px 12px'}},
+        div({style:{display:'flex',justifyContent:'space-between',gap:8}},div({style:{fontWeight:700,fontSize:14}},i.label||'(no name)'),
+          div({style:{fontSize:12,color:state_==='Waiting'?'var(--accent)':'var(--muted)',fontWeight:600}},state_)),
+        div({style:{fontSize:11.5,color:'var(--muted)',marginTop:2}},`Made ${fmtDate(String(i.created_at).slice(0,10))}`));
+      if(state_==='Waiting')row.appendChild(div({style:{display:'flex',gap:8,marginTop:8}},
+        btn({className:'btn-ghost btn-sm','data-owner-share':i.code,onClick:()=>shareStart(i.code,i.label)},'Share link'),
+        btn({className:'btn-ghost btn-sm','data-owner-withdraw':i.code,onClick:async()=>{
+          if(!confirm('Withdraw this invite? The link stops working.'))return;
+          try{await window.StayLogSync.withdrawPlatformInvite(i.code);await loadOwnerInvites();}catch(e){alert(e.message||e);}
+        }},'Withdraw')));
+      w.appendChild(row);
+    });
+    return w;
+  };
+  return modal('Invite a new owner',content);
+}
+
+// The first-run guide (v71): on Home for the owner of a new account (not one
+// moved in from the old app), until every step is done or it is hidden.
+// Each step's tick is worked out from the data now, never stored.
+const GUIDE_KEY='staylog_guide_hidden:';
+function guideSteps(){
+  const D=state.data, P=D.properties, Y=window.StayLogSync;
+  return [
+    ['prop','Add your property','Its name, rooms and base tariff',P.length>0,()=>setState({modal:'addProp',editItem:null})],
+    ['times','Check-in times and house rules','What guests are sent with their confirmation',P.some(p=>p.checkinTime||(p.houseRules||[]).length||p.welcomeText),
+      ()=>P[0]&&setState({modal:'addProp',editItem:P[0]})],
+    ['pay','Payment details','A UPI ID or bank details, for payment requests',P.some(p=>p.upiId||p.bankDetails),()=>P[0]&&setState({modal:'addProp',editItem:P[0]})],
+    ['cal','Calendar links','Airbnb and Booking.com stays come in by themselves',!!(Y&&Y.events&&Y.events().length),()=>setState({modal:'cloud'})],
+    ['staff','Your staff','Wages, and a login for their own page',D.staff.length>0,()=>setState({tab:'loans'})],
+    ['push','Notifications on this phone','Arrivals, balances and new bookings',!!pushUI.sub,()=>setState({modal:'menu'})],
+    ['backup','An encrypted backup','A copy only you can open',!!(bkStatus().lastAt),openBackupPanel],
+  ];
+}
+function guideCard(){
+  const S0=acctSettings();
+  if(!stayActive()||!isOwner()||!S0||S0.migrated_from)return null;
+  const acct=window.StayLogSync.model().account;
+  try{if(localStorage.getItem(GUIDE_KEY+acct))return null;}catch(e){}
+  const steps=guideSteps(), left=steps.filter(x=>!x[3]).length;
+  if(!left)return null;
+  const card=div({className:'card','data-guide':'1',style:{padding:'13px 14px'}});
+  card.appendChild(div({style:{display:'flex',alignItems:'baseline',justifyContent:'space-between',gap:8}},
+    div({className:'kicker'},'Getting started'),div({style:{fontSize:12,color:'var(--muted)'}},`${steps.length-left} of ${steps.length} done`)));
+  steps.forEach(([k,title,sub,done,go])=>card.appendChild(btn({'data-guide-step':k,'data-done':done?'1':'0',onClick:done?null:go,
+    style:{display:'flex',alignItems:'center',gap:10,width:'100%',textAlign:'left',background:'none',border:'none',padding:'8px 0',minHeight:44,
+      color:'var(--text)',opacity:done?.6:1}},
+    ico(done?'circle-check':'circle',{style:{fontSize:20,color:done?'var(--accent)':'var(--light)',flexShrink:0}}),
+    div({style:{flex:1,minWidth:0}},div({style:{fontSize:14,fontWeight:600,textDecoration:done?'line-through':'none'}},title),
+      div({style:{fontSize:12,color:'var(--muted)'}},sub)),
+    done?null:ico('chevron-right',{style:{color:'var(--light)'}}))));
+  card.appendChild(btn({'data-guide-hide':'1',className:'btn-sm',style:{background:'none',border:'none',color:'var(--muted)',fontSize:12.5,padding:'6px 0 0'},
+    onClick:()=>{try{localStorage.setItem(GUIDE_KEY+acct,new Date().toISOString());}catch(e){}render();}},'Hide this guide'));
+  return card;
 }
 
 function renderNotesPickModal(){
@@ -2199,7 +2436,7 @@ function prepareSignature(file){
 // button does not appear.
 const RECEIPT_SOURCES = new Set(['Direct','Booking.com']);
 const bookingSource = b => String(b.source||'').trim();
-const canReceipt = b => RECEIPT_SOURCES.has(bookingSource(b));
+const canReceipt = b => directSources().has(bookingSource(b));
 
 // ─── Who pays us, and what they still owe ─────────────────────────────────────
 // The one rule for anything about money in a guest message. Direct and
@@ -2208,7 +2445,10 @@ const canReceipt = b => RECEIPT_SOURCES.has(bookingSource(b));
 // told they owe money — that was wrong here, and it is gone. Airbnb and the
 // other platforms take payment themselves: their guests are never told a
 // balance and never sent payment details. A booking with no source is direct.
-const paysUsDirectly = b => RECEIPT_SOURCES.has(bookingSource(b)||'Direct');
+// v71: in the new model the account's own list (Account settings), the same
+// one the server's balance and receipt rules use.
+const directSources=()=>{const s=acctSettings();return s&&Array.isArray(s.pays_directly_sources)&&s.pays_directly_sources.length?new Set(s.pays_directly_sources):RECEIPT_SOURCES;};
+const paysUsDirectly = b => directSources().has(bookingSource(b)||'Direct');
 // ─── The money rule ───────────────────────────────────────────────────────────
 // Round off, for guests who pay us directly: signed rupees settled without
 // being paid. Positive = what we let go (₹4,632.47 billed, ₹4,630 taken),
@@ -2316,7 +2556,8 @@ function ensureReceiptNo(b){
 
 // jsPDF's built-in fonts are WinAnsi encoded and have no rupee glyph, so a
 // bare ₹ comes out as a blank box. Spelled out instead.
-const fmtCurPdf=n=>'Rs. '+Number(n||0).toLocaleString('en-IN',moneyDigits(n||0));
+// jsPDF's fonts have no ₹ (or most symbols): "Rs." for rupees, the currency code otherwise.
+const fmtCurPdf=n=>(curCode()==='INR'?'Rs. ':curCode()+' ')+Number(n||0).toLocaleString(curCode()==='INR'?'en-IN':'en',moneyDigits(n||0));
 
 // Which stamp a booking earns. Kept out of the PDF builder so it can be
 // checked directly: rotated, letter-spaced text does not survive extraction
@@ -2786,7 +3027,7 @@ function markBookingPaid(b){
   if(!(due>0))return;
   const ans=prompt(`Amount received? (balance ${fmtCur(due)})`,String(due));
   if(ans==null)return;
-  const amt=r2(String(ans).replace(/[₹,\s]/g,''));
+  const amt=r2(String(ans).replace(/[^\d.\-]/g,''));
   if(!(amt>0)){alert('Enter the amount received, in rupees.');return;}
   mutateData(d=>{const x=d.bookings.find(y=>y.id===b.id); if(!x)return;
     x.paid=r2(Number(x.paid||0)+amt);
@@ -3545,11 +3786,14 @@ function renderCloudModal(){
       wrap.appendChild(go);
       // Invited, and not joined yet: paste the link here (v67).
       const invBox=div({'data-invite-paste':'1',style:{marginTop:6,paddingTop:12,borderTop:'1px solid var(--border-soft)',display:'flex',flexDirection:'column',gap:8}},
-        div({style:{fontSize:12.5,color:'var(--muted)',lineHeight:1.5}},'Invited as a manager and not joined yet? Paste the invite link here.'));
+        div({style:{fontSize:12.5,color:'var(--muted)',lineHeight:1.5}},'Invited to StayLog and not joined yet? Paste the invite link here.'));
       const lk=h('input',{type:'url',placeholder:'Invite link','data-invite-paste-input':'1',autocapitalize:'none',spellcheck:false});
       invBox.appendChild(lk);
       invBox.appendChild(btn({className:'btn-ghost','data-invite-paste-go':'1',style:{width:'100%'},onClick:()=>{
-        const m=/(?:join=)?([A-Za-z0-9_-]{16,64})\s*$/.exec(String(lk.value||'').trim());
+        const raw=String(lk.value||'').trim();
+        const st=/start=([A-Za-z0-9_-]{16,64})\s*$/.exec(raw);
+        if(st){takeStart(st[1]);setState({modal:'start'});return;}           // a new owner's invite (v71)
+        const m=/(?:join=)?([A-Za-z0-9_-]{16,64})\s*$/.exec(raw);
         if(!m){alert('That does not look like an invite link. Copy the whole link from the message and paste it here.');return;}
         joinCode=m[1];try{sessionStorage.setItem('staylog_join',joinCode);}catch(e){}
         Object.assign(jn,{peek:null,err:'',busy:false,loaded:false});
@@ -3573,7 +3817,7 @@ function renderCloudModal(){
     wrap.appendChild(sync);
 
     wrap.appendChild(div({style:{fontSize:12,color:'var(--muted)',lineHeight:1.5}},
-      'Syncs on its own a few seconds after any change, and again when you come back online. Only dates, guest counts, property names and Laxmi\u2019s wages go up; names, phone numbers, amounts and notes stay on this phone and in the encrypted backup.'));
+      'Syncs on its own a few seconds after any change, and again when you come back online. Only dates, guest counts, property names and staff wages go up; names, phone numbers, amounts and notes stay on this phone and in the encrypted backup.'));
 
     // ── Encrypted backup ─────────────────────────────────────────────────────
     { const b=bkStatus();
@@ -3585,10 +3829,10 @@ function renderCloudModal(){
           div({style:{fontSize:12,color:b.lastError?'var(--danger)':'var(--muted)',marginTop:1}},bkSubtitle())),
         ico('chevron-right',{style:{fontSize:16,color:'var(--light)'}}))); }
 
-    // No "replace this phone from the cloud": the cloud holds only what Laxmi's
+    // No "replace this phone from the cloud": the cloud holds only what the staff page
     // page and the reminders need, so a pull would wipe the phone.
     wrap.appendChild(div({'data-new-phone':'1',style:{fontSize:12,color:'var(--muted)',lineHeight:1.5}},
-      'New phone? Sign in, then Encrypted backup → Restore from backup. The cloud itself keeps only what Laxmi\u2019s page and the reminders need.'));
+      'New phone? Sign in, then Encrypted backup → Restore from backup. The cloud itself keeps only what the staff page and the reminders need.'));
 
     wrap.appendChild(btn({className:'btn-danger',style:{width:'100%'},onClick:async()=>{
       if(!confirm('Sign out of the cloud? Your data stays on this phone.'))return;
@@ -3763,6 +4007,8 @@ function renderDashboard(){
   const allE=filterProp==='all'?data.expenses:data.expenses.filter(e=>e.propertyId===filterProp);
   const props=filterProp==='all'?data.properties:data.properties.filter(p=>p.id===filterProp);
   const wrap=div({style:{padding:'12px 12px 0',display:'flex',flexDirection:'column',gap:11}});
+  const guide=guideCard();
+  if(guide)wrap.appendChild(guide);
 
   if(data.properties.length===0){
     wrap.appendChild(div({style:{textAlign:'center',padding:'64px 20px'}},
@@ -4766,7 +5012,7 @@ function loanAnalysis(loans,t){
     const bars=div({style:{display:'flex',alignItems:'flex-end',gap:8,height:96}});
     buckets.forEach(b=>{
       bars.appendChild(div({style:{flex:1,display:'flex',flexDirection:'column',alignItems:'center',gap:3}},
-        div({style:{fontSize:9.5,color:'var(--muted)',fontWeight:600,height:12}},b.v>0?'₹'+Math.round(b.v/1000)+'k':''),
+        div({style:{fontSize:9.5,color:'var(--muted)',fontWeight:600,height:12}},b.v>0?curSym()+Math.round(b.v/1000)+'k':''),
         div({style:{width:'100%',display:'flex',alignItems:'flex-end',height:60}},
           div({style:{width:'64%',margin:'0 auto',background:'var(--accent)',opacity:0.85,borderRadius:'3px 3px 0 0',height:Math.max(2,(b.v/maxV)*58)+'px'}})),
         div({style:{fontSize:9.5,color:'var(--muted)'}},MONTH_SHORT[b.m])
@@ -4933,7 +5179,7 @@ function renderSettleModal(){
           lSel.addEventListener('change',e=>{ln.loanId=e.target.value;ln.amt=defaultCut(ln.loanId);buildLoanBlock();refreshTotals();});
           loanBlock.appendChild(lSel);
         }
-        loanBlock.appendChild(div({className:'label'},'Instalment to deduct (₹)'));
+        loanBlock.appendChild(div({className:'label'},`Instalment to deduct (${curSym()})`));
         const dInp=h('input',{type:'number','data-loan-amt':'1',value:ln.amt||''});
         dInp.addEventListener('input',e=>{ln.amt=e.target.value;refreshTotals();});
         loanBlock.appendChild(dInp);
@@ -4990,7 +5236,7 @@ function renderStaffModal(){
   const f=isEdit?{...editItem}:{name:'',role:'',phone:'',monthlySalary:'',dailyWage:'',active:true,joinedOn:today()};
   const content=()=>{
     const wrap=div({style:{display:'flex',flexDirection:'column',gap:11}});
-    [['name','Staff name *','text'],['role','Role (caretaker, cook…)','text'],['phone','Phone number','tel'],['monthlySalary','Monthly salary (₹)','number'],['dailyWage','Daily wage (₹)','number'],['checkoutWage','Checkout-day wage (₹)','number'],['utensilRate','Utensil cleaning rate (₹)','number']].forEach(([k,ph,t])=>{
+    [['name','Staff name *','text'],['role','Role (caretaker, cook…)','text'],['phone','Phone number','tel'],['monthlySalary',`Monthly salary (${curSym()})`,'number'],['dailyWage',`Daily wage (${curSym()})`,'number'],['checkoutWage',`Checkout-day wage (${curSym()})`,'number'],['utensilRate',`Utensil cleaning rate (${curSym()})`,'number']].forEach(([k,ph,t])=>{
       const inp=h('input',{type:t,placeholder:ph,value:f[k]??''});inp.addEventListener('input',e=>f[k]=e.target.value);wrap.appendChild(inp);
     });
     wrap.appendChild(div({style:{fontSize:12,color:'var(--muted)',marginTop:-4,lineHeight:'16px'}},
@@ -5056,10 +5302,10 @@ function renderLoanModal(){
       pSel.addEventListener('change',e=>f.propertyId=e.target.value);wrap.appendChild(pSel);
     }
 
-    const amtInp=h('input',{type:'number',placeholder:'Loan amount (₹) *',value:f.principal||''});
+    const amtInp=h('input',{type:'number',placeholder:`Loan amount (${curSym()}) *`,value:f.principal||''});
     amtInp.addEventListener('input',e=>{f.principal=e.target.value;refreshHint();});wrap.appendChild(amtInp);
 
-    const instInp=h('input',{type:'number',placeholder:'Monthly instalment (₹) *',value:f.installmentAmount||''});
+    const instInp=h('input',{type:'number',placeholder:`Monthly instalment (${curSym()}) *`,value:f.installmentAmount||''});
     instInp.addEventListener('input',e=>{f.installmentAmount=e.target.value;refreshHint();});wrap.appendChild(instInp);
 
     const dates=div({style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}});
@@ -5126,7 +5372,7 @@ function renderRepaymentModal(){
     ));
     wrap.appendChild(div({style:{fontSize:12.5,color:'var(--muted)',lineHeight:1.5}},
       'Use this for cash or transfer repaid directly. Instalments cut from a salary payout are recorded from the expense entry instead.'));
-    const amtInp=h('input',{type:'number',placeholder:'Amount received (₹) *',value:f.amount||''});
+    const amtInp=h('input',{type:'number',placeholder:`Amount received (${curSym()}) *`,value:f.amount||''});
     amtInp.addEventListener('input',e=>f.amount=e.target.value);wrap.appendChild(amtInp);
     const dWrap=div({},div({className:'label'},'Received on'));
     const dInp=h('input',{type:'date',value:f.date});dInp.addEventListener('change',e=>f.date=e.target.value);dWrap.appendChild(dInp);wrap.appendChild(dWrap);
@@ -5188,7 +5434,7 @@ function renderPropertyModal(){
     const heading=t=>div({className:'kicker',style:{marginTop:6}},t);
 
     [['name','Property name *','text'],['location','Location / Address','text'],
-     ['rooms','Number of rooms','number'],['pricePerNight','Base price per night (₹)','number']]
+     ['rooms','Number of rooms','number'],['pricePerNight',`Base price per night (${curSym()})`,'number']]
       .forEach(([k,ph,t])=>wrap.appendChild(field(k,ph,t)));
     wrap.appendChild(area('description','Notes / description'));
 
@@ -5367,8 +5613,8 @@ function renderBookingModal(){
     // up to ROUND_OFF_LIMIT either way fills Round off; once it is typed by
     // hand (roundOffHand, kept on the booking) it is never filled again.
     const amtRow=div({style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}});
-    const amtInp=h('input',{type:'number',step:'any',placeholder:'Total (₹)','data-total':'1',value:f.totalAmount||''});
-    const paidInp=h('input',{type:'number',step:'any',placeholder:'Payment received (₹)','data-received':'1',value:f.paid||''});
+    const amtInp=h('input',{type:'number',step:'any',placeholder:`Total (${curSym()})`,'data-total':'1',value:f.totalAmount||''});
+    const paidInp=h('input',{type:'number',step:'any',placeholder:`Payment received (${curSym()})`,'data-received':'1',value:f.paid||''});
     amtRow.appendChild(div({},div({className:'label'},'Total'),amtInp));
     amtRow.appendChild(div({},div({className:'label'},'Payment received'),paidInp));
     wrap.appendChild(amtRow);
@@ -5376,7 +5622,7 @@ function renderBookingModal(){
       value:Number(f.roundOff)?r2(f.roundOff).toFixed(2):''});
     const roWrap=div({'data-round-off-row':'1'},div({className:'label'},'Round off'),roInp,
       div({style:{fontSize:11.5,color:'var(--muted)',marginTop:3,lineHeight:1.45}},
-        `A gap of up to ₹${ROUND_OFF_LIMIT} either way fills in by itself. + is what you let go, − what the guest paid over.`));
+        `A gap of up to ${curSym()}${ROUND_OFF_LIMIT} either way fills in by itself. + is what you let go, − what the guest paid over.`));
     const moneyLine=div({'data-money-line':'1',style:{fontSize:13,fontWeight:600,minHeight:18}});
     wrap.appendChild(roWrap); wrap.appendChild(moneyLine);
     const showMoney=()=>{
@@ -5400,7 +5646,7 @@ function renderBookingModal(){
       if(f.checkIn&&f.checkOut&&!isEdit){
         const n=diffDays(f.checkIn,f.checkOut);
         const prop=data.properties.find(p=>p.id===f.propertyId);
-        if(n>0&&prop?.pricePerNight){const s=n*Number(prop.pricePerNight);f.totalAmount=s;amtInp.value=s;autoFill();showMoney();nightsInfo.textContent=`${n} nights · Suggested: ₹${s.toLocaleString('en-IN')}`;}
+        if(n>0&&prop?.pricePerNight){const s=n*Number(prop.pricePerNight);f.totalAmount=s;amtInp.value=s;autoFill();showMoney();nightsInfo.textContent=`${n} nights · Suggested: ${fmtCur(s)}`;}
         else if(n>0)nightsInfo.textContent=`${n} nights`;
       }
     }
@@ -5489,7 +5735,7 @@ function renderExpenseModal(){
     propSel.appendChild(h('option',{value:'',selected:!f.propertyId},'Shared — all properties'));
     propSel.addEventListener('change',e=>f.propertyId=e.target.value);wrap.appendChild(propSel);
     const descInp=h('input',{type:'text',placeholder:'Description *',value:f.description||''});descInp.addEventListener('input',e=>f.description=e.target.value);wrap.appendChild(descInp);
-    const amtInp=h('input',{type:'number',placeholder:'Amount (₹) *',value:g.val||''});
+    const amtInp=h('input',{type:'number',placeholder:`Amount (${curSym()}) *`,value:g.val||''});
     amtInp.addEventListener('input',e=>{g.val=e.target.value;updateNet();});wrap.appendChild(amtInp);
     const dateWrap=div({},div({className:'label'},'Date'));
     const dateInp=h('input',{type:'date',value:f.date||today()});dateInp.addEventListener('change',e=>f.date=e.target.value);dateWrap.appendChild(dateInp);wrap.appendChild(dateWrap);
@@ -5582,7 +5828,7 @@ function renderExpenseModal(){
           });
           staffBlock.appendChild(lSel);
         }
-        staffBlock.appendChild(div({className:'label'},'Instalment to deduct (₹)'));
+        staffBlock.appendChild(div({className:'label'},`Instalment to deduct (${curSym()})`));
         const dInp=h('input',{type:'number',value:f.loanDeduction||''});
         dInp.addEventListener('input',e=>{f.loanDeduction=e.target.value;updateNet();});
         staffBlock.appendChild(dInp);
@@ -5690,6 +5936,7 @@ function render(){
   // A tab this login may not open (v65) is never left showing.
   if(!state._loading&&state.tab&&!tabAllowed(state.tab==='calendar'?'bookings':state.tab))state.tab='dashboard';
   if(state.loggedIn&&joinCode&&!state.modal)state.modal='join';
+  if(state.loggedIn&&startCode&&!state.modal)state.modal='start';
   const app=document.getElementById('app');
   if(state._loading){
     app.innerHTML='';
@@ -5740,6 +5987,9 @@ function render(){
   else if(state.modal==='staffLogin'){currentModal=renderStaffLoginModal(); document.body.appendChild(currentModal);}
   else if(state.modal==='team')     {currentModal=renderTeamModal();      document.body.appendChild(currentModal);}
   else if(state.modal==='join')     {currentModal=renderJoinModal();      document.body.appendChild(currentModal);}
+  else if(state.modal==='start')    {currentModal=renderStartModal();     document.body.appendChild(currentModal);}
+  else if(state.modal==='account')  {currentModal=renderAccountModal();   document.body.appendChild(currentModal);}
+  else if(state.modal==='owners')   {currentModal=renderOwnerInvitesModal();document.body.appendChild(currentModal);}
   else if(state.modal==='inbox')    {currentModal=renderInboxModal();     document.body.appendChild(currentModal);}
 }
 
