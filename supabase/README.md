@@ -22,6 +22,11 @@ Built beside the tables above; the app does not use it yet, and nothing in
 To undo: `stay/rollback-phase1.sql` (refuses once an account exists in
 `stay`), then remove `stay` from Exposed schemas.
 
+**Phase 4 (v63) — properties as data.** After merging: `stay/06-property-texts.sql`
+(fills the house rules, house notes and welcome lines of your properties with
+the texts the app used to carry, word for word; only empty fields). Its last
+query lists each property with what it now has.
+
 **Phase 3 (v62) — moving in and switching over.** In this order:
 
 1. Merge the PR (the app becomes v62; nothing changes yet).

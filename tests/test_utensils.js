@@ -228,22 +228,21 @@ const STANDING=(over)=>Object.assign({name:'Laxmi',
   ok('no page errors', errs.length===0, errs);
   await ctx.close(); }
 
-console.log('\n— nothing guest-facing moved —');
-{ const {ctx,page}=await open(SEED({}));
-  const notes=await page.evaluate(()=>HOUSE_NOTES);
-  const v=notes.find(n=>n[0]==='Vessels & Utensils');
-  ok('the house notes still contain the original utensil sentence, word for word', !!v&&v[1].includes(UTENSIL_SENTENCE), v);
-  ok('and that note is unchanged as a whole',
-     v&&v[1]==='As mentioned in the house rules, please clean vessels after use. '+UTENSIL_SENTENCE, v);
-  await ctx.close();
-  // every guest-facing block is identical to the last release
-  let base='';try{base=execFileSync('git',['show','origin/main:app.js'],{cwd:ROOT,encoding:'utf8',stdio:['ignore','pipe','ignore']});}catch{}
-  if(base){
-    const now=fs.readFileSync(ROOT+'/app.js','utf8');
-    const block=(s,a,b)=>{const i=s.indexOf(a);return i<0?null:s.slice(i,s.indexOf(b,i));};
-    ok('the house notes block is byte-for-byte as before',
-       block(now,'const HOUSE_NOTES=[','];')===block(base,'const HOUSE_NOTES=[','];'));
-  } else console.log('  (no origin/main to compare against; skipped the byte-for-byte check)'); }
+console.log('\n— the house notes, word for word —');
+// v63: the house notes are property data. Raaya Vasyam's are carried across by
+// supabase/stay/06-property-texts.sql, word for word from the last release that
+// had them in the code (tests/fixtures/rv-texts.json).
+{ const fx=JSON.parse(fs.readFileSync(ROOT+'/tests/fixtures/rv-texts.json','utf8'));
+  const v=fx.houseNotes.find(n=>n[0]==='Vessels & Utensils');
+  ok('the original utensil note, word for word', !!v&&v[1]==='As mentioned in the house rules, please clean vessels after use. '+UTENSIL_SENTENCE, v);
+  const sql=fs.readFileSync(ROOT+'/supabase/stay/06-property-texts.sql','utf8');
+  ok('carried into the property by 06-property-texts.sql, every note as it was', sql.includes('$rv$'+fx.seed.houseNotes+'$rv$')
+     && fx.seed.houseNotes===fx.houseNotes.map(([t,b])=>t+'\n'+b).join('\n\n'));
+  ok('…the utensil sentence in it, word for word', sql.includes(UTENSIL_SENTENCE));
+  const { ctx, page } = await open(SEED({}));
+  const notes = await page.evaluate(n=>houseNotesOf({houseNotes:n}), fx.seed.houseNotes);
+  ok('the app reads them back as the same notes', JSON.stringify(notes)===JSON.stringify(fx.houseNotes));
+  await ctx.close(); }
 
 console.log('\n— the release is stamped —');
 { const app=fs.readFileSync(ROOT+'/app.js','utf8'), sw=fs.readFileSync(ROOT+'/sw.js','utf8');

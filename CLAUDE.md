@@ -263,6 +263,44 @@ Agreed decisions (his answers, 15 Nov 2026):
   `checkout-wage.sql`, `utensils.sql`) after the switch: they would replace
   the wrappers.
 
+### Phase 4 — v63 (properties as data)
+- **Raaya Vasyam's texts left the code** (spec §11): the six house rules
+  (confirmation PDF), the house notes (house notes PDF, with the utensil
+  sentence), the welcome lines of "Welcome & house info" (ending "Enjoy
+  Udupi"), and the 1:00 PM / 11:00 AM times. They are property fields now:
+  `houseRules` (array; each "Title\nDescription"), `houseNotes` (paragraphs
+  separated by a blank line, title on the first line), `welcomeText`,
+  `checkinTime` / `checkoutTime` ("HH:MM", shown "1:00 PM") — the `stay`
+  columns `house_rules`, `house_notes`, `welcome_text`, `checkin_time`,
+  `checkout_time`. **`supabase/stay/06-property-texts.sql`** carried his
+  texts into the moved-in account's properties word for word (only empty
+  fields; twice = same). `tests/fixtures/rv-texts.json` holds the texts and
+  the four messages as the last release made them; `test_property_data.js`
+  checks every message is identical (only "payable at check-in" →
+  "payable before check-out", spec §11) and that app.js no longer has them.
+- Helpers: `checkinTime(prop)`, `checkoutTime(prop)` (default 13:00 / 11:00),
+  `houseRulesOf` (neutral `DEFAULT_RULES` when none), `houseNotesOf` (none →
+  the PDF has only the welcome and sign-off), `welcomeOf` (`DEFAULT_WELCOME`),
+  `textBlocks`, `HomeName(prop)` ("Our homestay" — no "Raaya Vasyam"
+  fallback in the code).
+- Property form: **The stay** (check-in / check-out times, **Rented as a whole
+  unit**, **Receipt series** — up to 6 letters/digits, unique across the
+  account's properties, default the initials as `stay.receipt_prefix_of`)
+  and **Guest texts** (rules, notes, welcome; one paragraph each, saved as
+  typed, untouched fields kept exactly).
+- **Occupancy** (`occupancyOf`) in room-nights: a whole-unit property's
+  booked night fills all its rooms.
+- **The property picker remembers** its choice (localStorage `staylog_prop`;
+  a property no longer there → All). Opening a notification switches to its
+  booking's property.
+- **Shared expenses** (no property): "Shared — all properties" in the
+  expense form (the default for a new expense under All properties with more
+  than one property); the Expenses list for one property shows its own plus
+  Shared, labelled, with a "Shared only" filter; Home and Reports for one
+  property leave Shared out and say so; Reports for All include it, with a
+  "Shared costs" line under Property Performance; the CSV says "Shared".
+- **House notes PDF** asks which property under All properties.
+
 ## Deploying
 
 - GitHub Pages serves `main`. Work on a branch and open a PR; Rakshit merges.
@@ -459,8 +497,9 @@ also fetch from Supabase with `cache: 'no-store'` as a second layer.
   `utensils.sql`: run order is setup → attendance → checkout-wage → utensils.
 - **The house notes are guest-facing and stay as written**: "If you’d prefer,
   our househelp can do this for you at a nominal charge of Rs. 100, payable
-  directly to her." `tests/test_utensils.js` checks it word for word and that
-  the whole `HOUSE_NOTES` block is byte-for-byte as on `main`.
+  directly to her." Since v63 they are property data (Phase 4);
+  `tests/test_utensils.js` checks the sentence word for word in
+  `tests/fixtures/rv-texts.json` and in `06-property-texts.sql`.
 
 ## Calendar import (Booking.com / Airbnb)
 
@@ -902,6 +941,7 @@ also fetch from Supabase with `cache: 'no-store'` as a second layer.
     node tests/test_one_phone.js         # v60: one login per phone's data, one phone per account (pause + take over), retired detector, sign-out clears, UUIDs, arrival instructions as data
     node tests/test_sync.js              # phase 2 engine: two devices, field merges, conflicts (money flagged), offline, no delete by absence + brake, receipts, calendar; STAYLOG_PG adds a real apply_change round trip
     node tests/test_sync_app.js          # phase 2 in the app: hashed PIN (old plain one converted), dormant, own storage key, cloud.js stands down, Sync panel, server receipts, stable repayment id
+    node tests/test_property_data.js     # phase 4: texts out of the code (messages word for word), neutral defaults, form, receipt series, whole-unit occupancy, remembered property, Shared expenses, house notes picker (+ 06 SQL with STAYLOG_PG)
     node tests/test_move_app.js          # phase 3 in the app: Move to the new system — copy, compare (match / mismatch), switch, another phone joins, rollback
     node tests/test_notify_stay.js       # notify in the new model: by account, every owner, own devices/prefs/inbox, amounts + pays_directly_sources, marks, test push
     node tests/test_ical_stay.js         # ical-sync in the new model: stay feeds/events by account, Import now = owned accounts only
@@ -958,8 +998,6 @@ areas are changed.
   `.staylog` file), as the Wi-Fi password does; nothing readable leaves the
   phone. Old plain `staylog-backup-*.json` files made before v52 are
   readable: delete any you still have, and keep them out of the repo.
-- The confirmation message still says "(payable at check-in)"; Booking.com and
-  direct guests here may pay any time during the stay. Reword if it confuses.
 
 - Editing a wage re-prices every unpaid, app-priced attendance day to the new
   rate (re-pricing always uses current rates). Confirm that is wanted; if a

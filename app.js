@@ -6,7 +6,7 @@
 // ─── Build ────────────────────────────────────────────────────────────────────
 // Bump BOTH of these together. This date sat at 28 Sept through a dozen
 // releases and was read, reasonably, as proof the upload had not landed.
-const APP_VERSION='v62', APP_BUILT='15 Nov 2026';
+const APP_VERSION='v63', APP_BUILT='15 Nov 2026';
 // The CACHE_NAME of the sw.js released with this app.js. Every release bumps
 // APP_VERSION and CACHE_NAME together, so one is derived from the other rather
 // than being a fourth thing to forget; the tests fail if they ever disagree.
@@ -146,7 +146,7 @@ let state={
   swMismatch:null, swBannerHidden:false,   // the running service worker is not this release's
   tab:'dashboard', modal:null, editItem:null, sendFocus:null,
   filterProp:'all', bookingFilter:'all', expandedBooking:null,
-  loanFilter:'active', expandedLoan:null, showStaffPanel:false, expandedExpense:null,
+  loanFilter:'active', expandedLoan:null, showStaffPanel:false, expandedExpense:null, expShared:false,
   dashMonth:{year:new Date().getFullYear(),month:new Date().getMonth()},
   reportMonth:null,
   calMonth:{year:new Date().getFullYear(),month:new Date().getMonth()},
@@ -971,8 +971,8 @@ async function openStay(o){
     }catch(e){}
     b=findStay(o);
   }
-  if(b){setState({tab:'bookings',bookingFilter:'all',filterProp:'all',expandedBooking:b.id,modal:null,editItem:null,stayHint:null});return;}
-  setState({tab:'bookings',bookingFilter:'all',filterProp:'all',modal:null,editItem:null,expandedBooking:null,
+  if(b){setState({tab:'bookings',bookingFilter:'all',filterProp:b.propertyId||'all',expandedBooking:b.id,modal:null,editItem:null,stayHint:null});return;}
+  setState({tab:'bookings',bookingFilter:'all',filterProp:state.data.properties.some(p=>p.id===o.prop)?o.prop:'all',modal:null,editItem:null,expandedBooking:null,
     stayHint:`The new booking for ${fmtDate(o.in)} is not on this phone yet. It is added at the next sync with a connection.`});
   // The list runs newest check-in first: scroll to where that date falls.
   setTimeout(()=>{const at=[...document.querySelectorAll('[data-checkin]')].find(el=>el.dataset.checkin<=o.in);
@@ -994,7 +994,8 @@ function applyPendingOpen(){
   const b=state.data.bookings.find(x=>x.id===o.open);
   if(!b){setState({tab:'bookings',modal:null,editItem:null});return;}
   const send=['arrival','payment'].includes(o.send)?o.send:'';
-  setState({tab:'bookings',bookingFilter:'all',expandedBooking:b.id,
+  // Opening from a notification switches to the alert's property (v63).
+  setState({tab:'bookings',bookingFilter:'all',expandedBooking:b.id,filterProp:b.propertyId||state.filterProp,
     modal:send?'sendConfirm':null,editItem:send?b:null,sendFocus:send?{id:b.id,kind:send}:null});
 }
 
@@ -1410,7 +1411,9 @@ function renderMenuModal(){
       ?menuRow('cloud','Move to the new system','Copy, compare, then switch — nothing changes until you say so',()=>setState({modal:'move'})):null,
     menuRow('cloud','Cloud sync',cloudMenuSub(),()=>setState({modal:'cloud'})),
     menuRow('notes','House notes PDF','The instructions guests get after check-in',()=>{
-      downloadHouseNotes(data.properties.find(p=>p.id===state.filterProp)||data.properties[0]);closeModal();}),
+      // The chosen property's; with All properties and more than one, ask which (v63).
+      const one=data.properties.find(p=>p.id===state.filterProp)||(data.properties.length===1?data.properties[0]:null);
+      if(one){downloadHouseNotes(one);closeModal();}else setState({modal:'notesPick'});}),
     notificationsSection(),
     themeRow(),
     div({style:{height:6}}),
@@ -1428,6 +1431,11 @@ function renderMenuModal(){
         return el;})())
   );
   return modal('StayLog',content);
+}
+function renderNotesPickModal(){
+  return modal('House notes for which property?',()=>div({'data-notes-pick':'1',style:{display:'flex',flexDirection:'column',gap:6}},
+    ...state.data.properties.map(p=>btn({className:'btn-ghost',style:{width:'100%',minHeight:48,textAlign:'left'},
+      onClick:()=>{downloadHouseNotes(p);closeModal();}},p.name))));
 }
 function renderPropPickerModal(){
   const{data,filterProp}=state;
@@ -1727,18 +1735,40 @@ function bookingCard(b){   // dense row; expands into the full detail
 }
 
 // ─── Guest Confirmation: PDF + WhatsApp ───────────────────────────────────────
-const CHECKIN_TIME='1:00 PM', CHECKOUT_TIME='11:00 AM';
+// ─── Property texts (v63): from the property, with neutral defaults ─────────
+// Check-in and check-out times, house rules, house notes and the welcome lines
+// were written in the code until v63; they are each property's own now
+// (supabase/stay/06-property-texts.sql carried Raaya Vasyam's across word for
+// word). A property that has none yet gets the neutral wording below.
+const DEFAULT_CHECKIN='13:00', DEFAULT_CHECKOUT='11:00';
+function fmtClock(v,fallback){
+  const m=/^(\d{1,2}):(\d{2})/.exec(String(v||'')||'')||/^(\d{1,2}):(\d{2})/.exec(fallback);
+  const h=Number(m[1]), mi=m[2];
+  return `${((h+11)%12)+1}:${mi} ${h<12?'AM':'PM'}`;
+}
+const checkinTime=prop=>fmtClock(prop&&prop.checkinTime,DEFAULT_CHECKIN);
+const checkoutTime=prop=>fmtClock(prop&&prop.checkoutTime,DEFAULT_CHECKOUT);
+// A text of blocks separated by a blank line; each block's first line is its title.
+const textBlocks=t=>String(t||'').replace(/\r/g,'').split(/\n\s*\n/).map(x=>x.trim()).filter(Boolean)
+  .map(x=>{const i=x.indexOf('\n');return i<0?[x,'']:[x.slice(0,i).trim(),x.slice(i+1).trim()];});
+const DEFAULT_RULES=[
+  ['Quiet evenings','Please keep noise down late in the evening, out of respect for the neighbours.'],
+  ['No smoking indoors','Smoking is not allowed inside the house. Thank you for understanding.'],
+  ['Lights and fans off when you go out','Please switch off the lights, fans and air conditioners before heading out.'],
+  ['Leave the kitchen as you found it','Please wash and put back anything you use, so it is ready for the next meal.'],
+];
+const DEFAULT_WELCOME='Make yourself at home, and please leave things as you found them.\n\nAnything you cannot find, just message here. Enjoy your stay.';
+function houseRulesOf(prop){
+  const list=Array.isArray(prop&&prop.houseRules)?prop.houseRules.filter(x=>String(x||'').trim()):[];
+  return list.length?list.map(x=>textBlocks(x)[0]||[String(x),'']):DEFAULT_RULES;
+}
+const houseNotesOf=prop=>textBlocks(prop&&prop.houseNotes);
+const welcomeOf=prop=>String((prop&&prop.welcomeText)||'').trim()?String(prop.welcomeText).replace(/\r/g,''):DEFAULT_WELCOME;
+const homeName=prop=>(prop&&prop.name)||'our homestay';
+const HomeName=prop=>(prop&&prop.name)||'Our homestay';
 const ID_LABELS={Aadhaar:'Aadhaar Card',Passport:'Passport',DrivingLicense:'Driving Licence',
   VoterID:'Voter ID',PAN:'PAN Card',Other:'ID Proof'};
 
-const HOUSE_RULES=[
-  ['Home by 10 PM','Ours is a quiet neighbourhood and the evenings here are wonderfully serene. We kindly ask that everyone is back at the house by 10 PM. It keeps us on good terms with our neighbours and gives you the restful night you deserve after a day of exploring.'],
-  ['A home, not a party venue','This house is meant as a calm, intimate retreat. Please keep gatherings to your own group and avoid large get-togethers or loud events. Good conversation and laughter are always welcome — just keep it cosy.'],
-  ['A smoke-free home','The entire property, indoors and outdoors, is strictly non-smoking. If you do need a smoke, we kindly ask that you step outside the property gates. Thank you for understanding.'],
-  ['Switch off when you step out','When you head out, please turn off the lights, fans and air conditioners. A small habit that makes a real difference — to the environment and to keeping things running smoothly.'],
-  ['A clean kitchen is a happy kitchen','The kitchen is yours to use and enjoy. We only ask that utensils, pots, pans and dishes are washed and put back after use, so the space stays ready for your next meal.'],
-  ['Shoes off at the door','We follow the lovely tradition of leaving footwear outside the entrance. There is a dedicated spot for shoes right at the door — step in and feel at home.'],
-];
 
 // ─── jsPDF, shipped with the app so no CDN is involved ────────────────────────
 const JSPDF_SRC='./vendor/jspdf.umd.min.js';
@@ -1788,7 +1818,7 @@ async function buildConfirmationPDF(b){
   // Header
   y=M+12;
   doc.setFont('times','normal'); doc.setFontSize(25); doc.setTextColor(...GREEN);
-  doc.text(prop?.name||'Raaya Vasyam',W/2,y,{align:'center'}); y+=15;
+  doc.text(HomeName(prop),W/2,y,{align:'center'}); y+=15;
   doc.setFont('helvetica','normal'); doc.setFontSize(8.5); doc.setTextColor(...GREY);
   doc.text('BOOKING CONFIRMATION',W/2,y,{align:'center',charSpace:1.6}); y+=16;
   rule(); y+=22;
@@ -1841,8 +1871,8 @@ async function buildConfirmationPDF(b){
     doc.setFont('helvetica','normal'); doc.setFontSize(8.5); doc.setTextColor(205,226,213);
     doc.text(date,cx,y+53,{align:'center'});
   };
-  block('Check-in from',CHECKIN_TIME,fmtDate(b.checkIn),M+CW*0.27);
-  block('Check-out by',CHECKOUT_TIME,fmtDate(b.checkOut),M+CW*0.73);
+  block('Check-in from',checkinTime(prop),fmtDate(b.checkIn),M+CW*0.27);
+  block('Check-out by',checkoutTime(prop),fmtDate(b.checkOut),M+CW*0.73);
   doc.setDrawColor(120,170,142); doc.setLineWidth(.8); doc.line(M+CW/2,y+14,M+CW/2,y+48);
   y+=78;
 
@@ -1850,7 +1880,7 @@ async function buildConfirmationPDF(b){
   sectionLabel('A few things to keep in mind');
   text('These are simple guidelines that keep the stay comfortable for you, for guests after you, and for our neighbours. We appreciate your thoughtfulness.',
     M,10,{color:[78,84,73],lead:1.5}); y+=12;
-  HOUSE_RULES.forEach(([title,desc])=>{
+  houseRulesOf(prop).forEach(([title,desc])=>{
     ensure(58);
     doc.setFillColor(...GREEN); doc.circle(M+3,y-3.5,2.6,'F');
     text(title,M+16,10.5,{style:'bold',color:GREEN,width:CW-16});
@@ -2050,9 +2080,11 @@ function financialYear(iso){
   return `${start}-${String((start+1)%100).padStart(2,'0')}`;
 }
 function receiptPrefix(prop){
+  const own=String(prop?.receiptPrefix||'').trim().toUpperCase();
+  if(own)return own;
   const initials=String(prop?.name||'').split(/\s+/).filter(Boolean)
     .map(w=>w[0]).join('').replace(/[^A-Za-z]/g,'').toUpperCase().slice(0,3);
-  return initials||'RV';
+  return initials||'R';           // as stay.receipt_prefix_of
 }
 // Sequential within the financial year, and never reused: the highest number
 // already issued decides the next one, so deleting a booking leaves a gap
@@ -2140,7 +2172,7 @@ async function buildReceiptPDF(b){
   // ── Masthead ───────────────────────────────────────────────────────────────
   y=M+6;
   doc.setFont('times','normal'); doc.setFontSize(29); doc.setTextColor(...DEEP);
-  doc.text(prop?.name||'Raaya Vasyam',W/2,y,{align:'center'});
+  doc.text(HomeName(prop),W/2,y,{align:'center'});
   y+=13;
   if(prop?.location){
     doc.setFont('helvetica','normal'); doc.setFontSize(8); doc.setTextColor(...GREY);
@@ -2265,7 +2297,7 @@ async function buildReceiptPDF(b){
   // Balancing the stamp: the signature block an Indian receipt is expected to
   // carry, and the reason the left of this band is not simply empty.
   doc.setFont('helvetica','normal'); doc.setFontSize(9); doc.setTextColor(...GREY);
-  doc.text(`For ${prop?.name||'Raaya Vasyam'}`,M,bandTop+16);
+  doc.text(`For ${HomeName(prop)}`,M,bandTop+16);
   const sigUri=prop?.signature||'', sigRatio=Number(prop?.signatureRatio)||1.1;
   const SIG_W=86, SIG_H=Math.round(SIG_W*sigRatio);
   let lineY=bandTop+54, labelGap=13;
@@ -2390,11 +2422,11 @@ function whatsappText(b){
   L.push(`*Booking confirmed — ${prop?.name||'our homestay'}*`,'');
   L.push(`Namaste ${firstName}, your stay is confirmed. We're looking forward to hosting you.`,'');
   L.push(`*Reference:* SL-${b.id.slice(-6).toUpperCase()}`);
-  L.push(`*Check-in:* ${fmtDate(b.checkIn)} from ${CHECKIN_TIME}`);
-  L.push(`*Check-out:* ${fmtDate(b.checkOut)} by ${CHECKOUT_TIME}`);
+  L.push(`*Check-in:* ${fmtDate(b.checkIn)} from ${checkinTime(prop)}`);
+  L.push(`*Check-out:* ${fmtDate(b.checkOut)} by ${checkoutTime(prop)}`);
   L.push(`*Stay:* ${nights} night${nights===1?'':'s'} · ${b.guests||1} guest${(b.guests||1)>1?'s':''}`);
   if(prop?.location)L.push(`*Address:* ${prop.location}`);
-  if(isDirect&&total>0)L.push(`*Total:* ${fmtCur(total)}${due>0?` · *Balance due:* ${fmtCur(due)} (payable at check-in)`:' · fully paid'}`);
+  if(isDirect&&total>0)L.push(`*Total:* ${fmtCur(total)}${due>0?` · *Balance due:* ${fmtCur(due)} (payable before check-out)`:' · fully paid'}`);
   L.push('',"I'll send the detailed confirmation right after this. Do reach out any time before your arrival.");
   return L.join('\n');
 }
@@ -2445,7 +2477,7 @@ function arrivalText(b){
   const when=b.checkIn===today()?'today':b.checkIn===addDaysISO(today(),1)?'tomorrow':`on ${fmtDate(b.checkIn)}`;
   const L=[];
   L.push(`*Seeing you ${when} \u2014 ${prop?.name||'our homestay'}*`,'');
-  L.push(`Namaste ${firstNameOf(b)}, everything is ready for your arrival ${when}, any time after ${CHECKIN_TIME}.`,'');
+  L.push(`Namaste ${firstNameOf(b)}, everything is ready for your arrival ${when}, any time after ${checkinTime(prop)}.`,'');
   if(prop?.mapsLink)L.push(`*Getting here:* ${prop.mapsLink}`);
   else if(prop?.location)L.push(`*Address:* ${prop.location}`);
   // How to get in and find the house is property data (v60): typed in the
@@ -2463,12 +2495,7 @@ function stayText(b){
   L.push(`*Welcome in, ${firstNameOf(b)}*`,'');
   L.push('A few things to make the stay easy:','');
   if(prop?.wifiName)L.push(`*Wi-Fi:* ${prop.wifiName}${prop.wifiPassword?` · password *${prop.wifiPassword}*`:''}`);
-  L.push('*Kitchen:* yours to use — we only ask that everything is washed and put back after each use.');
-  L.push('*Stepping out:* please switch off the lights, fans and AC, and pull the door shut behind you.');
-  L.push('*Evenings:* the neighbourhood turns in early, so do keep things quiet and plan to be back by 10 PM.');
-  L.push('*Footwear:* there is a spot at the entrance — shoes stay outside.');
-  L.push('','The house is entirely non-smoking, indoors and out.');
-  L.push('','Anything you cannot find, just message here. Enjoy Udupi.');
+  L.push(welcomeOf(prop));
   return L.join('\n');
 }
 
@@ -2480,7 +2507,7 @@ function departureText(b){
   const pay=paymentBlock(b);
   const L=[];
   L.push(`*Checking out ${when}*`,'');
-  L.push(`${firstNameOf(b)}, a small reminder that check-out is by ${CHECKOUT_TIME} ${when}.`,'');
+  L.push(`${firstNameOf(b)}, a small reminder that check-out is by ${checkoutTime(prop)} ${when}.`,'');
   L.push('On your way out, it would help us a lot if you could:');
   L.push('• Switch off the lights, fans, AC and geyser');
   L.push('• Wash up anything used in the kitchen');
@@ -2616,14 +2643,6 @@ function renderPaidReceiptModal(){
 }
 
 // ─── House notes — the document guests get once they are in ───────────────────
-const HOUSE_NOTES=[
-  ['Hot Water','We rely on solar heating, so on sunny days you\u2019ll have hot water in all bathrooms. As a backup, geysers are installed in the living room bathroom and the 1st floor bedroom bathroom. Their switches (marked 16A) are located just outside the respective bedrooms \u2014 please switch them on about 20\u201330 minutes before use if the solar water isn\u2019t warm enough.'],
-  ['Water Supply','If the water flow stops, it likely means the overhead tank has run dry. Simply switch on the motor, located above the washing machine in the kitchen area. If water still doesn\u2019t resume, please also check the corresponding switch on the MCB board.'],
-  ['Vessels & Utensils','As mentioned in the house rules, please clean vessels after use. If you\u2019d prefer, our househelp can do this for you at a nominal charge of Rs. 100, payable directly to her.'],
-  ['Housekeeping','Our househelp comes daily to clean the house. Please let us know your convenient time \u2014 we\u2019d suggest either 7:30\u20138:00 AM or after 2:00 PM.'],
-  ['Main Gate','Please keep the main gate closed, especially through the night. It keeps the house secure and keeps stray animals out of the compound.'],
-  ['Footwear','Please leave shoes and chappals in the shoe rack rather than outside the door \u2014 stray dogs in the area are known to carry footwear away.'],
-];
 
 async function buildHouseNotesPDF(prop){
   const jsPDF=await loadJsPDF();
@@ -2640,15 +2659,15 @@ async function buildHouseNotesPDF(prop){
 
   y=M+10;
   doc.setFont('times','normal'); doc.setFontSize(25); doc.setTextColor(...GREEN);
-  doc.text(prop?.name||'Raaya Vasyam',W/2,y,{align:'center'}); y+=16;
+  doc.text(HomeName(prop),W/2,y,{align:'center'}); y+=16;
   doc.setFont('helvetica','normal'); doc.setFontSize(8.5); doc.setTextColor(...GREY);
   doc.text('GUEST INSTRUCTIONS & HOUSE NOTES',W/2,y,{align:'center',charSpace:1.5}); y+=16;
   doc.setDrawColor(...LINE); doc.setLineWidth(.7); doc.line(M,y,W-M,y); y+=24;
 
-  text(`Welcome to ${prop?.name||'Raaya Vasyam'}! We\u2019re so glad to have you here. A few quick notes to help make your stay smooth and comfortable:`,
+  text(`Welcome to ${HomeName(prop)}! We\u2019re so glad to have you here. A few quick notes to help make your stay smooth and comfortable:`,
     M,11,{color:[78,84,73],lead:1.55}); y+=14;
 
-  HOUSE_NOTES.forEach(([title,body],i)=>{
+  houseNotesOf(prop).forEach(([title,body],i)=>{
     ensure(70);
     doc.setFillColor(...CREAM); doc.circle(M+8,y-3.5,9,'F');
     doc.setFont('helvetica','bold'); doc.setFontSize(10); doc.setTextColor(...GREEN);
@@ -2664,12 +2683,12 @@ async function buildHouseNotesPDF(prop){
     W/2,10.5,{align:'center',color:INK});
   y+=8;
   text('With warm hospitality,',W/2,10,{align:'center',color:GREY});
-  text(prop?.name||'Raaya Vasyam',W/2,12,{align:'center',font:'times',color:GREEN});
+  text(HomeName(prop),W/2,12,{align:'center',font:'times',color:GREEN});
   return doc;
 }
 
 function houseNotesFileName(prop){
-  return `${(prop?.name||'Raaya-Vasyam').replace(/[^\w]+/g,'-')}-House-Notes.pdf`;
+  return `${HomeName(prop).replace(/[^\w]+/g,'-')}-House-Notes.pdf`;
 }
 async function downloadHouseNotes(prop){
   try{ (await buildHouseNotesPDF(prop)).save(houseNotesFileName(prop)); }
@@ -2680,7 +2699,7 @@ async function shareHouseNotes(prop){
   try{ blob=(await buildHouseNotesPDF(prop)).output('blob'); }catch(err){ pdfError(err); return; }
   const file=new File([blob],houseNotesFileName(prop),{type:'application/pdf'});
   if(navigator.canShare&&navigator.canShare({files:[file]})){
-    try{ await navigator.share({files:[file],title:`House notes \u2014 ${prop?.name||'Raaya Vasyam'}`}); }
+    try{ await navigator.share({files:[file],title:`House notes \u2014 ${HomeName(prop)}`}); }
     catch(err){ if(err&&err.name!=='AbortError')pdfError(err); }
   } else {
     const a=document.createElement('a');
@@ -3499,6 +3518,19 @@ function monthTotals(bookings,expenses,y,m){
   return{rev,exp,net:rev-exp};
 }
 
+// Occupancy in room-nights (v63): a property rented as a whole unit is full
+// with one booking, so each of its booked nights fills every room.
+function occupancyOf(props,bookings,year,month,daysIn){
+  let cap=0, used=0;
+  for(const p of props){
+    const rooms=Number(p.rooms)||0, whole=!!p.rentedAsWholeUnit;
+    const size=whole?Math.max(rooms,1):rooms;
+    cap+=size*daysIn;
+    const n=bookings.filter(b=>b.propertyId===p.id&&b.status!=='cancelled').reduce((s,b)=>s+nightsInMonth(b,year,month),0);
+    used+=whole?n*size:n;
+  }
+  return cap>0?Math.min(100,Math.round(used/cap*100)):null;
+}
 function renderDashboard(){
   const{data,filterProp,dashMonth}=state;
   const allB=filterProp==='all'?data.bookings:data.bookings.filter(b=>b.propertyId===filterProp);
@@ -3562,6 +3594,12 @@ function renderDashboard(){
   });
   hero.appendChild(split);
   wrap.appendChild(hero);
+  // A property's figures leave out Shared costs; say so when there are some (v63).
+  if(filterProp!=='all'){
+    const shared=r2(filterByMonth(data.expenses.filter(e=>!e.propertyId),'date',dashMonth).reduce((s,e)=>s+Number(e.amount||0),0));
+    if(shared)wrap.appendChild(div({'data-dash-shared':'1',style:{fontSize:11.5,color:'var(--muted)',marginTop:-4,padding:'0 4px'}},
+      `Shared costs of ${fmtCur(shared)} are not counted in this property’s figures.`));
+  }
 
   // ── Calendar trouble ───────────────────────────────────────────────────────
   {
@@ -3615,11 +3653,10 @@ function renderDashboard(){
 
   // ── Three stats ────────────────────────────────────────────────────────────
   if(dashMonth){
-    const rooms=props.reduce((s,p)=>s+(Number(p.rooms)||0),0);
     const daysIn=new Date(dashMonth.year,dashMonth.month+1,0).getDate();
     const nights=allB.filter(b=>b.status!=='cancelled')
       .reduce((s,b)=>s+nightsInMonth(b,dashMonth.year,dashMonth.month),0);
-    const occ=rooms>0?Math.round(nights/(rooms*daysIn)*100):null;
+    const occ=occupancyOf(props,allB,dashMonth.year,dashMonth.month,daysIn);
     const avg=nights>0?Math.round(revenue/nights):0;
     const stats=div({style:{display:'flex',gap:8}});
     [['Occupancy',occ===null?'—':occ+'%'],['Nights',String(nights)],['Avg tariff',avg?fmtCur(avg):'—']]
@@ -3721,8 +3758,11 @@ function catIcon(cat,size){
 }
 
 function renderExpenses(){
-  const{data,filterProp,expandedExpense}=state;
-  const expenses=(filterProp==='all'?data.expenses:data.expenses.filter(e=>e.propertyId===filterProp))
+  const{data,filterProp,expandedExpense,expShared}=state;
+  // Shared expenses (no property) belong to every property: shown with a
+  // label when one property is picked, and as a filter of their own (v63).
+  const isShared=e=>!e.propertyId;
+  const expenses=data.expenses.filter(e=>expShared?isShared(e):(filterProp==='all'||e.propertyId===filterProp||isShared(e)))
     .sort((a,b)=>String(b.date).localeCompare(String(a.date)));
   const total=expenses.reduce((s,e)=>s+Number(e.amount||0),0);
   const totalPaid=expenses.filter(e=>e.paid).reduce((s,e)=>s+Number(e.amount||0),0);
@@ -3739,9 +3779,18 @@ function renderExpenses(){
       div({className:'num',style:{fontSize:15,fontWeight:700,color:c,marginTop:2}},fmtCur(v))));
   });
   wrap.appendChild(sg);
+  const sharedTotal=r2(expenses.filter(isShared).reduce((s,e)=>s+Number(e.amount||0),0));
+  const segs=div({'data-exp-filter':'1',style:{display:'flex',gap:6,marginBottom:10}});
+  [[false,filterProp==='all'?'All':'This property + Shared'],[true,'Shared only']].forEach(([v,label])=>segs.appendChild(btn({
+    'data-exp-shared':String(v),style:{padding:'5px 12px',borderRadius:20,fontSize:12.5,fontWeight:expShared===v?700:500,
+      border:`1.5px solid ${expShared===v?'var(--accent)':'var(--border)'}`,background:expShared===v?'var(--accent-light)':'var(--white)',
+      color:expShared===v?'var(--accent)':'var(--muted)'},onClick:()=>setState({expShared:v})},label)));
+  wrap.appendChild(segs);
+  if(sharedTotal&&!expShared)wrap.appendChild(div({'data-shared-note':'1',style:{fontSize:11.5,color:'var(--muted)',marginTop:-4,marginBottom:10}},
+    `Includes ${fmtCur(sharedTotal)} of Shared costs`+(filterProp==='all'?'.':', which are not counted in this property’s profit.')));
 
   if(expenses.length===0){
-    wrap.appendChild(div({style:{textAlign:'center',padding:'40px 20px',color:'var(--muted)',fontSize:14}},'No expenses logged yet'));
+    wrap.appendChild(div({style:{textAlign:'center',padding:'40px 20px',color:'var(--muted)',fontSize:14}},expShared?'No Shared expenses':'No expenses logged yet'));
     return wrap;
   }
   expenses.forEach(e=>{
@@ -3755,7 +3804,7 @@ function renderExpenses(){
     row.appendChild(div({style:{flex:1,minWidth:0}},
       div({style:{fontSize:13.5,fontWeight:700,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}},e.description),
       div({style:{fontSize:11.5,color:'var(--muted)',marginTop:1,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}},
-        `${fmtDate(e.date)}${e.staffId?' · '+staffName(e.staffId):''}${prop&&filterProp==='all'?' · '+prop.name:''}`)
+        `${fmtDate(e.date)}${e.staffId?' · '+staffName(e.staffId):''}${isShared(e)?' · Shared':prop&&filterProp==='all'?' · '+prop.name:''}`)
     ));
     row.appendChild(div({style:{textAlign:'right',flexShrink:0}},
       div({className:'num',style:{fontSize:13.5,fontWeight:700}},fmtCur(e.amount)),
@@ -3827,6 +3876,12 @@ function renderReports(){
     summaryGrid.appendChild(div({className:'card',style:{padding:'14px'}},div({style:{fontSize:11,color:'var(--muted)',fontWeight:600,textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:6}},s.label),div({style:{fontSize:22,fontWeight:700,color:s.col}},String(s.val))));
   });
   wrap.appendChild(summaryGrid);
+  // Shared costs: in the totals for All properties; shown apart for one property (v63).
+  const sharedE=filterByMonth(data.expenses.filter(e=>!e.propertyId),'date',reportMonth);
+  const sharedTot=r2(sharedE.reduce((s,e)=>s+Number(e.amount||0),0));
+  if(sharedTot)wrap.appendChild(div({'data-report-shared':'1',className:'card',style:{padding:'11px 14px',marginTop:-6,marginBottom:14,fontSize:12.5,color:'var(--text-mid)',lineHeight:1.5}},
+    filterProp==='all'?`Includes ${fmtCur(sharedTot)} of Shared costs (not tied to one property).`
+      :`Shared costs of ${fmtCur(sharedTot)} are left out of this property’s figures.`));
   if(!reportMonth){
     const chartCard=div({className:'card',style:{padding:'16px',marginBottom:14}});
     chartCard.appendChild(div({style:{fontWeight:600,fontSize:14,marginBottom:14}},`Monthly Overview · ${yr}`));
@@ -3854,6 +3909,9 @@ function renderReports(){
     row.appendChild(div({style:{fontSize:12,color:'var(--muted)'}},`${bks.length} bookings · ${nights} nights`));
     perfCard.appendChild(row);
   });
+  if(filterProp==='all'&&sharedTot)perfCard.appendChild(div({'data-perf-shared':'1',style:{display:'flex',justifyContent:'space-between',
+    marginTop:12,paddingTop:12,borderTop:'1px solid var(--border-soft)',fontSize:13}},div({style:{fontWeight:600}},'Shared costs'),
+    div({style:{fontWeight:700,color:'var(--danger)'}},fmtCur(sharedTot))));
   wrap.appendChild(perfCard);
   const bySource={};
   bookings.filter(b=>b.status!=='cancelled').forEach(b=>{const s=b.source||'Direct';bySource[s]=r2((bySource[s]||0)+bookingRevenue(b));});
@@ -3885,7 +3943,7 @@ function renderReports(){
 // ─── CSV Download ─────────────────────────────────────────────────────────────
 function downloadReport(bookings,expenses,periodLabel){
   const{data}=state;
-  const propName=pid=>data.properties.find(p=>p.id===pid)?.name||'—';
+  const propName=pid=>pid?(data.properties.find(p=>p.id===pid)?.name||'—'):'Shared';
   const esc=s=>`"${String(s||'').replace(/"/g,'""')}"`;
   const totalRev=sumRevenue(bookings.filter(b=>b.status!=='cancelled'));
   const totalExp=expenses.reduce((s,e)=>s+Number(e.amount||0),0);
@@ -4798,6 +4856,40 @@ function renderPropertyModal(){
       .forEach(([k,ph,t])=>wrap.appendChild(field(k,ph,t)));
     wrap.appendChild(area('description','Notes / description'));
 
+    // ── The stay (v63): times, whole unit, receipt series ─────────────────────
+    wrap.appendChild(heading('The stay'));
+    const times=div({style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}});
+    const timeIn=(k,label,def)=>{const inp=h('input',{type:'time',value:String(f[k]||def).slice(0,5),[`data-prop-${k}`]:'1'});
+      inp.addEventListener('input',e=>f[k]=e.target.value);return div({},div({className:'label'},label),inp);};
+    times.appendChild(timeIn('checkinTime','Check-in from',DEFAULT_CHECKIN));
+    times.appendChild(timeIn('checkoutTime','Check-out by',DEFAULT_CHECKOUT));
+    wrap.appendChild(times);
+    const whole=h('input',{type:'checkbox','data-prop-whole':'1',style:{width:20,height:20,flexShrink:0}});
+    whole.checked=!!f.rentedAsWholeUnit; whole.addEventListener('change',e=>f.rentedAsWholeUnit=e.target.checked);
+    wrap.appendChild(h('label',{style:{display:'flex',alignItems:'center',gap:10,fontSize:13.5,minHeight:44}},whole,
+      span({},'Rented as a whole unit',div({style:{fontSize:11.5,color:'var(--muted)',lineHeight:1.4}},
+        'One booking takes every room, so occupancy counts the whole house as booked.'))));
+    const px=field('receiptPrefix',`Receipt series (now ${receiptPrefix({...f,receiptPrefix:''})})`);
+    px.setAttribute('data-prop-prefix','1'); px.autocapitalize='characters'; px.maxLength=6;
+    wrap.appendChild(px);
+    wrap.appendChild(div({style:{fontSize:11.5,color:'var(--muted)',marginTop:-6,lineHeight:1.45}},
+      `Receipts are numbered ${receiptPrefix(f)}/<year>/001 onwards, a series of their own for this property. Receipts already issued keep their numbers.`));
+
+    // ── Guest texts (v63): this property's own, once in the code ─────────────
+    wrap.appendChild(heading('Guest texts'));
+    const blocksArea=(k,ph,toText,fromText,attr)=>{const ta=h('textarea',{placeholder:ph,rows:6,[attr]:'1',style:{resize:'vertical'}});
+      ta.value=toText(f[k]);ta.addEventListener('input',e=>f[k]=fromText(e.target.value));return ta;};
+    const rulesTo=v=>(Array.isArray(v)?v:[]).join('\n\n');
+    const rulesFrom=t=>textBlocks(t).map(([a,b])=>b?a+'\n'+b:a);
+    wrap.appendChild(blocksArea('houseRules','House rules, for the confirmation PDF. One rule per paragraph: its title on the first line, then a line or two about it. Leave a blank line between rules.',
+      rulesTo,rulesFrom,'data-prop-rules'));
+    wrap.appendChild(blocksArea('houseNotes','House notes, for the house notes PDF. One note per paragraph: its title on the first line. Leave a blank line between notes.',
+      v=>String(v||''),t=>t,'data-prop-notes'));
+    wrap.appendChild(blocksArea('welcomeText','The welcome message after check-in: a few lines about the house, ending with your sign-off.',
+      v=>String(v||''),t=>t,'data-prop-welcome'));
+    wrap.appendChild(div({style:{fontSize:11.5,color:'var(--muted)',marginTop:-6,lineHeight:1.45}},
+      'Left empty, guests get simple neutral wording instead.'));
+
     wrap.appendChild(heading('For guest messages'));
     wrap.appendChild(field('mapsLink','Google Maps link','url'));
     const arr=area('arrivalInstructions','Arrival instructions — how to get in, and how to recognise the house',4);
@@ -4894,6 +4986,12 @@ function renderPropertyModal(){
       f.upiId=String(f.upiId||'').trim(); f.upiPayee=String(f.upiPayee||'').trim();
       // A mistyped UPI ID sends a guest's money nowhere: refuse it here (SQL refuses it too).
       if(f.upiId&&!UPI_ID_RE.test(f.upiId)){alert('That UPI ID does not look right. It should look like name@bank.');return;}
+      // A receipt series is the property's own: letters and digits, and no
+      // other property's (the server refuses a duplicate too).
+      f.receiptPrefix=String(f.receiptPrefix||'').trim().toUpperCase();
+      if(f.receiptPrefix&&!/^[A-Z0-9]{1,6}$/.test(f.receiptPrefix)){alert('The receipt series can be up to 6 letters or digits, like RV.');return;}
+      const mine=receiptPrefix(f), clash=state.data.properties.find(p=>p.id!==f.id&&receiptPrefix(p)===mine);
+      if(clash){alert(`${clash.name} already uses the receipt series ${mine}. Give this property a series of its own.`);return;}
       mutateData(d=>{if(isEdit)d.properties=d.properties.map(p=>p.id===f.id?f:p);else d.properties.push({...f,id:uid()});});
       closeModal();
     }},isEdit?'Update Property':'Save Property'));
@@ -5040,15 +5138,19 @@ function renderBookingModal(){
 function renderExpenseModal(){
   const{data,editItem}=state;
   const isEdit=!!editItem;
-  const f=isEdit?{...editItem}:{propertyId:data.properties[0]?.id||'',description:'',amount:'',date:today(),category:'maintenance',paid:false,notes:'',staffId:'',loanId:'',loanDeduction:0};
+  // A new expense goes to the property being looked at; with All properties
+  // (and more than one), to Shared until one is picked (v63).
+  const defProp=state.filterProp!=='all'?state.filterProp:(data.properties.length===1?data.properties[0].id:'');
+  const f=isEdit?{...editItem}:{propertyId:defProp,description:'',amount:'',date:today(),category:'maintenance',paid:false,notes:'',staffId:'',loanId:'',loanDeduction:0};
   if(!f.staffId)f.staffId='';
   if(!f.loanId){f.loanId='';f.loanDeduction=0;}
   // "gross" is what you owe the staff before any loan cut; f.amount is the cash actually paid
   const g={val:isEdit?Number(f.grossAmount||f.amount||0)||'':''};
   const content=()=>{
     const wrap=div({style:{display:'flex',flexDirection:'column',gap:11}});
-    const propSel=h('select');
+    const propSel=h('select',{'data-exp-prop':'1'});
     data.properties.forEach(p=>propSel.appendChild(h('option',{value:p.id,selected:f.propertyId===p.id},p.name)));
+    propSel.appendChild(h('option',{value:'',selected:!f.propertyId},'Shared — all properties'));
     propSel.addEventListener('change',e=>f.propertyId=e.target.value);wrap.appendChild(propSel);
     const descInp=h('input',{type:'text',placeholder:'Description *',value:f.description||''});descInp.addEventListener('input',e=>f.description=e.target.value);wrap.appendChild(descInp);
     const amtInp=h('input',{type:'number',placeholder:'Amount (₹) *',value:g.val||''});
@@ -5232,7 +5334,21 @@ function updateStatus(id,status){
 
 // ─── Main Render ──────────────────────────────────────────────────────────────
 let currentModal=null;
+// The property picker remembers its last choice on this device (v63).
+const PROP_KEY='staylog_prop';
+let savedProp=null;
+function rememberProp(){
+  if(state._loading||state.filterProp===savedProp)return;
+  savedProp=state.filterProp;
+  try{localStorage.setItem(PROP_KEY,state.filterProp);}catch(e){}
+}
+function recallProp(data){
+  let v=null; try{v=localStorage.getItem(PROP_KEY);}catch(e){}
+  savedProp=v;
+  return v&&(v==='all'||(data.properties||[]).some(p=>p.id===v))?v:'all';
+}
 function render(){
+  rememberProp();
   const app=document.getElementById('app');
   if(state._loading){
     app.innerHTML='';
@@ -5279,6 +5395,7 @@ function render(){
   else if(state.modal==='backup')   {currentModal=renderBackupModal();    document.body.appendChild(currentModal);}
   else if(state.modal==='inventory'){currentModal=renderInventoryModal(); document.body.appendChild(currentModal);}
   else if(state.modal==='move')     {currentModal=renderMoveModal();      document.body.appendChild(currentModal);}
+  else if(state.modal==='notesPick'){currentModal=renderNotesPickModal(); document.body.appendChild(currentModal);}
   else if(state.modal==='inbox')    {currentModal=renderInboxModal();     document.body.appendChild(currentModal);}
 }
 
@@ -5288,6 +5405,7 @@ render();
 if(window.StayLogBackup)window.StayLogBackup.onChange(()=>{if(state.loggedIn&&['backup','cloud','menu'].includes(state.modal))render();});
 Promise.all([loadDataFromIDB(),loadAuth(),checkFaceId()]).then(([data,auth])=>{
   state.data=data;state.auth=auth;state.loggedIn=false;state._loading=false;
+  state.filterProp=recallProp(data);
   // Once at every start, so unpaid days made before checkout-day wages (or
   // while this phone was closed) are priced by the same rule as new ones.
   if(repriceWages(state.data))saveData(state.data);
