@@ -6,7 +6,7 @@
 // ─── Build ────────────────────────────────────────────────────────────────────
 // Bump BOTH of these together. This date sat at 28 Sept through a dozen
 // releases and was read, reasonably, as proof the upload had not landed.
-const APP_VERSION='v66', APP_BUILT='16 Nov 2026';
+const APP_VERSION='v67', APP_BUILT='16 Nov 2026';
 // The CACHE_NAME of the sw.js released with this app.js. Every release bumps
 // APP_VERSION and CACHE_NAME together, so one is derived from the other rather
 // than being a fourth thing to forget; the tests fail if they ever disagree.
@@ -1577,7 +1577,9 @@ function renderJoinModal(){
     const name=h('input',{type:'text',placeholder:'Your name','data-join-name':'1',value:P.label||''});
     const email=h('input',{type:'email',placeholder:'Your email (to sign in with)','data-join-email':'1',autocapitalize:'none'});
     const pass=h('input',{type:'password',placeholder:'Choose a password (at least 8 characters)','data-join-pass':'1'});
-    if(!signedIn){w.appendChild(name);w.appendChild(email);w.appendChild(pass);}
+    if(!signedIn){w.appendChild(name);w.appendChild(email);w.appendChild(pass);
+      w.appendChild(div({'data-join-homescreen':'1',style:{fontSize:11.5,color:'var(--muted)',lineHeight:1.45}},
+        'Keep this email and password. If you add StayLog to your Home Screen, open it from there and sign in with them (⋯ → Cloud sync): the Home Screen app does not carry this link across.'));}
     else w.appendChild(div({style:{fontSize:12.5,color:'var(--muted)'}},`You will join as ${cloudStatus().email}.`));
     const msg=div({style:{fontSize:12.5,color:'var(--danger)',minHeight:18}},jn.err||'');
     w.appendChild(msg);
@@ -3489,8 +3491,14 @@ function renderCloudModal(){
     }
 
     if(!s.signedIn){
-      wrap.appendChild(div({style:{fontSize:12.5,color:'var(--muted)',lineHeight:1.5}},
-        'Sign in to keep a copy in the cloud and to give your house help her own view. StayLog works the same either way — this phone stays the master copy.'));
+      // In the new model a phone has nothing until it signs in: everything
+      // comes down from the cloud (v67). A manager who added StayLog to the
+      // Home Screen lands here with no invite — on iPhone the Home Screen app
+      // keeps its own storage and opens without the #join link.
+      const fresh=s.model==='stay'||!(state.data.properties||[]).length;
+      wrap.appendChild(div({'data-signin-note':'1',style:{fontSize:12.5,color:'var(--muted)',lineHeight:1.5}},
+        fresh?'Sign in with your StayLog email and password. Your properties and bookings come down from the cloud. Joined as a manager? Use the email and password you chose when you joined.'
+          :'Sign in to keep a copy in the cloud and to give your house help her own view. StayLog works the same either way — this phone stays the master copy.'));
       const em=h('input',{type:'email',placeholder:'Email',autocomplete:'username'});
       const pw=h('input',{type:'password',placeholder:'Password',autocomplete:'current-password'});
       wrap.appendChild(em);wrap.appendChild(pw);
@@ -3507,6 +3515,19 @@ function renderCloudModal(){
         }
       });
       wrap.appendChild(go);
+      // Invited, and not joined yet: paste the link here (v67).
+      const invBox=div({'data-invite-paste':'1',style:{marginTop:6,paddingTop:12,borderTop:'1px solid var(--border-soft)',display:'flex',flexDirection:'column',gap:8}},
+        div({style:{fontSize:12.5,color:'var(--muted)',lineHeight:1.5}},'Invited as a manager and not joined yet? Paste the invite link here.'));
+      const lk=h('input',{type:'url',placeholder:'Invite link','data-invite-paste-input':'1',autocapitalize:'none',spellcheck:false});
+      invBox.appendChild(lk);
+      invBox.appendChild(btn({className:'btn-ghost','data-invite-paste-go':'1',style:{width:'100%'},onClick:()=>{
+        const m=/(?:join=)?([A-Za-z0-9_-]{16,64})\s*$/.exec(String(lk.value||'').trim());
+        if(!m){alert('That does not look like an invite link. Copy the whole link from the message and paste it here.');return;}
+        joinCode=m[1];try{sessionStorage.setItem('staylog_join',joinCode);}catch(e){}
+        Object.assign(jn,{peek:null,err:'',busy:false,loaded:false});
+        setState({modal:'join'});
+      }},'Use this invite'));
+      wrap.appendChild(invBox);
       wrap.appendChild(btn({className:'btn-ghost',style:{width:'100%'},onClick:closeModal},'Not now'));
       return wrap;
     }

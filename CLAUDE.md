@@ -386,6 +386,16 @@ Agreed decisions (his answers, 15 Nov 2026):
   (or "join as <email>" when signed in) → accept → sign in → `followModel`
   moves the phone onto the account (or `switchAccount` when it already has
   one). A new manager's phone first makes its own PIN, as any phone.
+- **The invite link does not survive "Add to Home Screen"** (found on a real
+  iPhone, v67): the manifest's `start_url` is `./`, the app clears `#join=`
+  as soon as it reads it, and on iPhone the Home Screen app keeps storage of
+  its own (no session, no data from Safari). So the Home Screen app opened
+  blank and its Sync asked to sign in. Now the sign-in panel on a new phone
+  says everything comes down from the cloud and has **"Invited as a manager
+  and not joined yet? Paste the invite link here"** (`data-invite-paste`,
+  opens the Join sheet), and the Join sheet tells them to keep the email and
+  password for the Home Screen app. On Android (Chrome), the installed app
+  shares Chrome's storage, so joining in Chrome is enough.
 - Not yet (phase 8): notifications to managers; inbox per property.
 
 ## Deploying
