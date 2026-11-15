@@ -989,6 +989,13 @@ also fetch from Supabase with `cache: 'no-store'` as a second layer.
   strip in the page colour for when she scrolls. The bottom is the tab bar's
   (`--safe-bottom`, above).
 
+- **Checkboxes keep the phone's own look** (v66). `index.html` strips
+  `appearance` from every `input` so text fields look alike; that once reached
+  checkboxes too and removed the tick itself — a tap did tick the box, but
+  nothing showed, so every checkbox (Works at, Team, whole unit) looked stuck.
+  `input[type=checkbox], input[type=radio]` now set `appearance: auto`, 22px,
+  `accent-color: var(--accent)`. `tests/test_checkboxes.js` compares a box's
+  pixels before and after a tap, light and dark.
 - `today()` is local (IST). Never `toISOString().slice(0,10)` — that is UTC and
   is a day behind between midnight and 05:30. In SQL use
   `(now() at time zone 'Asia/Kolkata')::date`.
@@ -1036,6 +1043,7 @@ also fetch from Supabase with `cache: 'no-store'` as a second layer.
     node tests/test_team_app.js          # phase 6: Team (members, permissions, properties, switch off, invites, withdraw), a manager's hidden areas, joining from a link
     node tests/test_team_invite_function.js   # the team-invite Edge Function: peek, accept (new login / signed in), once only, expired, owner invites refused, nothing half-made
     STAYLOG_PG="…" node tests/test_team_sql.js       # 08-team.sql: manager-only invites, my_access, team(), what a manager reads
+    node tests/test_checkboxes.js        # v66: every checkbox keeps its tick — appearance, a tap ticks it, and it looks different ticked (pixels), light and dark
     node tests/test_move_app.js          # phase 3 in the app: Move to the new system — copy, compare (match / mismatch), switch, another phone joins, rollback
     node tests/test_notify_stay.js       # notify in the new model: by account, every owner, own devices/prefs/inbox, amounts + pays_directly_sources, marks, test push
     node tests/test_ical_stay.js         # ical-sync in the new model: stay feeds/events by account, Import now = owned accounts only
