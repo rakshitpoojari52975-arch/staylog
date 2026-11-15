@@ -5306,11 +5306,11 @@ Promise.all([loadDataFromIDB(),loadAuth(),checkFaceId()]).then(([data,auth])=>{
     // Opening the app is itself a reason to sync: her attendance marks arrive
     // while this phone is doing nothing, and they only become expenses here.
     window.StayLogCloud.restoreSession()
-      .then(async()=>{
+      .then(async session=>{
         // Which model is live decides which sync runs (phase 3): this phone
         // joins the new system, or comes back from it after a rollback.
-        await window.StayLogCloud.refreshModel();
-        await followModel();
+        // Signed out there is nothing to follow (a sign-in does it later).
+        if(session){await window.StayLogCloud.refreshModel();await followModel();}
         resubscribeQuietly();refreshInbox();
         if(stayActive()){window.StayLogSync.start();return;}
         return window.StayLogCloud.checkIn&&window.StayLogCloud.checkIn(true);})
