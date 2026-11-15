@@ -864,8 +864,13 @@
       'OK deletes them (they stay recoverable in SQL). Cancel stops this sync.';
   }
 
+  // Once this phone is switched over to the new model (sync.js, phase 3),
+  // the old whole-state sync stands down for good: it would push the new
+  // copy into the old tables and tombstone what it lacks.
+  const newModel = () => !!(window.StayLogSync && window.StayLogSync.isActive());
   async function push(data, opts) {
     opts = opts || {};
+    if (newModel()) return;
     if (!session) throw new Error('not signed in');
     // Two pushes can now overlap — opening the app starts one, and an edit a
     // moment later starts another. Dropping the second would leave the newer
@@ -1099,6 +1104,7 @@
 
   // Called by the app whenever local data changes.
   function markDirty(getData) {
+    if (newModel()) return;
     dirty = true;
     notify();
     if (!session || !navigator.onLine) return;
@@ -1118,6 +1124,7 @@
   // syncs when it is opened and when it comes back to the foreground.
   let lastCheck = 0;
   async function checkIn(force) {
+    if (newModel()) return;
     if (!session || !navigator.onLine || pushing) return;
     const now = Date.now();
     if (!force && now - lastCheck < 30000) return;   // returning to the app repeatedly is cheap

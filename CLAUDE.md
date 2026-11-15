@@ -147,6 +147,59 @@ Agreed decisions (his answers, 15 Nov 2026):
   time zone, her assigned properties only (all when none). Not wired: the
   cutover (phase 3) points the public functions at them.
 
+### Phase 2 — v61 (the sync engine, dormant)
+- **`sync.js`** (after `cloud.js` in `index.html`, in the worker's list).
+  Active only when localStorage `staylog_model` = `{mode:'stay', user,
+  account}`, which only the switch-over (phase 3) sets. Until then nothing in
+  it runs and `cloud.js` syncs as before. Once active, `cloud.js`'s `push`,
+  `markDirty` and `checkIn` stand down (`newModel()`).
+- **Mappers** (`SPEC`): phone camelCase ⇄ `stay` columns. Unknown fields →
+  `legacy`; a value a column can't hold as it is (a number typed as text, a
+  bad date) is kept in `legacy.$orig` and comes back until another device
+  changes that column. `idProofImage` never leaves the phone and is carried
+  across every merge. Loan repayments are their own rows (`loan_id`), nested
+  under their loan on the phone. A notNull column left empty is not sent.
+- **Outbox is worked out, not kept**: each row is compared with its `base`
+  (the server copy last seen, `{v, row}`) field by field; only changed fields
+  go up, through `stay.apply_change(..., base_version)`.
+- **Merge** (`merge()`): fields only one side changed are both kept; a field
+  both changed differently is a conflict — the server's value stands, mine is
+  kept (`conflicts`) for **Use mine** (`reapply`) or **Keep the saved one**
+  (`dismiss`). `money` flags paid/total/round off/receipt/source/status,
+  amounts, wages. A row deleted here but changed elsewhere comes back
+  (`why:'deleted'`).
+- **Pull** per table by `updated_at > cursor − 2 min`, merged by version.
+  **No deleting by absence**: a row is soft-deleted only because this device
+  removed it; more than 5 at once wait (`held`) until Sync now asks
+  (`STAYLOG_CONFIRM_TOMBSTONE`). Bookings are never deleted.
+- A sync works on a copy and hands back only the rows it touched
+  (`handBack`); a row typed during the sync keeps the typed value and its old
+  base, so the next sync merges it properly.
+- Local state in IndexedDB `staylog_stay` per `user:account`; the app's own
+  copy under `staylog_stay_data:<user>:<account>` in `staylog_db`. The old
+  keys (`staylog_main`, `staylog_v2`) are never written in the new model.
+  `mutateData` does not re-price wages there (the server does).
+- `stay.sync_status` heartbeat per device: last pull / push, outbox,
+  conflicts, oldest unsent.
+- Calendar import over `stay.ical_events` with the same `planIcal`; events
+  are stamped once their booking is on the server.
+- **Receipts in the new model come from `stay.issue_receipt`**
+  (`stayReceiptNo`, before the PDF is built); `ensureReceiptNo` never invents
+  one there. Needs the internet the first time.
+- **Sync panel** (`renderStaySyncModal`, in place of the old cloud panel once
+  active): last received / sent, waiting changes, held deletions, conflicts in
+  plain words ("Changed on another device — your edit … wasn't saved"),
+  account switcher (when a login has more than one), sign out.
+- **PIN hash** (active now): `staylog_auth` = `{v:2, salt, iter:150000,
+  hash}` (PBKDF2-SHA256). An old `{pin}` opens once and is converted
+  (`checkPin`). The Face ID sheet checks the PIN as it is typed so Face ID is
+  still asked for from the tap.
+- `syncExpenseLoan` keeps a repayment's id when rebuilding it.
+- `supabase/stay/04-phase2.sql`: `stay.loans.staff_id` nullable (the house's
+  own loans); "changed since" indexes. `check.sql` checks it.
+- Not yet in the new model (phase 3, with the cutover): the Edge Functions,
+  push subscriptions, inbox and encrypted backups over `stay`.
+
 ## Deploying
 
 - GitHub Pages serves `main`. Work on a branch and open a PR; Rakshit merges.
@@ -784,6 +837,8 @@ also fetch from Supabase with `cache: 'no-store'` as a second layer.
     node tests/test_ical_connected.js    # "connected" per feed: no gap for the other platform's stays, Direct still checked, survives a sync; "Closed on …" hides a gap until the dates change
     node tests/test_inventory.js         # v60 Inventory: counts, money by month to the paisa, loans, wages, receipts; changes nothing
     node tests/test_one_phone.js         # v60: one login per phone's data, one phone per account (pause + take over), retired detector, sign-out clears, UUIDs, arrival instructions as data
+    node tests/test_sync.js              # phase 2 engine: two devices, field merges, conflicts (money flagged), offline, no delete by absence + brake, receipts, calendar; STAYLOG_PG adds a real apply_change round trip
+    node tests/test_sync_app.js          # phase 2 in the app: hashed PIN (old plain one converted), dormant, own storage key, cloud.js stands down, Sync panel, server receipts, stable repayment id
     STAYLOG_PG="…" node tests/test_stay_sql.js       # phase 1 `stay` schema: twice, check.sql ok, accounts/managers/staff access, composite keys, apply_change versions, receipts (concurrent), money, wages/utensils/undo/re-pricing on the server, her functions, rollback
     STAYLOG_PG="…" node tests/test_security_sql.js   # security-v60.sql: owners only, staff/stranger locked out, her page works, owner match, mark ids, refuses to lock out
     node tests/test_cancel.js            # no Delete; Cancel confirms + Undo; checked-out disabled; cancelled import stays cancelled over drains; excluded from revenue/occupancy

@@ -21,13 +21,14 @@
    must never be served from a cache, so live data is now never even looked at
    here — it is not on the list. */
 
-const CACHE_NAME = 'staylog-v60';
+const CACHE_NAME = 'staylog-v61';
 
 const ASSETS = [
   './',
   './index.html',
   './app.js',
   './cloud.js',
+  './sync.js',
   './backup.js',
   './cloud-config.js',
   './vendor/supabase.umd.js',

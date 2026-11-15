@@ -6,7 +6,7 @@
 // ─── Build ────────────────────────────────────────────────────────────────────
 // Bump BOTH of these together. This date sat at 28 Sept through a dozen
 // releases and was read, reasonably, as proof the upload had not landed.
-const APP_VERSION='v60', APP_BUILT='15 Nov 2026';
+const APP_VERSION='v61', APP_BUILT='15 Nov 2026';
 // The CACHE_NAME of the sw.js released with this app.js. Every release bumps
 // APP_VERSION and CACHE_NAME together, so one is derived from the other rather
 // than being a fourth thing to forget; the tests fail if they ever disagree.
@@ -49,13 +49,33 @@ function openDB(){
 function idbGet(k){return openDB().then(db=>new Promise((res,rej)=>{const r=db.transaction(STORE_NAME,'readonly').objectStore(STORE_NAME).get(k);r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error);}));}
 function idbSet(k,v){return openDB().then(db=>new Promise((res,rej)=>{const r=db.transaction(STORE_NAME,'readwrite').objectStore(STORE_NAME).put(v,k);r.onsuccess=()=>res();r.onerror=()=>rej(r.error);}));}
 
+// The new model (revamp phase 2) keeps its copy under its own key, one per
+// login and account, and never writes the old ones: switching back finds the
+// old copy exactly as it was. Dormant until the switch-over (phase 3).
+const stayActive=()=>!!(window.StayLogSync&&window.StayLogSync.isActive());
+const stayDataKey=()=>{const m=window.StayLogSync.model();return `staylog_stay_data:${m.user}:${m.account}`;};
 function saveData(d){
+  if(stayActive()){
+    idbSet(stayDataKey(),JSON.parse(JSON.stringify(d))).catch(()=>{});
+    try{window.StayLogSync.save();}catch{}
+    return;
+  }
   try{localStorage.setItem(LS_KEY,JSON.stringify(d));}catch{}
   idbSet(DATA_KEY,JSON.parse(JSON.stringify(d))).catch(()=>{});
   // The phone is written first and always; the cloud catches up afterwards.
   try{window.StayLogCloud&&window.StayLogCloud.markDirty(()=>state.data);}catch{}
 }
 window.STAYLOG_GET_DATA=()=>state.data;
+// sync.js hands back what a sync brought (pulled rows, merges, imports).
+// Kept and shown; not sent again, and not re-priced here: in the new model
+// wages are priced on the server.
+window.STAYLOG_REPLACE_DATA=d=>{
+  if(!stayActive())return;
+  state.data=normalizeData(d);
+  idbSet(stayDataKey(),JSON.parse(JSON.stringify(state.data))).catch(()=>{});
+  render();
+};
+window.STAYLOG_TODAY=()=>today();
 // cloud.js asks before a sync would delete an unusual number of rows
 window.STAYLOG_CONFIRM_TOMBSTONE=({message})=>confirm(message);
 // cloud.js turns her attendance marks into unpaid wage expenses through this.
@@ -63,6 +83,10 @@ window.STAYLOG_CONFIRM_TOMBSTONE=({message})=>confirm(message);
 // exactly as it would for an expense typed by hand.
 window.STAYLOG_APPLY=fn=>{try{mutateData(fn);return true;}catch(e){return false;}};
 async function loadDataFromIDB(){
+  if(stayActive()){
+    try{const d=await idbGet(stayDataKey());if(d&&d.properties)return normalizeData(d);}catch{}
+    return{...defaultData,properties:[],bookings:[],expenses:[],staff:[],loans:[]};
+  }
   try{const d=await idbGet(DATA_KEY);if(d&&d.properties)return normalizeData(d);}catch{}
   try{const ls=JSON.parse(localStorage.getItem(LS_KEY));if(ls&&ls.properties){const n=normalizeData(ls);saveData(n);return n;}}catch{}
   return{...defaultData,staff:[],loans:[]};
@@ -71,6 +95,32 @@ async function loadAuth(){
   try{const a=await idbGet(AUTH_KEY);if(a)return a;}catch{}
   try{const ls=localStorage.getItem(AUTH_KEY);if(ls)return JSON.parse(ls);}catch{}
   return null;
+}
+// The PIN is kept as a salted PBKDF2 hash (v61). A PIN saved before then
+// ({pin}) still opens the app once and is converted on the spot.
+const PIN_ITER=150000;
+const b64=u=>btoa(String.fromCharCode(...new Uint8Array(u)));
+async function pinHash(pin,salt,iter){
+  const key=await crypto.subtle.importKey('raw',new TextEncoder().encode(String(pin)),'PBKDF2',false,['deriveBits']);
+  const bits=await crypto.subtle.deriveBits({name:'PBKDF2',hash:'SHA-256',salt:Uint8Array.from(atob(salt),c=>c.charCodeAt(0)),iterations:iter},key,256);
+  return b64(bits);
+}
+async function makeAuth(pin){
+  try{
+    const salt=b64(crypto.getRandomValues(new Uint8Array(16)));
+    return {v:2,salt,iter:PIN_ITER,hash:await pinHash(pin,salt,PIN_ITER)};
+  }catch(e){return {pin};}            // no WebCrypto: kept as before rather than locked out
+}
+async function checkPin(pin){
+  const a=state.auth;
+  if(!a)return false;
+  if(a.hash){
+    try{return (await pinHash(pin,a.salt,a.iter||PIN_ITER))===a.hash;}catch(e){return false;}
+  }
+  if(String(pin)!==String(a.pin))return false;
+  const up=await makeAuth(pin);
+  if(up.hash){state.auth=up;saveAuth(up);}
+  return true;
 }
 function saveAuth(a){try{localStorage.setItem(AUTH_KEY,JSON.stringify(a));}catch{} idbSet(AUTH_KEY,a).catch(()=>{});}
 // New ids are random UUIDs (v60): unique across phones and, later, accounts.
@@ -106,7 +156,7 @@ function setState(p){Object.assign(state,typeof p==='function'?p(state):p);rende
 // Every change can move a wage: a booking added, moved or cancelled turns a day
 // into a checkout day or out of one. So every change re-prices (cheap, and a
 // no-op when nothing moved). See repriceWages.
-function mutateData(fn){fn(state.data);repriceWages(state.data);saveData(state.data);render();}
+function mutateData(fn){fn(state.data);if(!stayActive())repriceWages(state.data);saveData(state.data);render();}
 
 // ─── Attendance wages ─────────────────────────────────────────────────────────
 // A marked day pays the daily wage, or the checkout-day wage if any booking
@@ -337,14 +387,27 @@ function renderFaceIdModal(){
       autocomplete:'off','data-faceid-pin':'1',placeholder:'Current PIN',style:{fontSize:18,letterSpacing:'0.3em',textAlign:'center'}});
     const msg=div({'data-faceid-msg':'1',style:{fontSize:12.5,color:'var(--danger)',minHeight:18}});
     const go=btn({className:'btn-primary','data-faceid-go':'1',style:{width:'100%',minHeight:46},onClick:()=>{
-      if(inp.value!==(state.auth&&state.auth.pin)){msg.textContent='That is not your PIN.';inp.value='';inp.focus();return;}
-      if(on){faceIdSet('');closeModal();return;}
-      msg.style.color='var(--muted)';msg.textContent='Look at your iPhone…';go.disabled=true;
-      faceIdCreate().then(()=>closeModal(),()=>{
-        go.disabled=false;msg.style.color='var(--danger)';
-        msg.textContent='Face ID was not set up. You can try again, or keep using the PIN.';});
+      // The PIN is checked first, always. The check (a salted hash) starts as
+      // the fourth digit is typed, so by the tap it is usually done and Face
+      // ID is asked for straight from the tap, as Safari wants.
+      const val=inp.value, fail=()=>{msg.style.color='var(--danger)';msg.textContent='That is not your PIN.';inp.value='';inp.focus();go.disabled=false;};
+      const proceed=()=>{
+        if(on){faceIdSet('');closeModal();return;}
+        msg.style.color='var(--muted)';msg.textContent='Look at your iPhone…';go.disabled=true;
+        faceIdCreate().then(()=>closeModal(),()=>{
+          go.disabled=false;msg.style.color='var(--danger)';
+          msg.textContent='Face ID was not set up. You can try again, or keep using the PIN.';});
+      };
+      if(pinCheck.val===val&&pinCheck.done){pinCheck.good?proceed():fail();return;}
+      go.disabled=true;
+      checkPin(val).then(good=>{go.disabled=false;good?proceed():fail();});
     }},on?'Turn off Face ID':'Turn on Face ID');
     inp.addEventListener('keydown',e=>{if(e.key==='Enter')go.click();});
+    const pinCheck={val:null,done:false,good:false};
+    inp.addEventListener('input',()=>{
+      const val=inp.value; pinCheck.val=val; pinCheck.done=false;
+      if(val.length===PIN_LENGTH)checkPin(val).then(good=>{if(pinCheck.val===val){pinCheck.done=true;pinCheck.good=good;}});
+    });
     wrap.appendChild(inp); wrap.appendChild(msg); wrap.appendChild(go);
     wrap.appendChild(btn({className:'btn-ghost',style:{width:'100%'},onClick:closeModal},'Cancel'));
     setTimeout(()=>inp.focus(),80);
@@ -439,21 +502,24 @@ function renderLoginScreen(){
 
     if(next.length===PIN_LENGTH){
       if(phase==='enter'){
-        if(next===state.auth.pin){
-          updateCells(next,'success');
-          faceIdCancel();
-          setTimeout(()=>{state.loggedIn=true;render();},380);
-        } else {
-          updateCells(next,'error');
-          msgEl.style.color='var(--danger)';msgEl.textContent='Incorrect PIN — please try again';
-          setTimeout(()=>{pinEntry='';updateCells('');msgEl.textContent='';},700);
-        }
+        checkPin(next).then(good=>{
+          if(good){
+            updateCells(next,'success');
+            faceIdCancel();
+            setTimeout(()=>{state.loggedIn=true;render();},380);
+          } else {
+            updateCells(next,'error');
+            msgEl.style.color='var(--danger)';msgEl.textContent='Incorrect PIN — please try again';
+            setTimeout(()=>{pinEntry='';updateCells('');msgEl.textContent='';},700);
+          }
+        });
       } else if(phase==='create'){
         setTimeout(()=>{phase='confirm';phaseLabel.textContent='Confirm your PIN';confirmPin='';updateCells('');},280);
       } else {
         if(confirmPin===pinEntry){
           updateCells(next,'success');
-          setTimeout(()=>{const a={pin:pinEntry};state.auth=a;state.loggedIn=true;saveAuth(a);render();},380);
+          const made=makeAuth(pinEntry);
+          setTimeout(()=>made.then(a=>{state.auth=a;state.loggedIn=true;saveAuth(a);render();}),380);
         } else {
           updateCells(next,'error');
           msgEl.textContent='PINs don\'t match — please start over';
@@ -1829,6 +1895,7 @@ function nextReceiptNo(d,prop,iso){
 // same stay must hand the guest the same number as the first time.
 function ensureReceiptNo(b){
   if(b.receiptNo)return b.receiptNo;
+  if(stayActive())return null;          // in the new model only the server numbers receipts (stayReceiptNo)
   const iso=today();
   const prop=state.data.properties.find(p=>p.id===b.propertyId);
   let no=null;
@@ -2090,12 +2157,30 @@ function receiptGuard(b){
   }
   return true;
 }
+// In the new model a receipt number comes from the server, in one
+// transaction (stay.issue_receipt), so two devices never hand out the same
+// one. Needs the internet the first time a booking gets its receipt.
+async function stayReceiptNo(b){
+  if(!stayActive()||b.receiptNo)return true;
+  try{
+    const r=await window.StayLogSync.issueReceipt(b.id);
+    mutateData(d=>{const row=(d.bookings||[]).find(x=>x.id===b.id);if(row){row.receiptNo=r.receiptNo;row.receiptOn=r.receiptOn;}});
+    b.receiptNo=r.receiptNo;b.receiptOn=r.receiptOn;
+    return true;
+  }catch(err){
+    alert('A receipt number comes from the server the first time. Connect to the internet and try again.'+
+      (err&&err.message&&!/fetch|network/i.test(err.message)?'\n\n'+err.message:''));
+    return false;
+  }
+}
 async function downloadReceipt(b){
   if(!receiptGuard(b))return;
+  if(!(await stayReceiptNo(b)))return;
   try{ (await buildReceiptPDF(b)).save(receiptFileName(b)); }catch(err){ pdfError(err); }
 }
 async function shareReceipt(b){
   if(!receiptGuard(b))return;
+  if(!(await stayReceiptNo(b)))return;
   let blob;
   try{ blob=await receiptBlob(b); }catch(err){ pdfError(err); return; }
   const file=new File([blob],receiptFileName(b),{type:'application/pdf'});
@@ -2446,6 +2531,16 @@ function fmtAgo(iso){
   return fmtDate(iso.slice(0,10));
 }
 function cloudMenuSub(){
+  if(stayActive()){
+    const y=window.StayLogSync.status(), c=cloudStatus();
+    if(!c.signedIn)return 'Not signed in — changes wait on this phone';
+    if(!navigator.onLine)return y.outbox?`Offline · ${y.outbox} change${y.outbox===1?'':'s'} waiting`:'Offline';
+    if(y.running)return 'Syncing…';
+    if(y.conflicts.length)return `${y.conflicts.length} change${y.conflicts.length===1?'':'s'} to look at`;
+    if(y.lastError)return 'Last sync failed';
+    if(y.outbox)return `${y.outbox} change${y.outbox===1?'':'s'} waiting to sync`;
+    return y.lastPull?`Synced ${fmtAgo(y.lastPull)}`:'Not synced yet';
+  }
   const s=cloudStatus();
   if(!s.configured)return 'Not configured';
   if(!s.signedIn)  return 'Not signed in — this phone only';
@@ -2783,7 +2878,99 @@ function renderBackupModal(){
   return modal('Encrypted backup',content);
 }
 
+// ── The new model's Sync panel (revamp phase 2) ──────────────────────────────
+// Shown in place of the old cloud panel once this phone is switched over.
+const SYNC_TABLE={properties:'Property',bookings:'Booking',expenses:'Expense',staff:'Staff',loans:'Loan',loan_repayments:'Loan repayment'};
+const SYNC_FIELD={paid:'Payment received',total_amount:'Total',round_off:'Round off',receipt_no:'Receipt number',status:'Status',
+  source:'Source',check_in:'Check-in',check_out:'Check-out',guest_name:'Guest name',phone:'Phone',guests:'Guests',notes:'Notes',
+  amount:'Amount',date:'Date',description:'Description',category:'Category',name:'Name',daily_wage:'Daily wage',deleted_at:'Deleted'};
+function syncRowName(c){
+  const d=state.data, id=c.id;
+  if(c.table==='bookings'){const b=(d.bookings||[]).find(x=>x.id===id);return b?`${b.guestName||'Guest'} · ${fmtDate(b.checkIn)}`:'a booking';}
+  if(c.table==='expenses'){const e=(d.expenses||[]).find(x=>x.id===id);return e?`${e.description||'Expense'} · ${fmtDate(e.date)}`:'an expense';}
+  const list={properties:d.properties,staff:d.staff,loans:d.loans}[c.table]||[];
+  const x=list.find(y=>y.id===id);return x&&x.name?x.name:(SYNC_TABLE[c.table]||'A record').toLowerCase();
+}
+function syncVal(f,v){
+  if(v===null||v===undefined||v==='')return '(empty)';
+  if(['paid','total_amount','round_off','amount','daily_wage'].includes(f)&&typeof v==='number')return fmtCur(v);
+  if(typeof v==='object')return JSON.stringify(v);
+  return String(v);
+}
+function renderStaySyncModal(){
+  const content=()=>{
+    const wrap=div({style:{display:'flex',flexDirection:'column',gap:11}});
+    const y=window.StayLogSync.status(), c=cloudStatus();
+    const tone=!c.signedIn?'var(--muted)':(y.lastError||y.conflicts.length)?'var(--danger)':y.outbox?'var(--warn)':'var(--accent)';
+    wrap.appendChild(div({'data-stay-sync':'1',style:{background:'var(--surface-2)',border:'1px solid var(--border)',borderRadius:'var(--radius-sm)',padding:'12px 13px'}},
+      div({style:{fontSize:13.5,fontWeight:700,color:tone}},cloudMenuSub()),
+      c.signedIn?div({style:{fontSize:12,color:'var(--muted)',marginTop:3}},c.email):null,
+      div({style:{fontSize:12,color:'var(--muted)',marginTop:5,lineHeight:1.55}},
+        `Last received ${y.lastPull?fmtAgo(y.lastPull):'—'} · last sent ${y.lastPush?fmtAgo(y.lastPush):'—'} · `+
+        (y.outbox?`${y.outbox} change${y.outbox===1?'':'s'} waiting`:'nothing waiting')),
+      y.lastError?div({style:{fontSize:12,color:'var(--danger)',marginTop:5,lineHeight:1.45}},y.lastError):null));
+    if(y.held){
+      wrap.appendChild(div({'data-sync-held':'1',style:{background:'var(--warn-light)',border:'1px solid var(--warn-line)',borderRadius:'var(--radius-sm)',
+        padding:'11px 13px',fontSize:12.5,lineHeight:1.55,color:'var(--text-mid)'}},
+        div({style:{fontSize:13.5,fontWeight:700,color:'var(--warn)',marginBottom:3}},`${y.held} deletions waiting`),
+        'More than 5 records were deleted on this phone at once. They are deleted for everyone only after you confirm: tap Sync now.'));
+    }
+    for(const x of y.conflicts){
+      const box=div({'data-sync-conflict':x.table+':'+x.id,style:{background:x.money?'var(--danger-light)':'var(--warn-light)',
+        border:x.money?'1px solid var(--danger-line)':'1px solid var(--warn-line)',borderRadius:'var(--radius-sm)',padding:'11px 13px',fontSize:12.5,lineHeight:1.55,color:'var(--text-mid)'}});
+      const what=SYNC_TABLE[x.table]||'Record', name=syncRowName(x);
+      if(x.why==='deleted'){
+        box.appendChild(div({style:{fontSize:13.5,fontWeight:700,color:'var(--warn)',marginBottom:3}},`${what} kept: ${name}`));
+        box.appendChild(div({},'You deleted this on this phone, but it was changed on another device meanwhile, so it was kept. Delete it again if it should go.'));
+      }else{
+        box.appendChild(div({style:{fontSize:13.5,fontWeight:700,color:x.money?'var(--danger)':'var(--warn)',marginBottom:3}},
+          (x.money?'Money changed on another device — ':'Changed on another device — ')+name));
+        box.appendChild(div({},`Your edit to ${what.toLowerCase()} wasn’t saved, because it was changed elsewhere first. Now:`));
+        for(const f of x.fields)box.appendChild(div({style:{marginTop:3}},
+          h('b',{},(SYNC_FIELD[f]||f.replace(/_/g,' '))+': '),`saved ${syncVal(f,x.theirs[f])} · yours was ${syncVal(f,x.mine[f])}`));
+      }
+      const row=div({style:{display:'flex',gap:8,marginTop:9,flexWrap:'wrap'}});
+      if(x.why!=='deleted')row.appendChild(btn({className:'btn-primary btn-sm','data-sync-reapply':'1',onClick:()=>{
+        window.StayLogSync.reapply(x.table,x.id);render();}},'Use mine'));
+      row.appendChild(btn({className:'btn-ghost btn-sm','data-sync-dismiss':'1',onClick:()=>{
+        window.StayLogSync.dismiss(x.table,x.id);render();}},x.why==='deleted'?'OK':'Keep the saved one'));
+      box.appendChild(row);
+      wrap.appendChild(box);
+    }
+    for(const e of (y.errors||[]).slice(0,5))wrap.appendChild(div({'data-sync-error':'1',style:{fontSize:12,color:'var(--danger)',lineHeight:1.45}},
+      `${SYNC_TABLE[e.table]||e.table}: ${e.message}`));
+    if(c.signedIn){
+      wrap.appendChild(btn({className:'btn-primary','data-sync-now':'1',style:{width:'100%',minHeight:46},disabled:y.running,
+        onClick:async()=>{await window.StayLogSync.sync({manual:true});render();}},y.running?'Syncing…':'Sync now'));
+      const acc=div({'data-accounts':'1',style:{display:'flex',flexDirection:'column',gap:6}});
+      wrap.appendChild(acc);
+      window.StayLogSync.memberships().then(list=>{
+        if(!list||list.length<2)return;
+        acc.appendChild(div({className:'kicker'},'Account'));
+        for(const m of list){
+          const cur=m.account_id===y.account;
+          acc.appendChild(btn({className:cur?'btn-primary btn-sm':'btn-ghost btn-sm','data-account':m.account_id,disabled:cur,onClick:async()=>{
+            window.StayLogSync.switchAccount(m.account_id);
+            state.data=await loadDataFromIDB();state.modal=null;render();window.StayLogSync.sync();
+          }},`${(m.accounts&&m.accounts.name)||'Account'}${m.role==='manager'?' (manager)':''}`));
+        }
+      }).catch(()=>{});
+      wrap.appendChild(btn({className:'btn-ghost','data-sign-out':'1',style:{width:'100%'},onClick:async()=>{
+        if(!confirm('Sign out? Changes not yet synced stay on this phone and go up when you sign in again.'))return;
+        await window.StayLogCloud.signOut();render();
+      }},'Sign out'));
+    }else{
+      wrap.appendChild(div({style:{fontSize:12.5,color:'var(--text-mid)',lineHeight:1.55}},
+        'Sign in to sync. Your changes are kept on this phone meanwhile.'));
+    }
+    wrap.appendChild(btn({className:'btn-ghost',style:{width:'100%'},onClick:()=>openBackupPanel()},'Encrypted backup'));
+    return wrap;
+  };
+  return modal('Sync',content);
+}
+
 function renderCloudModal(){
+  if(stayActive()&&cloudStatus().signedIn)return renderStaySyncModal();
   const content=()=>{
     const wrap=div({style:{display:'flex',flexDirection:'column',gap:11}});
     const s=cloudStatus();
@@ -3633,13 +3820,17 @@ function refreshLoanStatuses(d){
 // One expense owns at most one repayment row; rebuild it from the expense every time.
 // The recovery only hits the loan once the payout is actually marked Paid.
 function syncExpenseLoan(d,exp){
+  // The row keeps its id when rebuilt (v61): with per-row sync a new id each
+  // time would read as one repayment deleted and another added.
+  let keepId=null;
+  d.loans.forEach(l=>{(l.repayments||[]).forEach(r=>{if(r.expenseId===exp.id&&!keepId)keepId=r.id;});});
   d.loans.forEach(l=>{l.repayments=(l.repayments||[]).filter(r=>r.expenseId!==exp.id);});
   const amt=round2(exp.loanDeduction);
   if(exp.loanId&&amt>0&&exp.paid){
     const l=d.loans.find(x=>x.id===exp.loanId);
     if(l){
       (l.repayments=l.repayments||[]).push({
-        id:uid(),date:exp.date,amount:amt,mode:'payout',expenseId:exp.id,
+        id:keepId||uid(),date:exp.date,amount:amt,mode:'payout',expenseId:exp.id,
         note:`Deducted from ${exp.description||'staff payout'}`
       });
     }
@@ -4939,8 +5130,13 @@ Promise.all([loadDataFromIDB(),loadAuth(),checkFaceId()]).then(([data,auth])=>{
     // Opening the app is itself a reason to sync: her attendance marks arrive
     // while this phone is doing nothing, and they only become expenses here.
     window.StayLogCloud.restoreSession()
-      .then(()=>{resubscribeQuietly();refreshInbox();return window.StayLogCloud.checkIn&&window.StayLogCloud.checkIn(true);})
+      .then(()=>{resubscribeQuietly();refreshInbox();
+        // The new model, once this phone is switched over (phase 3); cloud.js's
+        // own sync stands down then.
+        if(stayActive()){window.StayLogSync.start();return;}
+        return window.StayLogCloud.checkIn&&window.StayLogCloud.checkIn(true);})
       .catch(()=>{});
+    if(window.StayLogSync)window.StayLogSync.onChange(()=>{if(state.modal==='cloud'||state.modal==='menu')render();});
   }
   setTimeout(checkSwMatch,SW_CHECK_DELAY);
 });
