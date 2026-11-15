@@ -100,6 +100,9 @@ function client(S, who) {
           return Promise.resolve({ data: null, error: null }); }
         return Promise.resolve({ data: clone(S.events.filter(e => q.f.every(([k, v]) => e[k] === v))), error: null });
       }
+      if (table === 'ical_runs') return Promise.resolve(S.icalRun ? { data: [clone(S.icalRun)], error: null }
+        : { data: null, error: { code: 'PGRST205', message: "Could not find the table 'stay.ical_runs'" } });
+      if (table === 'ical_feeds') return Promise.resolve({ data: clone(S.feedRows || []), error: null });
       if (table === 'sync_status') { S.heartbeats.push({ who, ...q.val }); return Promise.resolve({ data: null, error: null }); }
       let rows = [...S.t[table].values()].filter(r => q.f.every(([k, v]) => r[k] === v) && (!q.gt || r.updated_at > q.gt));
       rows.sort((a, b) => a.updated_at.localeCompare(b.updated_at) || a.id.localeCompare(b.id));
@@ -118,6 +121,7 @@ function client(S, who) {
     async rpc(name, args) {
       if (S.down) return { data: null, error: { message: 'Failed to fetch' } };
       try {
+        if (name === 'my_access') return { data: S.access || null, error: null };
         if (name === 'apply_change') return { data: S.apply(args.p_table, args.p_row, args.p_base_version), error: null };
         if (name === 'issue_receipt') {
           const b = S.t.bookings.get(args.p_booking);
@@ -408,6 +412,31 @@ const booking = (id, extra) => ({ id, propertyId: 'p1', guestName: 'Asha Rao', p
     ok('the event is stamped once the booking is there', S.events[0].imported_booking_id === (imp && imp.id));
     const n = S.t.bookings.size; await a.run();
     ok('a second sync imports nothing again', S.t.bookings.size === n && a.data.bookings.length === 1);
+
+    // v68: the server imports (its run record exists). The phone makes no
+    // booking itself, even for an event the server has not reached yet.
+    S.icalRun = { last_run_at: '2026-11-15T03:30:00Z', result: { created: 1, updated: 0, gone: 0, held: 0,
+      feeds: { f1: { lastChange: { at: '2026-11-15T03:30:00Z', added: 1, updated: 0, removed: 0 } } } } };
+    S.events.push({ account_id: ACC, feed_id: 'f1', uid: 'later@airbnb', property_id: 'p1', platform: 'Airbnb', start_date: '2026-12-20', end_date: '2026-12-22',
+      summary: 'Reserved', description: '', kind: 'reserved', gone_at: null, imported_booking_id: null });
+    const calls = S.calls.length; await a.run();
+    ok('server imports: the phone makes no booking of its own', a.data.bookings.length === 1 && S.calls.length === calls && !a.sync.status().lastError, a.data.bookings.map(b => b.id));
+    // …and the server's booking arrives like any other row.
+    const sid = cctx.window.StayLogCloud._icalBookingId({ feed_id: 'f1', uid: 'later@airbnb' });
+    S.apply('bookings', { account_id: ACC, id: sid, property_id: 'p1', check_in: '2026-12-20', check_out: '2026-12-22', status: 'confirmed', source: 'Airbnb', guest_name: 'Airbnb guest', round_off: 0, round_off_hand: false, msg_sent: {}, ical_gone: false, gap_closed: {} }, null);
+    S.events[1].imported_booking_id = sid;
+    await a.run();
+    ok('the server\'s booking comes down with the next sync', a.data.bookings.some(b => b.id === sid && b.guestName === 'Airbnb guest'));
+    // A manager's phone, server not importing yet: it never imports itself.
+    { const S2 = Server(); S2.access = { role: 'manager', permissions: {}, properties: ['p1'] };
+      const m = Device(S2, 'M', { data: { properties: [prop], bookings: [], expenses: [], staff: [], loans: [] }, planIcal }); m.on();
+      S2.events.push({ account_id: ACC, feed_id: 'f1', uid: 'mgr@airbnb', property_id: 'p1', platform: 'Airbnb', start_date: '2026-12-10', end_date: '2026-12-12',
+        summary: 'Reserved', description: '', kind: 'reserved', gone_at: null, imported_booking_id: null });
+      await m.run();
+      ok('a manager\'s phone never imports (the server or the owner\'s phone does)', m.data.bookings.length === 0 && S2.t.bookings.size === 0, m.data.bookings); }
+    const log = a.sync.icalLog();
+    ok('the panel\'s figures: the server\'s run (when, what) and per feed totals worked out here', log && log.server === true && log.at === '2026-11-15T03:30:00Z'
+      && log.created === 1 && log.feeds.f1 && log.feeds.f1.added === 2 && log.feeds.f1.lastChange.added === 1, log);
   }
 
   console.log('\nState is per login and account, and survives a restart');

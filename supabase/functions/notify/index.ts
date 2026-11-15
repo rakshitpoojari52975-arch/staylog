@@ -157,6 +157,7 @@ function db(env: Env, fetchImpl: Fetch) {
     legacy: false,                       // push_log without the inbox columns (inbox.sql not run)
     get: (p: string) => call('GET', p),
     del: (p: string) => call('DELETE', p),
+    patch: (p: string, body: unknown) => call('PATCH', p, body, { Prefer: 'return=minimal' }),
     col: () => d.stay ? 'account_id' : 'owner_id',
     mine,
     // Read once per request, from public: which model is live.
@@ -395,29 +396,54 @@ export function stayDates(ci: string, co: string) {
   const from = y1 === y2 && m1 === m2 ? String(Number(ci.slice(8, 10))) : fmtDay(ci);
   return `${from} → ${fmtDay(co)}`;
 }
-export async function newBookingPushes(list: unknown, d: ReturnType<typeof db>, nowMs: number) {
-  const out: { owner: string; key: string; alert: string; push: Push; skipped?: string }[] = [];
+// The import's own booking id for an event (as cloud.js and ical-sync make it).
+function fnv(str: string, seed: number) {
+  let h = seed >>> 0;
+  for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 16777619) >>> 0; }
+  return h.toString(16).padStart(8, '0');
+}
+export const icalBookingId = (e: { feed_id: string; uid: string }) =>
+  'ics_' + fnv(e.feed_id + '|' + e.uid, 2166136261) + fnv(e.uid + '|' + e.feed_id, 33554467);
+
+// New model (v68): ical-sync makes the bookings itself and names the events
+// whose booking it made, with their account. Each is re-read here; a stay is
+// news only when its booking is the import's own (not a link to one typed in
+// by hand or seen first on the other platform), live, and not yet begun.
+// Every event looked at is stamped announced_at — sent or not — so the next
+// run does not ask again; one left unstamped (a run cut short) is asked again.
+export async function newBookingPushes(list: unknown, d: ReturnType<typeof db>, nowMs: number, account?: string) {
+  const out: { owner: string; key: string; alert: string; push: Push; skipped?: string; settle?: string }[] = [];
   const today = istDate(nowMs);
   const rows: Record<string, any>[] = [];
+  if (d.stay && typeof account !== 'string') return out;
   for (const e of (Array.isArray(list) ? list : []).slice(0, 50) as Record<string, unknown>[]) {
     if (!e || typeof e.feed_id !== 'string' || typeof e.uid !== 'string') continue;
-    const r = (await d.get(`ical_events?feed_id=eq.${encodeURIComponent(e.feed_id)}&uid=eq.${encodeURIComponent(e.uid)}` +
-      `&select=${d.col()},property_id,platform,start_date,end_date,kind,gone_at`) || [])[0];
+    const r = (await d.get(`ical_events?${d.stay ? `account_id=eq.${account}&` : ''}feed_id=eq.${encodeURIComponent(e.feed_id)}&uid=eq.${encodeURIComponent(e.uid)}` +
+      `&select=${d.col()},feed_id,uid,property_id,platform,start_date,end_date,kind,gone_at${d.stay ? ',imported_booking_id,announced_at' : ''}`) || [])[0];
     if (r) { r.owner_id = r[d.col()]; rows.push(r); }
   }
   rows.sort((a, b) => (a.platform === 'Airbnb' ? 0 : 1) - (b.platform === 'Airbnb' ? 0 : 1));
   for (const r of rows) {
     const key = `stay:${r.property_id}:${r.start_date}:${r.end_date}`;
-    const skip = (why: string) => out.push({ owner: r.owner_id, key, alert: 'newBookings', push: null as unknown as Push, skipped: why });
+    const settle = d.stay ? `ical_events?account_id=eq.${r.owner_id}&feed_id=eq.${encodeURIComponent(r.feed_id)}&uid=eq.${encodeURIComponent(r.uid)}` : undefined;
+    const skip = (why: string) => out.push({ owner: r.owner_id, key, alert: 'newBookings', push: null as unknown as Push, skipped: why, settle });
+    if (d.stay && r.announced_at) { out.push({ owner: r.owner_id, key, alert: 'newBookings', push: null as unknown as Push, skipped: 'already announced' }); continue; }
     if (r.kind !== 'reserved') { skip('a block, not a stay'); continue; }
     if (r.gone_at) { skip('already gone from the feed'); continue; }
     if (r.start_date < today) { skip('check-in has passed'); continue; }
-    const known = await d.get(`bookings?${d.col()}=eq.${r.owner_id}&property_id=eq.${encodeURIComponent(r.property_id)}` +
-      `&check_in=eq.${r.start_date}&check_out=eq.${r.end_date}&deleted_at=is.null&status=neq.cancelled&select=id`) || [];
-    if (known.length) { skip('already a booking'); continue; }
+    if (d.stay) {
+      const own = icalBookingId(r);
+      if (r.imported_booking_id !== own) { skip(r.imported_booking_id ? 'linked to a booking already there' : 'not imported yet'); continue; }
+      const b = (await d.get(`bookings?account_id=eq.${r.owner_id}&id=eq.${encodeURIComponent(own)}&select=status`) || [])[0];
+      if (!b || b.status === 'cancelled') { skip('its booking is not live'); continue; }
+    } else {
+      const known = await d.get(`bookings?${d.col()}=eq.${r.owner_id}&property_id=eq.${encodeURIComponent(r.property_id)}` +
+        `&check_in=eq.${r.start_date}&check_out=eq.${r.end_date}&deleted_at=is.null&status=neq.cancelled&select=id`) || [];
+      if (known.length) { skip('already a booking'); continue; }
+    }
     const prop = (await d.get(`properties?${d.col()}=eq.${r.owner_id}&id=eq.${encodeURIComponent(r.property_id)}&select=name`) || [])[0];
     const n = nightsBetween(r.start_date, r.end_date);
-    out.push({ owner: r.owner_id, key, alert: 'newBookings', push: {
+    out.push({ owner: r.owner_id, key, alert: 'newBookings', settle, push: {
       title: `New ${r.platform} booking`,
       body: [stayDates(r.start_date, r.end_date), `${n} night${n === 1 ? '' : 's'}`, prop && prop.name].filter(Boolean).join(' · '),
       url: `./#open=stay&prop=${encodeURIComponent(r.property_id)}&in=${r.start_date}&out=${r.end_date}`,
@@ -465,9 +491,11 @@ export async function handle(req: Request, env: Env, fetchImpl: Fetch = fetch as
     }
     if (body && body.job === 'new-bookings') {
       const report: unknown[] = [];
-      for (const item of await newBookingPushes(body.events, d, nowMs)) {
-        if (item.skipped) { report.push({ key: item.key, skipped: item.skipped }); continue; }
-        report.push(...await toAll(item.owner, item.key, item.alert, item.push));
+      for (const item of await newBookingPushes(body.events, d, nowMs, body.account)) {
+        if (item.skipped) report.push({ key: item.key, skipped: item.skipped });
+        else report.push(...await toAll(item.owner, item.key, item.alert, item.push));
+        // New model: settled, sent or not (a push already claimed is not sent twice).
+        if (item.settle) await d.patch(item.settle + '&announced_at=is.null', { announced_at: new Date(nowMs).toISOString() }).catch(() => {});
       }
       return json({ ok: true, job: 'new-bookings', report });
     }

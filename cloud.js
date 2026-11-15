@@ -841,7 +841,9 @@
     return true;
   }
   // Asks the function to read this owner's feeds now, then syncs, which
-  // brings whatever it found onto the phone.
+  // brings whatever it found onto the phone. In the new model the function
+  // makes the bookings itself, at most once in 5 minutes per account; its
+  // answer then carries `throttled` with the time it can run again.
   async function importNow() {
     if (!session) throw new Error('not signed in');
     const c = await client();
@@ -1152,7 +1154,9 @@
       email: session?.user?.email || '',
       userId: session?.user?.id || '',
       online: navigator.onLine,
-      dirty, pushing, lastSync: last, lastError, brake, icalLog, schemaBehind, privacyNote,
+      dirty, pushing, lastSync: last, lastError, brake, schemaBehind, privacyNote,
+      // New model: the figures sync.js works out (and the server's run record).
+      icalLog: stayAcct() ? (window.StayLogSync.icalLog && window.StayLogSync.icalLog()) || null : icalLog,
       utensils: { held: utHeld, error: utError, setUp: utSetUp, last: utLast }, heldMarks: held, attError, attLog, attLast,
       devicePaused, deviceId: lsGet(DEVICE_KEY), boundOwner: lsGet(OWNER_KEY), retired, model,
     };
