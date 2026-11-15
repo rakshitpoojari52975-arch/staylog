@@ -22,6 +22,27 @@ Built beside the tables above; the app does not use it yet, and nothing in
 To undo: `stay/rollback-phase1.sql` (refuses once an account exists in
 `stay`), then remove `stay` from Exposed schemas.
 
+**Phase 3 (v62) — moving in and switching over.** In this order:
+
+1. Merge the PR (the app becomes v62; nothing changes yet).
+2. SQL editor: `stay/05-migrate.sql`, then `stay/check.sql` (all `ok`).
+3. Edge Functions → **notify** and **ical-sync**: paste the new `index.ts`
+   of each and deploy (Verify JWT stays off). They read
+   `public.app_status.model` and keep working on the old tables until the
+   switch.
+4. On the iPhone: ⋯ → **Inventory**, screenshot it all.
+5. ⋯ → **Move to the new system** → **Copy and compare**. Check the report
+   against the screenshots. Run it again as often as you like; nothing
+   changes until step 6.
+6. **Switch over** (it compares once more first).
+7. Database → **Webhooks**: point the attendance webhook at
+   `stay.attendance` and the utensils one at `stay.utensil_marks`.
+8. Ask Lakshmi to reopen her page and check it shows as before.
+
+To undo: `stay/rollback-cutover.sql`, point the two webhooks back at
+`public.attendance` / `public.utensil_marks`, reopen StayLog (it goes back
+to the old system with every change made since).
+
 **Phase 2 (v61):** `stay/04-phase2.sql` after 03 (lets a loan have no staff
 member, as the house's own loans do; adds "changed since" indexes). Then
 `stay/check.sql` again: all `ok`. The app ships the new sync engine but does

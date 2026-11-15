@@ -14,6 +14,12 @@
 //       {"job":"test"}                    a test push to his own devices
 // Anything else gets 401. Turn OFF "Verify JWT" for this function.
 //
+// Old model or new (v62): public.app_status.model says which. 'public' = the
+// old tables, one owner per owner_id. 'stay' = the `stay` schema after the
+// switch: everything by account_id, sent to each of the account's owners
+// (members), each with their own devices, choices and inbox. The same code
+// either way, so the rollback is one switch in the database.
+//
 // Environment: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY (provided by Supabase),
 // VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY, VAPID_SUBJECT, PUSH_CRON_SECRET (yours).
 // The private key lives only there — never in this repository.
@@ -44,8 +50,8 @@ const PAYS_US = new Set(['Direct', 'Booking.com']);
 // The app's balanceDue(): total − paid − round off (signed; only for guests
 // who pay us, Direct or Booking.com), and under ₹1 still counts as fully paid
 // for bookings from before round off. A real balance keeps its paise.
-export const balanceDue = (b: { total_amount?: unknown; paid?: unknown; round_off?: unknown; source?: unknown }) => {
-  const ro = PAYS_US.has(String(b.source || '').trim() || 'Direct') ? Number(b.round_off || 0) : 0;
+export const balanceDue = (b: { total_amount?: unknown; paid?: unknown; round_off?: unknown; source?: unknown }, paysUs: Set<string> = PAYS_US) => {
+  const ro = paysUs.has(String(b.source || '').trim() || 'Direct') ? Number(b.round_off || 0) : 0;
   const d = Math.round((Number(b.total_amount || 0) - Number(b.paid || 0) - ro) * 100) / 100;
   return d < 1 ? 0 : d;
 };
@@ -130,18 +136,42 @@ function db(env: Env, fetchImpl: Fetch) {
   const key = String(env.SUPABASE_SERVICE_ROLE_KEY || '');
   const headers: Record<string, string> = { apikey: key, 'Content-Type': 'application/json' };
   if (key.startsWith('eyJ')) headers.Authorization = `Bearer ${key}`;
-  const call = async (method: string, path: string, body?: unknown, extra: Record<string, string> = {}) => {
+  // In the new model every table is in `stay` (PostgREST's profile headers).
+  const call = async (method: string, path: string, body?: unknown, extra: Record<string, string> = {}, schema?: string) => {
+    const sch = schema !== undefined ? schema : (d.stay ? 'stay' : '');
+    const prof: Record<string, string> = sch ? { 'Accept-Profile': sch, 'Content-Profile': sch } : {};
     const res = await fetchImpl(`${base}/rest/v1/${path}`, {
-      method, headers: { ...headers, ...extra }, body: body === undefined ? undefined : JSON.stringify(body) });
+      method, headers: { ...headers, ...prof, ...extra }, body: body === undefined ? undefined : JSON.stringify(body) });
     if (!res.ok) throw new Error(`${method} ${path.split('?')[0]}: HTTP ${res.status} ${await res.text().catch(() => '')}`.trim());
     const t = await res.text(); return t ? JSON.parse(t) : null;
   };
-  const log = (owner: string, k: string) => `push_log?owner_id=eq.${owner}&key=eq.${encodeURIComponent(k)}`;
+  // Whose rows: owner_id (old) or account_id (new). A target is one person's
+  // devices, choices and inbox within one tenant; in the old model both are
+  // the owner.
+  const who = (t: Target) => d.stay ? `account_id=eq.${t.tenant}&recipient=eq.${t.user}` : `owner_id=eq.${t.tenant}`;
+  const mine = (t: Target) => d.stay ? `account_id=eq.${t.tenant}&user_id=eq.${t.user}` : `owner_id=eq.${t.tenant}`;
+  const log = (t: Target, k: string) => `push_log?${who(t)}&key=eq.${encodeURIComponent(k)}`;
   const d = {
     base, key,
+    stay: false,                         // the new model (public.app_status.model = 'stay')
     legacy: false,                       // push_log without the inbox columns (inbox.sql not run)
     get: (p: string) => call('GET', p),
     del: (p: string) => call('DELETE', p),
+    col: () => d.stay ? 'account_id' : 'owner_id',
+    mine,
+    // Read once per request, from public: which model is live.
+    model: async () => {
+      const rows = await call('GET', 'app_status?id=eq.1&select=model', undefined, {}, '').catch(() => null);
+      d.stay = !!(Array.isArray(rows) && rows[0] && rows[0].model === 'stay');
+      return d.stay ? 'stay' : 'public';
+    },
+    // Who receives a tenant's reminders: the owner (old); the account's
+    // active owners (new).
+    recipients: async (tenant: string): Promise<Target[]> => {
+      if (!d.stay) return [{ tenant, user: tenant }];
+      const rows = await call('GET', `members?account_id=eq.${tenant}&role=eq.owner&active=is.true&select=user_id`) || [];
+      return rows.map((r: { user_id: string }) => ({ tenant, user: r.user_id }));
+    },
     // The claim and the record are separate. A row is both the inbox entry
     // (title, body, url, alert, sent_at, delivered, read_at) and, through
     // claimed_at, the right to send it now. A key is claimed when it is new,
@@ -149,13 +179,15 @@ function db(env: Env, fetchImpl: Fetch) {
     // over 10 minutes old from a run that died). So a cron that fires twice
     // sends once, a reminder no device took is retried, and two runs at the
     // same moment cannot both send: Postgres re-checks the condition.
-    claim: async (owner: string, k: string, alert: string, push: Push, nowMs: number): Promise<'new' | 'retry' | false> => {
+    claim: async (owner: Target, k: string, alert: string, push: Push, nowMs: number): Promise<'new' | 'retry' | false> => {
       const at = new Date(nowMs).toISOString();
       const entry = { title: push.title, body: push.body, url: push.url, alert };
-      if (!d.legacy) {
+      const id = d.stay ? { account_id: owner.tenant, recipient: owner.user } : { owner_id: owner.tenant };
+      const conflict = d.stay ? 'account_id,recipient,key' : 'owner_id,key';
+      if (!d.legacy || d.stay) {
         try {
-          const rows = await call('POST', 'push_log?on_conflict=owner_id,key',
-            [{ owner_id: owner, key: k, ...entry, sent_at: at, delivered: false, claimed_at: at }],
+          const rows = await call('POST', `push_log?on_conflict=${conflict}`,
+            [{ ...id, key: k, ...entry, sent_at: at, delivered: false, claimed_at: at }],
             { Prefer: 'resolution=ignore-duplicates,return=representation' });
           if (Array.isArray(rows) && rows.length) return 'new';
           const stale = new Date(nowMs - 10 * 60e3).toISOString();
@@ -166,26 +198,26 @@ function db(env: Env, fetchImpl: Fetch) {
           }
           return false;
         } catch (e) {
-          if (!/column|PGRST204|42703|schema cache/i.test(String((e as Error).message))) throw e;
+          if (d.stay || !/column|PGRST204|42703|schema cache/i.test(String((e as Error).message))) throw e;
           d.legacy = true;                 // before inbox.sql: claim by key alone, as it used to
         }
       }
-      const rows = await call('POST', 'push_log?on_conflict=owner_id,key', [{ owner_id: owner, key: k }],
+      const rows = await call('POST', 'push_log?on_conflict=owner_id,key', [{ owner_id: owner.tenant, key: k }],
         { Prefer: 'resolution=ignore-duplicates,return=representation' });
       return Array.isArray(rows) && rows.length > 0 ? 'new' : false;
     },
     // What happened, kept: delivered or not. The claim is let go either way.
-    record: async (owner: string, k: string, delivered: boolean, nowMs: number) => {
+    record: async (owner: Target, k: string, delivered: boolean, nowMs: number) => {
       if (d.legacy) { if (!delivered) await call('DELETE', log(owner, k)).catch(() => {}); return; }
       await call('PATCH', log(owner, k), delivered
         ? { delivered: true, claimed_at: null, sent_at: new Date(nowMs).toISOString() }
         : { delivered: false, claimed_at: null }).catch(() => {});
     },
     // The inbox's unread count (last 30 days): the number on the app icon.
-    unread: async (owner: string, nowMs: number): Promise<number | undefined> => {
-      if (d.legacy) return undefined;
+    unread: async (owner: Target, nowMs: number): Promise<number | undefined> => {
+      if (d.legacy && !d.stay) return undefined;
       const since = new Date(nowMs - INBOX_DAYS * 86400e3).toISOString();
-      const rows = await call('GET', `push_log?owner_id=eq.${owner}&read_at=is.null&sent_at=gte.${since}&select=key`).catch(() => null);
+      const rows = await call('GET', `push_log?${who(owner)}&read_at=is.null&sent_at=gte.${since}&select=key`).catch(() => null);
       return Array.isArray(rows) ? rows.length : undefined;
     },
   };
@@ -201,8 +233,9 @@ const istTime = (iso: string) => new Date(iso).toLocaleTimeString('en-IN', { hou
 const rupees = (n: number) => '₹' + Number(n).toLocaleString('en-IN', Number(n) % 1 ? { minimumFractionDigits: 2, maximumFractionDigits: 2 } : {});
 const fmtDay = (iso: string) => new Date(iso + 'T00:00:00Z').toLocaleDateString('en-IN', { day: 'numeric', month: 'short', timeZone: 'UTC' });
 
-async function prefsOf(d: ReturnType<typeof db>, owner: string): Promise<Record<string, boolean>> {
-  const rows = await d.get(`notification_prefs?owner_id=eq.${owner}&select=prefs`) || [];
+export type Target = { tenant: string; user: string };
+async function prefsOf(d: ReturnType<typeof db>, owner: Target): Promise<Record<string, boolean>> {
+  const rows = await d.get(`notification_prefs?${d.mine(owner)}&select=prefs`) || [];
   const p = (rows[0] && rows[0].prefs) || {};
   return Object.fromEntries(ALERTS.map(a => [a, p[a] !== false]));
 }
@@ -212,9 +245,9 @@ async function prefsOf(d: ReturnType<typeof db>, owner: string): Promise<Record<
 // a device took it (delivered = false: retried the next time it comes up).
 // Each push carries the inbox's unread count for the app icon's badge, and
 // its key in the url, so tapping it marks it read.
-async function deliver(owner: string, key: string | null, alert: string, push: Push, d: ReturnType<typeof db>,
+async function deliver(owner: Target, key: string | null, alert: string, push: Push, d: ReturnType<typeof db>,
                        env: Env, fetchImpl: Fetch, nowMs: number) {
-  const subs: Sub[] = await d.get(`push_subscriptions?owner_id=eq.${owner}&select=endpoint,p256dh,auth`) || [];
+  const subs: Sub[] = await d.get(`push_subscriptions?${d.mine(owner)}&select=endpoint,p256dh,auth`) || [];
   if (!key && !subs.length) return { sent: 0, gone: 0, skipped: 'no devices' };
   if (key && !(await d.claim(owner, key, alert, push, nowMs))) return { sent: 0, gone: 0, skipped: 'already sent' };
   if (!subs.length) { await d.record(owner, key as string, false, nowMs); return { sent: 0, gone: 0, skipped: 'no devices' }; }
@@ -230,7 +263,7 @@ async function deliver(owner: string, key: string | null, alert: string, push: P
     try { status = await sendPush(s, out, env, fetchImpl, Math.floor(nowMs / 1000)); } catch { status = 0; }
     if (status >= 200 && status < 300) sent++;
     else if (status === 404 || status === 410) {           // the device unsubscribed for good
-      gone++; await d.del(`push_subscriptions?endpoint=eq.${encodeURIComponent(s.endpoint)}`).catch(() => {});
+      gone++; await d.del(`push_subscriptions?${d.stay ? d.mine(owner) + '&' : ''}endpoint=eq.${encodeURIComponent(s.endpoint)}`).catch(() => {});
     }
   }
   if (key) await d.record(owner, key, sent > 0, nowMs);
@@ -244,7 +277,8 @@ export async function dailyPushes(owner: string, d: ReturnType<typeof db>, nowMs
     Promise<{ key: string; alert: string; push: Push }[]> {
   const tomorrow = istDate(nowMs, 1), today = istDate(nowMs);
   const out: { key: string; alert: string; push: Push }[] = [];
-  const props: { id: string; name: string }[] = await d.get(`properties?owner_id=eq.${owner}&deleted_at=is.null&select=id,name`) || [];
+  const T = `${d.col()}=eq.${owner}`;
+  const props: { id: string; name: string }[] = await d.get(`properties?${T}&deleted_at=is.null&select=id,name`) || [];
   const propName = (id: string) => (props.find(p => p.id === id) || { name: '' }).name;
   // Only the columns the minimal cloud keeps: no guest names, no amounts.
   const cols = 'id,guests,property_id,check_in,check_out,status';
@@ -253,7 +287,7 @@ export async function dailyPushes(owner: string, d: ReturnType<typeof db>, nowMs
     return [`${g} guest${g > 1 ? 's' : ''}`, n > 0 ? `${n} night${n === 1 ? '' : 's'}` : '', propName(b.property_id)].filter(Boolean).join(' · ');
   };
 
-  const arriving = await d.get(`bookings?owner_id=eq.${owner}&deleted_at=is.null&status=neq.cancelled&check_in=eq.${tomorrow}&select=${cols}`) || [];
+  const arriving = await d.get(`bookings?${T}&deleted_at=is.null&status=neq.cancelled&check_in=eq.${tomorrow}&select=${cols}`) || [];
   for (const b of arriving) out.push({ alert: 'arrivals', key: `arrival:${b.id}:${b.check_in}`, push: {
     title: 'Guest arriving tomorrow',
     body: `${stay(b)}. Tap to send the arrival message.`,
@@ -264,14 +298,21 @@ export async function dailyPushes(owner: string, d: ReturnType<typeof db>, nowMs
   // only for guests who pay us (Direct, Booking.com); it is empty for every
   // other platform. A database from before minimal-cloud.sql has no
   // balance_due yet: then, and only then, the old amounts are used.
-  const leavingQ = `bookings?owner_id=eq.${owner}&deleted_at=is.null&status=neq.cancelled&check_out=eq.${tomorrow}&select=`;
-  const leaving = await d.get(leavingQ + cols + ',balance_due')
-    .catch(() => d.get(leavingQ + cols + ',source,total_amount,paid,round_off').catch(() => d.get(leavingQ + cols + ',source,total_amount,paid')))
+  // In the new model the amounts themselves are there; who pays the house is
+  // the account's own list.
+  const leavingQ = `bookings?${T}&deleted_at=is.null&status=neq.cancelled&check_out=eq.${tomorrow}&select=`;
+  let paysUs = PAYS_US;
+  if (d.stay) {
+    const acct = (await d.get(`accounts?id=eq.${owner}&select=pays_directly_sources`) || [])[0];
+    if (acct && Array.isArray(acct.pays_directly_sources)) paysUs = new Set(acct.pays_directly_sources);
+  }
+  const leaving = await (d.stay ? d.get(leavingQ + cols + ',source,total_amount,paid,round_off') : d.get(leavingQ + cols + ',balance_due')
+    .catch(() => d.get(leavingQ + cols + ',source,total_amount,paid,round_off').catch(() => d.get(leavingQ + cols + ',source,total_amount,paid'))))
     || [];
   for (const b of leaving) {
     const due = 'balance_due' in b
       ? (b.balance_due == null ? 0 : Number(b.balance_due))
-      : ('total_amount' in b && PAYS_US.has(String(b.source || '').trim() || 'Direct') ? balanceDue(b) : 0);
+      : ('total_amount' in b && paysUs.has(String(b.source || '').trim() || 'Direct') ? balanceDue(b, paysUs) : 0);
     if (!(due > 0)) continue;
     out.push({ alert: 'balances', key: `balance:${b.id}:${b.check_out}`, push: {
       title: `Balance due at check-out tomorrow`,
@@ -279,7 +320,11 @@ export async function dailyPushes(owner: string, d: ReturnType<typeof db>, nowMs
       url: `./#open=${encodeURIComponent(b.id)}&send=payment`, tag: `balance-${b.id}` } });
   }
 
-  const sync = (await d.get(`sync_status?owner_id=eq.${owner}&select=last_sync_at`) || [])[0];
+  // The newest sync of any of its devices (new model: one row per device).
+  const sync = d.stay
+    ? ((await d.get(`sync_status?${T}&last_pull_at=not.is.null&select=last_pull_at&order=last_pull_at.desc&limit=1`) || [])
+        .map((x: { last_pull_at: string }) => ({ last_sync_at: x.last_pull_at }))[0])
+    : (await d.get(`sync_status?${T}&select=last_sync_at`) || [])[0];
   if (sync && Date.parse(sync.last_sync_at) < nowMs - STALE_DAYS * 86400e3) {
     const days = Math.floor((nowMs - Date.parse(sync.last_sync_at)) / 86400e3);
     out.push({ alert: 'stale', key: `stale:${today}`, push: {
@@ -291,7 +336,7 @@ export async function dailyPushes(owner: string, d: ReturnType<typeof db>, nowMs
   // The encrypted backup: none in 3 days. Like the sync warning, quiet until
   // the first backup exists (before then there is nothing to have stopped),
   // and quiet if backups.sql has not run.
-  const last = (await d.get(`backups?owner_id=eq.${owner}&select=created_at&order=created_at.desc&limit=1`).catch(() => []) || [])[0];
+  const last = (await d.get(`backups?${T}&select=created_at&order=created_at.desc&limit=1`).catch(() => []) || [])[0];
   if (last && Date.parse(last.created_at) < nowMs - BACKUP_DAYS * 86400e3) {
     const days = Math.floor((nowMs - Date.parse(last.created_at)) / 86400e3);
     out.push({ alert: 'backup', key: `backup:${today}`, push: {
@@ -314,9 +359,15 @@ export async function eventPush(payload: Record<string, any>, d: ReturnType<type
   if (!fresh) return null;
   // The body is only a pointer (v60, review 1.6): the mark is re-read by id,
   // and its owner, staff and date come from the row, never from the request.
-  const rec = (await d.get(`${table}?id=eq.${encodeURIComponent(sent.id)}&select=id,owner_id,staff_id,date,marked_at,deleted_at`) || [])[0];
-  if (!rec || !rec.owner_id || rec.deleted_at) return null;
-  const staff = (await d.get(`staff?id=eq.${encodeURIComponent(rec.staff_id)}&owner_id=eq.${rec.owner_id}&select=name`) || [])[0];
+  // New model: the account comes with the pointer (ids are per account) and
+  // is checked by the re-read like everything else.
+  const col = d.col();
+  if (d.stay && !sent.account_id) return null;
+  const rec = (await d.get(`${table}?${d.stay ? `account_id=eq.${encodeURIComponent(sent.account_id)}&` : ''}id=eq.${encodeURIComponent(sent.id)}` +
+    `&select=id,${col},staff_id,date,marked_at,deleted_at`) || [])[0];
+  if (!rec || !rec[col] || rec.deleted_at) return null;
+  rec.owner_id = rec[col];
+  const staff = (await d.get(`staff?id=eq.${encodeURIComponent(rec.staff_id)}&${col}=eq.${rec.owner_id}&select=name`) || [])[0];
   const who = (staff && String(staff.name).split(/\s+/)[0]) || 'Your house help';
   const at = rec.marked_at ? ` at ${istTime(rec.marked_at)}` : '';
   return table === 'attendance'
@@ -351,8 +402,8 @@ export async function newBookingPushes(list: unknown, d: ReturnType<typeof db>, 
   for (const e of (Array.isArray(list) ? list : []).slice(0, 50) as Record<string, unknown>[]) {
     if (!e || typeof e.feed_id !== 'string' || typeof e.uid !== 'string') continue;
     const r = (await d.get(`ical_events?feed_id=eq.${encodeURIComponent(e.feed_id)}&uid=eq.${encodeURIComponent(e.uid)}` +
-      '&select=owner_id,property_id,platform,start_date,end_date,kind,gone_at') || [])[0];
-    if (r) rows.push(r);
+      `&select=${d.col()},property_id,platform,start_date,end_date,kind,gone_at`) || [])[0];
+    if (r) { r.owner_id = r[d.col()]; rows.push(r); }
   }
   rows.sort((a, b) => (a.platform === 'Airbnb' ? 0 : 1) - (b.platform === 'Airbnb' ? 0 : 1));
   for (const r of rows) {
@@ -361,10 +412,10 @@ export async function newBookingPushes(list: unknown, d: ReturnType<typeof db>, 
     if (r.kind !== 'reserved') { skip('a block, not a stay'); continue; }
     if (r.gone_at) { skip('already gone from the feed'); continue; }
     if (r.start_date < today) { skip('check-in has passed'); continue; }
-    const known = await d.get(`bookings?owner_id=eq.${r.owner_id}&property_id=eq.${encodeURIComponent(r.property_id)}` +
+    const known = await d.get(`bookings?${d.col()}=eq.${r.owner_id}&property_id=eq.${encodeURIComponent(r.property_id)}` +
       `&check_in=eq.${r.start_date}&check_out=eq.${r.end_date}&deleted_at=is.null&status=neq.cancelled&select=id`) || [];
     if (known.length) { skip('already a booking'); continue; }
-    const prop = (await d.get(`properties?id=eq.${encodeURIComponent(r.property_id)}&select=name`) || [])[0];
+    const prop = (await d.get(`properties?${d.col()}=eq.${r.owner_id}&id=eq.${encodeURIComponent(r.property_id)}&select=name`) || [])[0];
     const n = nightsBetween(r.start_date, r.end_date);
     out.push({ owner: r.owner_id, key, alert: 'newBookings', push: {
       title: `New ${r.platform} booking`,
@@ -382,6 +433,16 @@ export async function handle(req: Request, env: Env, fetchImpl: Fetch = fetch as
   if (!env.SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE_KEY) return json({ error: 'function is missing its Supabase settings' }, 500);
   const d = db(env, fetchImpl);
   const body = await req.json().catch(() => ({}));
+  await d.model();
+  // One reminder for a tenant, to each of its recipients, by their own choices.
+  const toAll = async (tenant: string, key: string, alert: string, push: Push) => {
+    const out: unknown[] = [];
+    for (const t of await d.recipients(tenant)) {
+      if (!(await prefsOf(d, t))[alert]) { out.push({ key, skipped: 'turned off' }); continue; }
+      out.push({ key, ...(await deliver(t, key, alert, push, d, env, fetchImpl, nowMs)) });
+    }
+    return out;
+  };
 
   const given = req.headers.get('x-cron-secret') || '';
   if (given) {
@@ -389,35 +450,33 @@ export async function handle(req: Request, env: Env, fetchImpl: Fetch = fetch as
     if (body && body.job === 'daily') {
       // Everyone with a device, and everyone whose phone syncs: the inbox keeps
       // a reminder even when no device is left to take it.
-      const subs: Sub[] = await d.get('push_subscriptions?select=owner_id') || [];
-      const synced: { owner_id: string }[] = await d.get('sync_status?select=owner_id').catch(() => []) || [];
-      const owners = [...new Set([...subs, ...synced].map(s => s.owner_id).filter(Boolean))] as string[];
+      // New model: every account with an active owner.
+      const owners = d.stay
+        ? [...new Set((await d.get('members?role=eq.owner&active=is.true&select=account_id') || []).map((m: { account_id: string }) => m.account_id))] as string[]
+        : [...new Set([...(await d.get('push_subscriptions?select=owner_id') || []),
+                       ...(await d.get('sync_status?select=owner_id').catch(() => []) || [])]
+            .map((s: { owner_id: string }) => s.owner_id).filter(Boolean))] as string[];
       // Housekeeping: the log keeps 60 days (the inbox shows 30).
       await d.del(`push_log?sent_at=lt.${new Date(nowMs - KEEP_LOG_DAYS * 86400e3).toISOString()}`).catch(() => {});
       const report: unknown[] = [];
-      for (const owner of owners) {
-        const prefs = await prefsOf(d, owner);
-        for (const item of await dailyPushes(owner, d, nowMs)) {
-          if (!prefs[item.alert]) { report.push({ key: item.key, skipped: 'turned off' }); continue; }
-          report.push({ key: item.key, ...(await deliver(owner, item.key, item.alert, item.push, d, env, fetchImpl, nowMs)) });
-        }
-      }
+      for (const owner of owners)
+        for (const item of await dailyPushes(owner, d, nowMs)) report.push(...await toAll(owner, item.key, item.alert, item.push));
       return json({ ok: true, job: 'daily', report });
     }
     if (body && body.job === 'new-bookings') {
       const report: unknown[] = [];
       for (const item of await newBookingPushes(body.events, d, nowMs)) {
         if (item.skipped) { report.push({ key: item.key, skipped: item.skipped }); continue; }
-        if (!(await prefsOf(d, item.owner))[item.alert]) { report.push({ key: item.key, skipped: 'turned off' }); continue; }
-        report.push({ key: item.key, ...(await deliver(item.owner, item.key, item.alert, item.push, d, env, fetchImpl, nowMs)) });
+        report.push(...await toAll(item.owner, item.key, item.alert, item.push));
       }
       return json({ ok: true, job: 'new-bookings', report });
     }
     if (body && body.table) {
       const ev = await eventPush(body, d);
       if (!ev) return json({ ok: true, skipped: 'not a new mark' });
-      if (!(await prefsOf(d, ev.owner))[ev.alert]) return json({ ok: true, skipped: 'turned off' });
-      return json({ ok: true, key: ev.key, ...(await deliver(ev.owner, ev.key, ev.alert, ev.push, d, env, fetchImpl, nowMs)) });
+      const sent = await toAll(ev.owner, ev.key, ev.alert, ev.push) as Record<string, unknown>[];
+      if (sent.length && sent.every(x => x.skipped === 'turned off')) return json({ ok: true, skipped: 'turned off' });
+      return json({ ok: true, key: ev.key, ...(sent.find(x => !x.skipped) || sent[0] || {}), recipients: sent.length });
     }
     return json({ error: 'unknown job' }, 400);
   }
@@ -429,9 +488,16 @@ export async function handle(req: Request, env: Env, fetchImpl: Fetch = fetch as
   const user = who.ok ? await who.json().catch(() => null) : null;
   if (!user || !user.id) return json({ error: 'not allowed' }, 401);
   if (!body || body.job !== 'test') return json({ error: 'unknown job' }, 400);
-  const r = await deliver(String(user.id), null, 'test', {
-    title: 'StayLog test', body: 'Notifications are on for this iPhone.', url: './#open=menu', tag: 'test' }, d, env, fetchImpl, nowMs);
-  return json({ ok: true, ...r });
+  const test = { title: 'StayLog test', body: 'Notifications are on for this iPhone.', url: './#open=menu', tag: 'test' };
+  if (!d.stay) return json({ ok: true, ...(await deliver({ tenant: String(user.id), user: String(user.id) }, null, 'test', test, d, env, fetchImpl, nowMs)) });
+  // New model: their own devices, in each account they belong to.
+  const accts = await d.get(`members?user_id=eq.${user.id}&active=is.true&select=account_id`) || [];
+  let sent = 0, gone = 0;
+  for (const a of accts) {
+    const r = await deliver({ tenant: a.account_id, user: String(user.id) }, null, 'test', test, d, env, fetchImpl, nowMs);
+    sent += r.sent; gone += r.gone;
+  }
+  return json({ ok: true, sent, gone, ...(sent || gone ? {} : { skipped: 'no devices' }) });
 }
 
 // deno-lint-ignore no-explicit-any

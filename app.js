@@ -6,7 +6,7 @@
 // ─── Build ────────────────────────────────────────────────────────────────────
 // Bump BOTH of these together. This date sat at 28 Sept through a dozen
 // releases and was read, reasonably, as proof the upload had not landed.
-const APP_VERSION='v61', APP_BUILT='15 Nov 2026';
+const APP_VERSION='v62', APP_BUILT='15 Nov 2026';
 // The CACHE_NAME of the sw.js released with this app.js. Every release bumps
 // APP_VERSION and CACHE_NAME together, so one is derived from the other rather
 // than being a fourth thing to forget; the tests fail if they ever disagree.
@@ -966,7 +966,7 @@ async function openStay(o){
   if(!b&&window.StayLogCloud){
     setState({tab:'bookings',bookingFilter:'all',filterProp:'all',modal:null,editItem:null,stayHint:'Fetching the new booking…'});
     try{
-      await window.StayLogCloud.checkIn(true);
+      await (stayActive()?window.StayLogSync.sync({manual:true}):window.StayLogCloud.checkIn(true));
       for(let i=0;i<60&&window.StayLogCloud.status().pushing;i++)await new Promise(r=>setTimeout(r,250));
     }catch(e){}
     b=findStay(o);
@@ -1224,6 +1224,177 @@ function renderInventoryModal(){
   return modal('Inventory',content);
 }
 
+// ─── Moving to the new system (revamp phase 3) ───────────────────────────────
+// The phone holds the full data (the minimal cloud), so it moves it in:
+// "Copy and compare" writes every row into `stay` (re-running replaces), brings
+// across what only the cloud has (her login and marks, calendar links, devices,
+// inbox, encrypted backups), reads it all back and compares it with this
+// phone — the same Inventory figures, and row by row. Nothing switches until
+// they match and he taps "Switch over", which copies and compares once more,
+// then switches in one transaction (stay.cutover). This phone's old copy is
+// never written, so the rollback (rollback-cutover.sql) finds it as it was.
+let mv={busy:false,step:'',report:null,error:'',done:false,acct:null,server:null};
+const MOVE_SECTIONS=[['counts','Records'],['totals','Money, all time'],['months','Money by month'],['loans','Loans'],
+  ['staff','Unpaid wages'],['receipts','Receipts']];
+function moveReport(phone,server,acct,up,copied){
+  const strip=d=>({...d,attendance:[]});      // her marks are in the cloud now, not in the phone's data
+  const A=inventoryOf(strip(phone)), B=inventoryOf(strip(server));
+  const same=(x,y)=>JSON.stringify(x)===JSON.stringify(y);
+  const sections=MOVE_SECTIONS.map(([k,label])=>{
+    let diffs=[];
+    if(k==='counts')diffs=Object.keys(A.counts).filter(c=>A.counts[c]!==B.counts[c]).map(c=>`${c}: phone ${A.counts[c]}, new ${B.counts[c]}`);
+    else if(k==='totals')diffs=Object.keys(A.totals).filter(c=>A.totals[c]!==B.totals[c]).map(c=>`${c}: phone ${fmtCur(A.totals[c])}, new ${fmtCur(B.totals[c])}`);
+    else{
+      const key=k==='months'?'month':k==='receipts'?'series':'id';
+      const ma=new Map(A[k].map(x=>[x[key],x])), mb=new Map(B[k].map(x=>[x[key],x]));
+      for(const id of new Set([...ma.keys(),...mb.keys()]))if(!same(ma.get(id),mb.get(id)))diffs.push(`${id}: ${ma.has(id)?'':'not on the phone'}${mb.has(id)?'':'missing in the new system'}${ma.has(id)&&mb.has(id)?'figures differ':''}`);
+    }
+    return {k,label,ok:!diffs.length,diffs};
+  });
+  const rows=window.StayLogSync.migration.compareRows(phone,server,acct);
+  const rowsOk=!rows.missing.length&&!rows.extra.length&&!rows.differ.length;
+  return {at:new Date().toISOString(),sections,rows,rowsOk,match:rowsOk&&sections.every(x=>x.ok),inv:B,
+    written:up.written,pruned:up.pruned,placeholders:up.placeholders,copied:copied||{}};
+}
+async function moveCopyCompare(){
+  const C=window.StayLogCloud, Y=window.StayLogSync;
+  const step=t=>{mv.step=t;render();};
+  mv={...mv,busy:true,error:'',report:null,done:false};
+  try{
+    step('Syncing this phone the usual way first…');
+    await C.push(state.data,{manual:true});            // her marks become wages on the phone first
+    const st=C.status();
+    if(st.devicePaused)throw new Error('Sync is paused on this phone: another phone syncs this account. Make this your only phone first (Cloud sync).');
+    if(st.lastError)throw new Error('The usual sync failed: '+st.lastError);
+    step('Opening your account in the new system…');
+    const name=((state.data.properties||[])[0]||{}).name||'My homestay';
+    const acct=await Y.migration.account(name,name);
+    const up=await Y.migration.upload(acct,state.data,(t,i,n)=>step(`Copying ${t.replace('_',' ')}… ${Math.min(i+200,n)} of ${n}`));
+    step('Copying what only the cloud has…');
+    const copied=await Y.migration.copy(acct);
+    step('Reading it all back to compare…');
+    const server=await Y.migration.snapshot(acct,state.data);
+    mv={...mv,busy:false,step:'',acct,server,report:moveReport(state.data,server,acct,up,copied)};
+  }catch(err){ mv={...mv,busy:false,step:'',error:(err&&err.message)||String(err)}; }
+  render();
+}
+async function moveSwitch(){
+  if(!confirm('Switch StayLog to the new system now?\n\nThe old cloud becomes read-only, older copies of the app stop syncing, and Lakshmi\'s page starts using the new system. It can be undone with rollback-cutover.sql.'))return;
+  await moveCopyCompare();
+  if(!mv.report||!mv.report.match){alert('The fresh comparison did not match, so nothing was switched. See the report.');return;}
+  const C=window.StayLogCloud, Y=window.StayLogSync;
+  mv={...mv,busy:true,step:'Switching over…'};render();
+  try{
+    await Y.migration.cutover(mv.acct);
+    moving=true;
+    Y.activate(C.status().userId,mv.acct);
+    state.data=normalizeData(JSON.parse(JSON.stringify(mv.server)));
+    saveData(state.data);
+    Y.start();
+    await C.refreshModel();
+    mv={...mv,busy:false,step:'',done:true};
+    showToast('Switched to the new system');
+  }catch(err){ mv={...mv,busy:false,step:'',error:(err&&err.message)||String(err)}; }
+  finally{ moving=false; }
+  render();
+}
+function renderMoveModal(){
+  const box=(attr,tone,...kids)=>div({[attr]:'1',style:{background:tone==='ok'?'var(--accent-light)':tone==='bad'?'var(--danger-light)':'var(--surface-2)',
+    border:'1px solid '+(tone==='ok'?'var(--accent-line)':tone==='bad'?'var(--danger-line)':'var(--border)'),borderRadius:'var(--radius-sm)',
+    padding:'11px 13px',fontSize:12.5,lineHeight:1.55,color:'var(--text-mid)'}},...kids);
+  const content=()=>{
+    const w=div({'data-move':'1',style:{display:'flex',flexDirection:'column',gap:11}});
+    if(mv.done){
+      w.appendChild(box('data-move-done','ok',div({style:{fontSize:13.5,fontWeight:700,color:'var(--accent)',marginBottom:3}},'You are on the new system'),
+        'Everything is in the new system and this phone syncs with it row by row. Lakshmi’s page uses it too. Your old copy on this phone is kept as it was.'));
+      w.appendChild(btn({className:'btn-primary',style:{width:'100%'},onClick:closeModal},'Done'));
+      return w;
+    }
+    w.appendChild(div({style:{fontSize:12.5,color:'var(--text-mid)',lineHeight:1.55}},
+      'First take screenshots of ⋯ → Inventory. Then Copy and compare: everything on this phone is copied into the new system and read back. '+
+      'Nothing changes for you or Lakshmi until you tap Switch over, and you can copy and compare as many times as you like. '+
+      'Guest ID photos are not copied: they stay on this phone.'));
+    if(mv.busy)w.appendChild(box('data-move-step','',mv.step||'Working…'));
+    if(mv.error)w.appendChild(box('data-move-error','bad',mv.error));
+    const r=mv.report;
+    if(r&&!mv.busy){
+      w.appendChild(box('data-move-verdict',r.match?'ok':'bad',
+        div({style:{fontSize:13.5,fontWeight:700,color:r.match?'var(--accent)':'var(--danger)',marginBottom:3}},
+          r.match?'Everything matches':'Something does not match'),
+        r.match?'The new system holds exactly what this phone holds. Compare the figures below with your Inventory screenshots, then switch over.'
+          :'Nothing has been switched. Send a screenshot of this report; the differences are listed below.'));
+      for(const x of r.sections){
+        const row=div({'data-move-section':x.k,style:{fontSize:12.5,lineHeight:1.5}},
+          span({style:{fontWeight:700,color:x.ok?'var(--accent)':'var(--danger)'}},(x.ok?'✓ ':'✗ ')+x.label));
+        x.diffs.slice(0,6).forEach(d=>row.appendChild(div({style:{color:'var(--danger)',fontSize:11.5}},d)));
+        w.appendChild(row);
+      }
+      const rr=r.rows;
+      w.appendChild(div({'data-move-rows':'1',style:{fontSize:12.5,lineHeight:1.5}},
+        span({style:{fontWeight:700,color:r.rowsOk?'var(--accent)':'var(--danger)'}},(r.rowsOk?'✓ ':'✗ ')+`Row by row (${r.written} copied)`),
+        ...[...rr.missing.slice(0,5).map(k=>`missing in the new system: ${k}`),...rr.extra.slice(0,5).map(k=>`only in the new system: ${k}`),
+          ...rr.differ.slice(0,5).map(d=>`differs: ${d.k} (${d.fields.join(', ')})`)].map(t=>div({style:{color:'var(--danger)',fontSize:11.5}},t))));
+      const T=r.inv.totals, C=r.inv.counts;
+      w.appendChild(box('data-move-figures','',div({className:'kicker'},'In the new system'),
+        `${C.properties} properties · ${C.bookings} bookings (${C.cancelled} cancelled) · ${C.expenses} expenses · ${C.staff} staff · ${C.loans} loans · ${C.repayments} repayments · ${C.idPhotos} ID photos (on this phone)`,
+        div({},`Revenue ${fmtCur(T.revenue)} · Expenses ${fmtCur(T.expenses)} · Net ${T.net<0?'-'+fmtCur(-T.net):fmtCur(T.net)} · Due ${fmtCur(T.due)}`)));
+      const c=r.copied;
+      w.appendChild(box('data-move-copied','',div({className:'kicker'},'From the cloud'),
+        `Lakshmi’s marks ${(c.attendance||0)+(c.utensil_marks||0)} · her login ${c.staff_logins||0} · calendar links ${c.ical_feeds||0} (${c.ical_events||0} events) · `+
+        `notification devices ${c.push_subscriptions||0} · inbox ${c.push_log||0} · encrypted backups ${c.backups||0}`,
+        (c.attendance_misfits||c.utensil_misfits)?div({},`${(c.attendance_misfits||0)+(c.utensil_misfits||0)} old marks with an id that does not fit the rule were left behind (listed by security-v60.sql).`):null,
+        r.placeholders.length?div({},`${r.placeholders.length} record${r.placeholders.length===1?'':'s'} pointed at something deleted long ago (${[...new Set(r.placeholders.map(p=>p.kind))].join(', ')}); kept as deleted placeholders so nothing is lost.`):null,
+        r.pruned?div({},`${r.pruned} row${r.pruned===1?'':'s'} from an earlier copy that this phone no longer has were taken out.`):null));
+    }
+    w.appendChild(btn({className:r&&r.match?'btn-ghost':'btn-primary','data-move-copy':'1',style:{width:'100%',minHeight:46},disabled:mv.busy,
+      onClick:()=>moveCopyCompare()},r?'Copy and compare again':'Copy and compare'));
+    if(r&&r.match&&!mv.busy)w.appendChild(btn({className:'btn-primary','data-move-switch':'1',style:{width:'100%',minHeight:46},onClick:()=>moveSwitch()},'Switch over'));
+    return w;
+  };
+  return modal('Move to the new system',content);
+}
+
+// Following the database's model at every start and sign-in: a phone that is
+// not switched over joins the new system once it is live (it pulls
+// everything, keeping its own ID photos); a switched phone goes back to the
+// old system after a rollback, taking every change made since with it.
+let moving=false;
+async function followModel(){
+  const C=window.StayLogCloud, Y=window.StayLogSync;
+  if(moving||!C||!Y)return;
+  const st=C.status();
+  if(!st.signedIn||!st.model)return;
+  if(st.model==='public'&&stayActive()){
+    moving=true;
+    try{
+      const keep=JSON.parse(JSON.stringify(state.data));
+      Y.deactivate();
+      state.data=normalizeData(keep);
+      saveData(state.data);                 // the old keys again; the old sync sends it
+      showToast('StayLog is back on the old system');
+      render();
+    }finally{moving=false;}
+    return;
+  }
+  if(st.model==='stay'&&!stayActive()){
+    moving=true;
+    try{
+      const list=await Y.memberships();
+      const mine=(list||[]).filter(m=>m.active!==false);
+      if(!mine.length)return;
+      const acct=(mine.find(m=>m.role==='owner')||mine[0]).account_id;
+      const server=await Y.migration.snapshot(acct,state.data);
+      Y.activate(st.userId,acct);
+      state.data=normalizeData(server);
+      saveData(state.data);
+      Y.start();
+      showToast('StayLog now uses the new system');
+      render();
+    }catch(err){}
+    finally{moving=false;}
+  }
+}
+
 function renderMenuModal(){
   const{data}=state;
   const content=()=>div({style:{display:'flex',flexDirection:'column',gap:2}},
@@ -1234,6 +1405,9 @@ function renderMenuModal(){
     // plain export — a readable file would carry guest names, phone and ID numbers.
     menuRow('lock','Encrypted backup',bkSubtitle(),openBackupPanel),
     menuRow('list-check','Inventory','Counts and totals on this phone — screenshot before the move',()=>setState({modal:'inventory'})),
+    // Phase 3: shown only while the old model is live and 05-migrate.sql has run.
+    (!stayActive()&&cloudStatus().signedIn&&cloudStatus().model==='public')
+      ?menuRow('cloud','Move to the new system','Copy, compare, then switch — nothing changes until you say so',()=>setState({modal:'move'})):null,
     menuRow('cloud','Cloud sync',cloudMenuSub(),()=>setState({modal:'cloud'})),
     menuRow('notes','House notes PDF','The instructions guests get after check-in',()=>{
       downloadHouseNotes(data.properties.find(p=>p.id===state.filterProp)||data.properties[0]);closeModal();}),
@@ -2610,7 +2784,7 @@ function icalFeedReport(f,stats,log){
     sw.disabled=true;
     try{ await window.StayLogCloud.setFeedConnected(f.id,!on);
       // the still-open check is worked out at each sync: run one now
-      await window.StayLogCloud.push(state.data,{manual:true}).catch(()=>{});
+      await (stayActive()?window.StayLogSync.sync({manual:true}):window.StayLogCloud.push(state.data,{manual:true})).catch(()=>{});
       render(); }
     catch(err){ sw.disabled=false; alert(err.message||String(err)); }
   });
@@ -2963,6 +3137,7 @@ function renderStaySyncModal(){
       wrap.appendChild(div({style:{fontSize:12.5,color:'var(--text-mid)',lineHeight:1.55}},
         'Sign in to sync. Your changes are kept on this phone meanwhile.'));
     }
+    if(c.signedIn){wrap.appendChild(calendarSyncBox(c));wrap.appendChild(calendarLinksBox());}
     wrap.appendChild(btn({className:'btn-ghost',style:{width:'100%'},onClick:()=>openBackupPanel()},'Encrypted backup'));
     return wrap;
   };
@@ -5103,6 +5278,7 @@ function render(){
   else if(state.modal==='faceId')   {currentModal=renderFaceIdModal();    document.body.appendChild(currentModal);}
   else if(state.modal==='backup')   {currentModal=renderBackupModal();    document.body.appendChild(currentModal);}
   else if(state.modal==='inventory'){currentModal=renderInventoryModal(); document.body.appendChild(currentModal);}
+  else if(state.modal==='move')     {currentModal=renderMoveModal();      document.body.appendChild(currentModal);}
   else if(state.modal==='inbox')    {currentModal=renderInboxModal();     document.body.appendChild(currentModal);}
 }
 
@@ -5130,13 +5306,20 @@ Promise.all([loadDataFromIDB(),loadAuth(),checkFaceId()]).then(([data,auth])=>{
     // Opening the app is itself a reason to sync: her attendance marks arrive
     // while this phone is doing nothing, and they only become expenses here.
     window.StayLogCloud.restoreSession()
-      .then(()=>{resubscribeQuietly();refreshInbox();
-        // The new model, once this phone is switched over (phase 3); cloud.js's
-        // own sync stands down then.
+      .then(async session=>{
+        // Which model is live decides which sync runs (phase 3): this phone
+        // joins the new system, or comes back from it after a rollback.
+        // Signed out there is nothing to follow (a sign-in does it later).
+        if(session){await window.StayLogCloud.refreshModel();await followModel();}
+        resubscribeQuietly();refreshInbox();
         if(stayActive()){window.StayLogSync.start();return;}
         return window.StayLogCloud.checkIn&&window.StayLogCloud.checkIn(true);})
       .catch(()=>{});
     if(window.StayLogSync)window.StayLogSync.onChange(()=>{if(state.modal==='cloud'||state.modal==='menu')render();});
+    // A sign-in after the switch: join the new system then.
+    window.StayLogCloud.onChange(()=>{followModel();});
+    // In the new model a good sync is followed by a backup, as before.
+    if(window.StayLogSync&&window.StayLogBackup)window.StayLogSync.onSynced(()=>window.StayLogBackup.schedule(()=>state.data));
   }
   setTimeout(checkSwMatch,SW_CHECK_DELAY);
 });

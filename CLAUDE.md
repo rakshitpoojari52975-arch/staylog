@@ -200,6 +200,69 @@ Agreed decisions (his answers, 15 Nov 2026):
 - Not yet in the new model (phase 3, with the cutover): the Edge Functions,
   push subscriptions, inbox and encrypted backups over `stay`.
 
+### Phase 3 — v62 (moving in, the switch, the rollback)
+- **`supabase/stay/05-migrate.sql`** (after 04; run again after any re-run of
+  02, which resets function grants). `public.app_status` gains `model`
+  ('public' | 'stay'), `account_id`, `switched_at`; `stay.accounts` gains
+  `migrated_from` (the old owner_id), `migrated_at`. Functions (only the old
+  owner, only into the account moved from them): `migration_account`,
+  `migrate_rows` (the phone's rows as `sync.js` maps them; a re-run replaces —
+  the phone wins until the switch; triggers off; a parent gone long ago →
+  deleted placeholder `legacy.placeholder`; a repayment whose expense is gone
+  → `legacy.orphan_expense_id`), `migrate_prune` (rows a re-run no longer
+  carries → soft-deleted; never bookings, placeholders or server-made lines),
+  `migrate_copy` → `migrate_server_side` (her login from `staff_access`, her
+  marks with their stamps — misfit ids left behind and counted, calendar
+  links + events, push devices, prefs, inbox with read state, encrypted
+  backups), and **`stay.cutover`**: needs a copy within the hour; copies her
+  marks again and runs `process_pending` (lines for marks the phone had not
+  made); saves the old tables' write grants (`stay.cutover_grants`, table and
+  column) and revokes insert/update/delete on them; renames her six functions
+  to `*_v58` (not callable) and recreates the names as wrappers over
+  `stay.staff_*`; sets model 'stay', `min_version` 62. One transaction.
+  `stay.ical_feeds` gains DELETE for owners (clearing a link, as before).
+- **`stay/rollback-cutover.sql`** (SQL editor): her functions back from
+  `*_v58`, the saved grants back, her marks since the switch copied into
+  `public.attendance` / `utensil_marks`, model 'public' (min_version stays 62).
+  Nothing in `stay` deleted. Safe twice.
+- **The app follows `app_status.model`** (`StayLogCloud.refreshModel`,
+  `status().model`; `followModel()` at start and on every cloud change):
+  `stay` and not active → joins (memberships → account → `snapshot` with its
+  own ID photos → activate); `public` and active → goes back (deactivate,
+  writes the new copy into the old keys, the old sync sends it). `cloud.js`
+  `push` writes nothing once the model is 'stay'.
+- **⋯ → Move to the new system** (`renderMoveModal`; only while signed in,
+  not active, model 'public'): **Copy and compare** = old push first (her
+  marks become wages), `migration_account` (named from the first property),
+  `upload` (200 rows a call, then prune), `migrate_copy`, `snapshot`, then
+  `moveReport`: `inventoryOf` phone vs server per section (Records, Money all
+  time, by month, Loans, Unpaid wages, Receipts; her marks excluded — they
+  are the cloud's now) and row by row (`compareRows`: missing / extra /
+  differing fields). **Switch over** only when everything matches: confirms,
+  copies and compares afresh, `cutover`, activates with the server's copy
+  (ID photos kept), starts `sync.js`. Never writes the old copy.
+- In the new model `cloud.js` reads and writes `stay` for calendar links
+  (`listFeeds`, `saveFeed` — update-or-insert per property and platform,
+  `setFeedConnected`, `importNow` then `StayLogSync.sync`), push devices,
+  prefs and the inbox (by account and user / recipient); `backup.js` uses
+  `stay.backups` (insert + delete only: Change passphrase inserts the
+  re-encrypted copy with the old date, then deletes the old row). Backups are
+  scheduled after each good new-model sync (`StayLogSync.onSynced`).
+- **Edge Functions read `app_status.model` on every request** (notify and
+  ical-sync; PostgREST `Accept-Profile`/`Content-Profile: stay`). notify in
+  'stay': tenants are accounts with an active owner; each reminder goes to
+  every active owner (members) with their own devices, prefs and inbox row
+  (`push_log` by account + recipient); balance from the amounts and the
+  account's `pays_directly_sources`; stale = newest `last_pull_at` of any
+  device; a webhook pointer must carry `account_id`. ical-sync in 'stay':
+  feeds and events by account; Import now reads only accounts the login
+  owns. Same code both ways, so the rollback is one switch.
+- After the switch, re-point the two notify webhooks to `stay.attendance` and
+  `stay.utensil_marks` (back again on rollback). Do not re-run the old
+  `public` scripts that define her functions (`setup.sql`, `attendance.sql`,
+  `checkout-wage.sql`, `utensils.sql`) after the switch: they would replace
+  the wrappers.
+
 ## Deploying
 
 - GitHub Pages serves `main`. Work on a branch and open a PR; Rakshit merges.
@@ -839,6 +902,10 @@ also fetch from Supabase with `cache: 'no-store'` as a second layer.
     node tests/test_one_phone.js         # v60: one login per phone's data, one phone per account (pause + take over), retired detector, sign-out clears, UUIDs, arrival instructions as data
     node tests/test_sync.js              # phase 2 engine: two devices, field merges, conflicts (money flagged), offline, no delete by absence + brake, receipts, calendar; STAYLOG_PG adds a real apply_change round trip
     node tests/test_sync_app.js          # phase 2 in the app: hashed PIN (old plain one converted), dormant, own storage key, cloud.js stands down, Sync panel, server receipts, stable repayment id
+    node tests/test_move_app.js          # phase 3 in the app: Move to the new system — copy, compare (match / mismatch), switch, another phone joins, rollback
+    node tests/test_notify_stay.js       # notify in the new model: by account, every owner, own devices/prefs/inbox, amounts + pays_directly_sources, marks, test push
+    node tests/test_ical_stay.js         # ical-sync in the new model: stay feeds/events by account, Import now = owned accounts only
+    STAYLOG_PG="…" node tests/test_cutover_sql.js    # 05-migrate.sql + rollback-cutover.sql: account, rows, placeholders, prune, copy, switch, her page on stay, read-only old tables, rollback, again
     STAYLOG_PG="…" node tests/test_stay_sql.js       # phase 1 `stay` schema: twice, check.sql ok, accounts/managers/staff access, composite keys, apply_change versions, receipts (concurrent), money, wages/utensils/undo/re-pricing on the server, her functions, rollback
     STAYLOG_PG="…" node tests/test_security_sql.js   # security-v60.sql: owners only, staff/stranger locked out, her page works, owner match, mark ids, refuses to lock out
     node tests/test_cancel.js            # no Delete; Cancel confirms + Undo; checked-out disabled; cancelled import stays cancelled over drains; excluded from revenue/occupancy

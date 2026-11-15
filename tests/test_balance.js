@@ -105,8 +105,10 @@ console.log('\n— the 9 AM alert follows the same rule —');
   const fn=fs.readFileSync(path.join(ROOT,'supabase/functions/notify/index.ts'),'utf8');
   // Since the minimal cloud the phone sends balance_due, worked out by its own
   // balanceDue(); notify's formula is only the fallback for an older database.
-  ok('the alert uses balance_due from the phone, and this formula only as the fallback',
-     /'balance_due' in b/.test(fn)&&/\? balanceDue\(b\) : 0\)/.test(fn)); }
+  // In the new model (v62) the amounts are in `stay`, and the same formula
+  // runs with the account's own list of who pays the house.
+  ok('the alert uses balance_due from the phone, and this formula only as the fallback (or in the new model)',
+     /'balance_due' in b/.test(fn)&&/\? balanceDue\(b, paysUs\) : 0\)/.test(fn)); }
 
 console.log('\n— nothing subtracts on its own any more —');
 { const app=fs.readFileSync(path.join(ROOT,'app.js'),'utf8');

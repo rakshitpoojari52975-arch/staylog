@@ -133,24 +133,29 @@
   keyGet().then(r => { hasKey = !!(r && r.key); changed(); }, () => { hasKey = false; changed(); });
 
   const cloud = () => window.StayLogCloud;
+  const lsDevice = () => { try { return localStorage.getItem('staylog_device') || null; } catch { return null; } };
   async function db() {
     const C = cloud();
     if (!C || !C.status().signedIn) throw new Error('Sign in to Cloud sync first');
-    return { c: await C.client(), owner: C.status().userId };
+    const c = await C.client(), owner = C.status().userId;
+    // In the new model (v62) backups live in stay.backups, by account.
+    const acct = (window.StayLogSync && window.StayLogSync.isActive()) ? window.StayLogSync.model().account : null;
+    return { c, owner, acct, B: () => acct ? c.schema('stay').from('backups') : c.from('backups'),
+      col: acct ? 'account_id' : 'owner_id', who: acct || owner };
   }
   const explain = e => /PGRST205|42P01|does not exist|schema cache/i.test(`${(e && e.code) || ''} ${(e && e.message) || e}`)
     ? 'the backups table is not set up — run supabase/backups.sql in Supabase' : (e && e.message) || String(e);
 
   async function list() {
-    const { c, owner } = await db();
-    const { data, error } = await c.from('backups').select('id,created_at,app_version,size')
-      .eq('owner_id', owner).order('created_at', { ascending: false });
+    const { B, col, who } = await db();
+    const { data, error } = await B().select('id,created_at,app_version,size')
+      .eq(col, who).order('created_at', { ascending: false });
     if (error) throw new Error(explain(error));
     return data || [];
   }
   async function fetchRow(id) {
-    const { c, owner } = await db();
-    let q = c.from('backups').select('id,created_at,ciphertext,salt,iv,iterations,app_version').eq('owner_id', owner);
+    const { B, col, who } = await db();
+    let q = B().select('id,created_at,ciphertext,salt,iv,iterations,app_version').eq(col, who);
     q = id ? q.eq('id', id) : q.order('created_at', { ascending: false }).limit(1);
     const { data, error } = await q;
     if (error) throw new Error(explain(error));
@@ -165,11 +170,12 @@
     running = (async () => {
       const rec = await keyGet();
       if (!rec || !rec.key) throw new Error('Set a backup passphrase first');
-      const { c, owner } = await db();
+      const { B, owner, acct } = await db();
       const sealed = await seal(rec, data, opts.appVersion || window.STAYLOG_APP_VERSION);
       // Nothing new since a backup made today: no need for another.
       if (!opts.force && log.lastHash === sealed.hash && log.lastAt && istDay(log.lastAt) === istDay(new Date().toISOString())) return { skipped: 'unchanged' };
-      const { data: ins, error } = await c.from('backups').insert({ owner_id: owner, ...sealed.row }).select('id,created_at');
+      const who = acct ? { account_id: acct, created_by: owner, device_id: lsDevice() } : { owner_id: owner };
+      const { data: ins, error } = await B().insert({ ...who, ...sealed.row }).select('id,created_at');
       if (error) throw new Error(explain(error));
       log = { ...log, lastAt: (ins && ins[0] && ins[0].created_at) || new Date().toISOString(), lastHash: sealed.hash, lastError: '' };
       saveLog();
@@ -180,10 +186,10 @@
     return running;
   }
   async function prune(nowMs) {
-    const { c } = await db();
+    const { B, col, who } = await db();
     const ids = planPrune(await list(), nowMs || Date.now());
     if (!ids.length) return 0;
-    const { error } = await c.from('backups').delete().in('id', ids);
+    const { error } = await B().delete().eq(col, who).in('id', ids);
     if (error) throw new Error(explain(error));
     return ids.length;
   }
@@ -257,9 +263,9 @@
     if (!rec || !rec.key) throw new Error('Set a backup passphrase first');
     if (!(await passMatches(current, rec))) throw new Error('Wrong passphrase');
     checkPass(p1, p2);
-    const { c, owner } = await db();
+    const { B, col, who, acct, owner } = await db();
     const fresh = await makeKeyRecord(p1);
-    const rows = (await c.from('backups').select('id,created_at,ciphertext,salt,iv,iterations,app_version').eq('owner_id', owner)).data || [];
+    const rows = (await B().select('id,created_at,ciphertext,salt,iv,iterations,app_version,size').eq(col, who)).data || [];
     await keyPut(fresh); hasKey = true; changed();
     await backupNow(data, { force: true });
     let rewritten = 0, kept = 0; const cache = {};
@@ -268,9 +274,18 @@
         const p = await openWithPass(current, row, cache);
         const iv = random(IV_BYTES);
         const ct = await subtle().encrypt({ name: 'AES-GCM', iv }, fresh.key, te.encode(JSON.stringify(p)));
-        const { error } = await c.from('backups').update({ ciphertext: b64(ct), salt: fresh.salt, iv: b64(iv),
-          iterations: fresh.iterations, size: ct.byteLength }).eq('id', row.id);
-        if (error) throw error;
+        const re = { ciphertext: b64(ct), salt: fresh.salt, iv: b64(iv), iterations: fresh.iterations, size: ct.byteLength };
+        if (acct) {
+          // stay.backups is insert-and-delete only: the new copy keeps the old date, then the old one goes
+          const { error: e1 } = await B().insert({ account_id: acct, created_by: owner, device_id: lsDevice(), created_at: row.created_at,
+            app_version: row.app_version, ...re });
+          if (e1) throw e1;
+          const { error } = await B().delete().eq(col, who).eq('id', row.id);
+          if (error) throw error;
+        } else {
+          const { error } = await B().update(re).eq('id', row.id);
+          if (error) throw error;
+        }
         rewritten++;
       } catch { kept++; }
     }

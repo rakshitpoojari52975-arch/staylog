@@ -234,7 +234,7 @@
   // S: { data, base: {'table:id': {v, row, del}}, cursor: {table: iso}, conflicts,
   //      errors, held, stamps, events, lastPull, lastPush, lastError, oldestUnsent }
   let S = null, dirtyTimer = null, pollTimer = null, running = null, queued = null, started = false;
-  const listeners = [];
+  const listeners = [], synced = [];
   const changed = () => { const s = status(); listeners.forEach(fn => { try { fn(s); } catch {} }); };
   const blank = () => ({ data: { properties: [], bookings: [], expenses: [], staff: [], loans: [] },
     base: {}, cursor: {}, conflicts: [], errors: [], held: 0, stamps: [], events: [],
@@ -309,6 +309,13 @@
       return data || [];
     },
   };
+
+  async function rpc(name, args) {
+    const db = await stay();
+    const { data, error } = await db.rpc(name, args);
+    if (error) throw new Error(error.message || String(error));
+    return data;
+  }
 
   // ── Merge one server row into the local copy ──────────────────────────────
   // Returns the fields this device still has to send (its own changes the
@@ -510,6 +517,7 @@
         try { pending = outbox(m.account).length; } catch {}
         S.oldestUnsent = pending ? (S.oldestUnsent || new Date().toISOString()) : null;
         await persist();
+        if (!S.lastError) synced.forEach(fn => { try { fn(); } catch {} });
         if (!S.lastError) srv.heartbeat({ account_id: m.account, device_id: deviceId(), user_id: m.user, device_name: deviceLabel(),
           app_version: window.STAYLOG_APP_VERSION || null, last_pull_at: S.lastPull, last_push_at: S.lastPush,
           outbox: pending, conflicts: S.conflicts.length, oldest_unsent: S.oldestUnsent, updated_at: new Date().toISOString() }).catch(() => {});
@@ -562,6 +570,9 @@
     model,
     // Set by the switch-over (phase 3). Nothing else sets it.
     activate(user, account) { localStorage.setItem(MODEL_KEY, JSON.stringify({ mode: 'stay', user, account, at: new Date().toISOString() })); S = null; },
+    // The rollback (the database says the old model is back).
+    deactivate() { try { localStorage.removeItem(MODEL_KEY); } catch {} S = null; clearInterval(pollTimer); started = false; },
+    onSynced: fn => synced.push(fn),
     // The app saved: send the changes a moment later.
     save() {
       if (!model()) return;
@@ -618,6 +629,59 @@
     memberships: () => srv.memberships(),
     switchAccount(account) { const m = model(); if (!m) return; this.activate(m.user, account); },
     events: () => (S && S.events) || [],
+    migration: {
+      // ⋯ → Move to the new system (phase 3). Each step can be run again.
+      account: (name, code) => rpc('migration_account', { p_name: name, p_code: code }),
+      // Every row of the phone, as it is (ID photos never), then rows an
+      // earlier run wrote that the phone no longer has are taken out.
+      async upload(account, data, onStep) {
+        const flat = flatten(data, account), out = { written: 0, placeholders: [], pruned: 0 };
+        for (const t of ORDER) {
+          const rows = Object.entries(flat).filter(([k]) => tableOf(k) === t).map(([, r]) => r);
+          for (let i = 0; i < rows.length; i += 200) {
+            if (onStep) onStep(t, i, rows.length);
+            const r = await rpc('migrate_rows', { p_account: account, p_table: t, p_rows: rows.slice(i, i + 200) });
+            out.written += (r && r.written) || 0;
+            if (r && r.placeholders) out.placeholders.push(...r.placeholders);
+          }
+          if (t !== 'bookings') out.pruned += Number(await rpc('migrate_prune', { p_account: account, p_table: t, p_ids: rows.map(r => r.id) })) || 0;
+        }
+        return out;
+      },
+      copy: account => rpc('migrate_copy', { p_account: account }),
+      // Everything the server now holds, in the phone's shape (deleted rows
+      // and placeholders left out), with this phone's own ID photos added.
+      async snapshot(account, photosFrom) {
+        const data = { properties: [], bookings: [], expenses: [], staff: [], loans: [] };
+        const reps = [];
+        for (const t of ORDER) {
+          for (const row of await srv.pull(t, account, null)) {
+            if (row.deleted_at) continue;
+            if (t === 'loan_repayments') { reps.push(row); continue; }
+            data[COLL[t]].push(fromRow(t, formOf(t, row), null));
+          }
+        }
+        for (const row of reps) {
+          const loan = data.loans.find(l => String(l.id) === String(row.loan_id));
+          if (loan) loan.repayments.push(fromRow('loan_repayments', formOf('loan_repayments', row), null));
+        }
+        const photos = new Map(((photosFrom && photosFrom.bookings) || []).filter(b => b.idProofImage).map(b => [String(b.id), b.idProofImage]));
+        for (const b of data.bookings) if (photos.has(String(b.id))) b.idProofImage = photos.get(String(b.id));
+        return data;
+      },
+      // Row by row: what the phone has that the server lacks, what the server
+      // has that the phone lacks, and rows whose fields differ.
+      compareRows(phone, server, account) {
+        const a = flatten(phone, account), b = flatten(server, account), out = { missing: [], extra: [], differ: [] };
+        for (const k of Object.keys(a)) {
+          if (!b[k]) out.missing.push(k);
+          else { const d = diff(b[k], a[k]); if (d.length) out.differ.push({ k, fields: d }); }
+        }
+        for (const k of Object.keys(b)) if (!a[k]) out.extra.push(k);
+        return out;
+      },
+      cutover: account => rpc('cutover', { p_account: account }),
+    },
     // for the tests and the migration (phase 3)
     _toRow: toRow, _fromRow: fromRow, _formOf: formOf, _flatten: flatten, _diff: diff, SPEC, ORDER, LOCAL_ONLY,
     _srv: srv, _state: () => S, _reset: () => { S = null; running = null; queued = null; },
