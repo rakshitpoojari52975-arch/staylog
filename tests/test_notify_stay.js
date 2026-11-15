@@ -35,7 +35,7 @@ const NOW = Date.parse('2026-10-20T03:30:00Z');   // 9:00 AM IST; tomorrow (IST)
 function world(stay, pub) {
   const W = { pub: Object.assign({ app_status: [{ id: 1, model: 'stay' }] }, pub || {}),
     stay: Object.assign({ members: [], accounts: [], push_subscriptions: [], notification_prefs: [], push_log: [], sync_status: [], backups: [],
-      bookings: [], properties: [], staff: [], attendance: [], utensil_marks: [], ical_events: [] }, stay),
+      bookings: [], properties: [], staff: [], attendance: [], utensil_marks: [], ical_events: [], member_properties: [] }, stay),
     pushes: [], gone: new Set(), users: { 'tok-owner': OWNER }, touchedPublic: [] };
   const res = (s, b) => new Response(b == null ? null : JSON.stringify(b), { status: s });
   const match = (row, q) => { for (const [k, v] of q) { if (['select', 'on_conflict', 'order', 'limit'].includes(k)) continue;
@@ -96,7 +96,8 @@ const post = (body, headers = {}) => new Request('https://proj.supabase.co/funct
     push_subscriptions: [{ ...iphone.row }, { ...coPhone.row }, { ...mgrPhone.row }, { ...otherPhone.row }],
     properties: [{ account_id: ACC, id: 'p1', name: 'Raaya Vasyam', deleted_at: null }, { account_id: ACC2, id: 'p1', name: 'Another House', deleted_at: null }],
     staff: [{ account_id: ACC, id: 'stf1', name: 'Laxmi Walikar' }, { account_id: ACC2, id: 'stf1', name: 'Someone Else' }],
-    sync_status: [{ account_id: ACC, device_id: 'd1', last_pull_at: '2026-10-19T20:00:00Z' }, { account_id: ACC, device_id: 'd0', last_pull_at: '2026-10-01T20:00:00Z' }],
+    sync_status: [{ account_id: ACC, device_id: 'd1', user_id: OWNER, device_name: 'iPhone', last_pull_at: '2026-10-19T20:00:00Z', oldest_unsent: null, conflicts: 0 },
+      { account_id: ACC, device_id: 'd0', user_id: OWNER, device_name: 'iPad', last_pull_at: '2026-10-01T20:00:00Z', oldest_unsent: null, conflicts: 0 }],
   });
   const B = o => Object.assign({ account_id: ACC, id: 'b', guest_name: 'Anita Rao', guests: 2, property_id: 'p1', check_in: '2026-10-18', check_out: '2026-10-21',
     source: 'Direct', total_amount: 6000, paid: 2000, round_off: 0, status: 'checkedin', deleted_at: null }, o);
@@ -110,9 +111,9 @@ const post = (body, headers = {}) => new Request('https://proj.supabase.co/funct
     ok('balance at check-out tomorrow, from the amounts (₹4,000)', mine.some(m => /₹4,000 to collect · Raaya Vasyam/.test(m.body)));
     ok('round off settles it: no alert for ₹2.47', !mine.some(m => /₹2.47/.test(m.body)));
     ok('every owner of the account gets them, on their own phone', co.length === mine.length && co.length === 2, [co.length, mine.length]);
-    ok('a manager does not (phase 8 decides)', (await got(W, mgrPhone)).length === 0);
+    ok('a manager who holds no property gets none of them', (await got(W, mgrPhone)).length === 0);
     ok('the account\'s own list of who pays the house: Booking.com is not on ACC2\'s', (await got(W, otherPhone)).every(m => !/to collect/.test(m.body)));
-    ok('the newest sync of any device counts: not stale', ![...mine, ...co].some(m => /not synced/.test(m.title)));
+    ok('a device that has not synced lately but has nothing waiting: no alert', ![...mine, ...co].some(m => /not sent|not synced/.test(m.title)));
     ok('each recipient has their own inbox row', W.stay.push_log.filter(l => l.key === 'arrival:arr:2026-10-21').map(l => l.recipient).sort().join() === [CO, OWNER].sort().join());
     ok('only app_status read from the old tables', W.touchedPublic.every(x => x === 'GET app_status'), W.touchedPublic);
     await F.handle(post({ job: 'daily' }, CRON), ENV, W.fetch, NOW + 60e3);
@@ -122,9 +123,11 @@ const post = (body, headers = {}) => new Request('https://proj.supabase.co/funct
       bookings: [B({ id: 'arr', check_in: '2026-10-21', check_out: '2026-10-24', status: 'confirmed' })] });
     await F.handle(post({ job: 'daily' }, CRON), ENV, W.fetch, NOW);
     ok('choices are per person: off for one owner, on for the other', (await got(W, coPhone)).length === 0 && (await got(W, iphone)).length === 1); }
-  { const W = world({ ...base(), sync_status: [{ account_id: ACC, device_id: 'd1', last_pull_at: '2026-10-15T20:00:00Z' }] });
+  { const W = world({ ...base(), sync_status: [{ account_id: ACC, device_id: 'd1', user_id: OWNER, device_name: 'iPhone', oldest_unsent: '2026-10-16T20:00:00Z', conflicts: 0 }] });
     await F.handle(post({ job: 'daily' }, CRON), ENV, W.fetch, NOW);
-    ok('no device synced in 2 days: the stale alert', (await got(W, iphone)).some(m => m.title === 'StayLog has not synced')); }
+    const m = await got(W, iphone);
+    ok('changes waiting on a device for over 2 days: the stale alert, to that device\'s person only', m.some(x => x.title === 'Changes not sent yet' && /your iPhone 3 days ago/.test(x.body))
+      && !(await got(W, coPhone)).some(x => x.title === 'Changes not sent yet'), m); }
 
   console.log('\n— her marks, from `stay` —');
   { const W = world(base());
@@ -132,7 +135,7 @@ const post = (body, headers = {}) => new Request('https://proj.supabase.co/funct
     W.stay.attendance.push(mark);
     await F.handle(post({ type: 'INSERT', table: 'attendance', schema: 'stay', record: mark }, CRON), ENV, W.fetch, NOW);
     const m = await got(W, iphone);
-    ok('she marks attendance: a push naming her', m.length === 1 && m[0].title === 'Laxmi came in today', m);
+    ok('she marks attendance: a push naming her', m.length === 1 && m[0].title === 'Laxmi Walikar came in today', m);
     ok('to every owner of the account, not another account', (await got(W, coPhone)).length === 1 && (await got(W, otherPhone)).length === 0);
     await F.handle(post({ type: 'INSERT', table: 'attendance', schema: 'stay', record: { ...mark, account_id: ACC2 } }, CRON), ENV, W.fetch, NOW);
     ok('a pointer naming another account finds no such mark there', (await got(W, otherPhone)).length === 0);

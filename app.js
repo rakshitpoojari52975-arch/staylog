@@ -6,7 +6,7 @@
 // ─── Build ────────────────────────────────────────────────────────────────────
 // Bump BOTH of these together. This date sat at 28 Sept through a dozen
 // releases and was read, reasonably, as proof the upload had not landed.
-const APP_VERSION='v68', APP_BUILT='16 Nov 2026';
+const APP_VERSION='v69', APP_BUILT='16 Nov 2026';
 // The CACHE_NAME of the sw.js released with this app.js. Every release bumps
 // APP_VERSION and CACHE_NAME together, so one is derived from the other rather
 // than being a fourth thing to forget; the tests fail if they ever disagree.
@@ -53,6 +53,8 @@ function idbSet(k,v){return openDB().then(db=>new Promise((res,rej)=>{const r=db
 // login and account, and never writes the old ones: switching back finds the
 // old copy exactly as it was. Dormant until the switch-over (phase 3).
 const stayActive=()=>!!(window.StayLogSync&&window.StayLogSync.isActive());
+// This phone's id (v60, staylog_device): a phone's own alerts name it.
+const lsDevice=()=>{try{return localStorage.getItem('staylog_device')||'';}catch(e){return '';}};
 // ── Who may do what (v65): in the new model, my_access from the server (role,
 // each permission as stay.can() decides, the properties a manager holds).
 // The old model, or before it is known: the owner. Row-level security is the
@@ -774,15 +776,19 @@ function themeRow(){
 // a Safari tab, and the permission prompt may only come from a tap. iOS can
 // also drop a subscription without saying so, so every open quietly checks it
 // and re-saves it to the cloud.
+// [key, label, note, who may get it (v69, the new model: the server routes
+// each alert to those who hold its property and have this permission)].
 const PUSH_ALERTS=[
-  ['attendance','Laxmi marks attendance'],
-  ['utensils','Laxmi reports utensil cleaning'],
+  ['attendance','Staff mark attendance','',()=>can('manage_staff')],
+  ['utensils','Staff report utensil cleaning','',()=>can('manage_staff')],
   ['newBookings','New bookings','From the Airbnb and Booking.com calendars'],
   ['arrivals','Guests arriving tomorrow','9 AM, ready to send the arrival message'],
-  ['balances','Balance due at check-out tomorrow','9 AM · Direct and Booking.com only'],
-  ['stale','App not synced in 2 days','9 AM'],
-  ['backup','No encrypted backup in 3 days','9 AM'],
+  ['balances','Balance due at check-out tomorrow','9 AM · guests who pay you directly',()=>can('see_money')],
+  ['stale','Changes not sent from a phone in 2 days','9 AM'],
+  ['syncConflict','A change to look at','When your change and another device’s clash',()=>stayActive()],
+  ['backup','No encrypted backup in 3 days','9 AM · owners',()=>isOwner()],
 ];
+const pushAlertsForMe=()=>PUSH_ALERTS.filter(a=>!a[3]||a[3]());
 const pushUI={sub:null,checked:false,busy:false,msg:'',msgBad:false,prefs:null,prefsErr:''};
 const isIOS=()=>/iPad|iPhone|iPod/.test(navigator.userAgent)||(navigator.platform==='MacIntel'&&navigator.maxTouchPoints>1);
 const isStandalone=()=>navigator.standalone===true||
@@ -878,8 +884,9 @@ async function turnOffPush(){
 async function sendTestPush(){
   pushUI.busy=true; pushUI.msg='Sending…'; pushUI.msgBad=false; pushRefresh();
   try{
-    const r=await window.StayLogCloud.pushTest();
-    if(r.sent)pushUI.msg=`Sent to ${r.sent} device${r.sent===1?'':'s'} — it should arrive in a few seconds.`;
+    // only to this device (v69)
+    const r=await window.StayLogCloud.pushTest(pushUI.sub&&pushUI.sub.endpoint);
+    if(r.sent)pushUI.msg=`Sent to this ${deviceName()} — it should arrive in a few seconds.`;
     else{pushUI.msg=r.gone?'Apple says this subscription has ended. Tap Turn on notifications again.':'No device is registered in the cloud yet. Tap Turn on notifications.';pushUI.msgBad=true;}
   }catch(e){pushUI.msg='Test not sent: '+(e.message||e);pushUI.msgBad=true;}
   pushUI.busy=false; pushRefresh();
@@ -934,7 +941,7 @@ function notificationsSection(){
     loadPushPrefs();
     if(pushUI.prefsErr)note(pushUI.prefsErr);
     const p=pushUI.prefs;
-    if(p)PUSH_ALERTS.forEach(([k,label,sub])=>{
+    if(p)pushAlertsForMe().forEach(([k,label,sub])=>{
       const yes=p[k]!==false;
       wrap.appendChild(btn({'data-push-pref':k,role:'switch','aria-checked':String(yes),
         style:{display:'flex',alignItems:'center',gap:10,width:'100%',textAlign:'left',padding:'9px 2px',
@@ -1028,12 +1035,15 @@ const inbox=(()=>{let c=null;try{c=JSON.parse(localStorage.getItem(INBOX_KEY)||'
   return {rows:Array.isArray(c.rows)?c.rows:null,at:c.at||'',pending:Array.isArray(c.pending)?c.pending:[],
     fresh:false,err:'',loading:false,filter:'all',lastTry:0};})();
 function inboxSave(){try{localStorage.setItem(INBOX_KEY,JSON.stringify({rows:inbox.rows,at:inbox.at,pending:inbox.pending}));}catch(e){}}
-function inboxRows(){
-  const since=Date.now()-INBOX_DAYS*86400e3;
-  return (inbox.rows||[]).filter(r=>r&&r.title&&Date.parse(r.sent_at)>=since)
+// The property picker filters the inbox too (v69): a row about one property
+// shows under that property or All; one about no property (a backup, a
+// phone's changes) always shows. The badge counts every row.
+function inboxRows(all){
+  const since=Date.now()-INBOX_DAYS*86400e3, fp=state.filterProp;
+  return (inbox.rows||[]).filter(r=>r&&r.title&&Date.parse(r.sent_at)>=since&&(all||!fp||fp==='all'||!r.property_id||r.property_id===fp))
     .sort((a,b)=>String(b.sent_at).localeCompare(String(a.sent_at)));
 }
-const inboxUnread=()=>inboxRows().filter(r=>!r.read_at).length;
+const inboxUnread=()=>inboxRows(true).filter(r=>!r.read_at).length;
 // The number on the app icon: the same unread count as the bell.
 function inboxBadge(){
   try{
@@ -1087,6 +1097,15 @@ function inboxDone(r){
   if((m=/^mark:(.+)$/.exec(k))){
     const exp=/^att_/.test(m[1])?'wag_'+m[1].slice(4):m[1];
     return {done:D.expenses.some(e=>e.id===exp),label:'Recorded'};
+  }
+  // v69: a phone's own alerts. Its changes sent, or nothing left to look at, on this phone.
+  if((m=/^stale:([^:]+):\d{4}-\d{2}-\d{2}$/.exec(k))&&stayActive()){
+    const st=window.StayLogSync.status();
+    return {done:m[1]!==lsDevice()||!st.outbox,label:'Cleared'};
+  }
+  if((m=/^conflict:([^:]+):/.exec(k))){
+    const st=stayActive()?window.StayLogSync.status():null;
+    return {done:!st||m[1]!==lsDevice()||!(st.conflicts||[]).length,label:'Cleared'};
   }
   if(/^stale:/.test(k))return {done:(Date.parse(cloudStatus().lastSync)||0)>at,label:'Cleared'};
   if(/^backup:/.test(k))return {done:(Date.parse(bkStatus().lastAt)||0)>at,label:'Cleared'};

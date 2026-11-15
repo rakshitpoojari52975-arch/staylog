@@ -8,10 +8,12 @@
 //
 // Who may run it, and what:
 //   • x-cron-secret: <PUSH_CRON_SECRET>
-//       {"job":"daily"}                   the 9 AM IST run, every owner
+//       {"job":"daily"}                   old model: the 9 AM IST run, every owner;
+//                                         new model (v69): hourly; each account
+//                                         from 9 AM in its own time zone
 //       a Database Webhook payload        Laxmi's attendance / utensil marks
 //   • a signed-in owner (the app)
-//       {"job":"test"}                    a test push to his own devices
+//       {"job":"test","endpoint":…}       a test push to this device only
 // Anything else gets 401. Turn OFF "Verify JWT" for this function.
 //
 // Old model or new (v62): public.app_status.model says which. 'public' = the
@@ -31,7 +33,8 @@ export type Env = {
 };
 type Fetch = (input: string, init?: Record<string, unknown>) => Promise<Response>;
 export type Sub = { endpoint: string; p256dh: string; auth: string; owner_id?: string };
-export type Push = { title: string; body: string; url: string; tag: string; badge?: number };
+// `property` is kept in the inbox row (new model) and never sent to the device.
+export type Push = { title: string; body: string; url: string; tag: string; badge?: number; property?: string | null };
 
 const CORS: Record<string, string> = {
   'Access-Control-Allow-Origin': '*',
@@ -42,7 +45,7 @@ const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { ...CORS, 'Content-Type': 'application/json' } });
 
 // The alert types, each with an on/off in notification_prefs. Missing = on.
-export const ALERTS = ['attendance', 'utensils', 'newBookings', 'arrivals', 'balances', 'stale', 'backup'] as const;
+export const ALERTS = ['attendance', 'utensils', 'newBookings', 'arrivals', 'balances', 'stale', 'backup', 'syncConflict'] as const;
 const STALE_DAYS = 2, BACKUP_DAYS = 3, INBOX_DAYS = 30, KEEP_LOG_DAYS = 60;
 // Who pays at the property (as in the app: paysUsDirectly). Others never get a
 // balance alert.
@@ -182,7 +185,8 @@ function db(env: Env, fetchImpl: Fetch) {
     // same moment cannot both send: Postgres re-checks the condition.
     claim: async (owner: Target, k: string, alert: string, push: Push, nowMs: number): Promise<'new' | 'retry' | false> => {
       const at = new Date(nowMs).toISOString();
-      const entry = { title: push.title, body: push.body, url: push.url, alert };
+      const entry: Record<string, unknown> = { title: push.title, body: push.body, url: push.url, alert };
+      if (d.stay) entry.property_id = push.property ?? null;
       const id = d.stay ? { account_id: owner.tenant, recipient: owner.user } : { owner_id: owner.tenant };
       const conflict = d.stay ? 'account_id,recipient,key' : 'owner_id,key';
       if (!d.legacy || d.stay) {
@@ -230,7 +234,6 @@ const sameSecret = (a: string, b: string) => {
   let x = 0; for (let i = 0; i < a.length; i++) x |= a.charCodeAt(i) ^ b.charCodeAt(i); return x === 0;
 };
 const istDate = (ms: number, addDays = 0) => new Date(ms + 5.5 * 3600e3 + addDays * 86400e3).toISOString().slice(0, 10);
-const istTime = (iso: string) => new Date(iso).toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit', timeZone: 'Asia/Kolkata' });
 const rupees = (n: number) => '₹' + Number(n).toLocaleString('en-IN', Number(n) % 1 ? { minimumFractionDigits: 2, maximumFractionDigits: 2 } : {});
 const fmtDay = (iso: string) => new Date(iso + 'T00:00:00Z').toLocaleDateString('en-IN', { day: 'numeric', month: 'short', timeZone: 'UTC' });
 
@@ -247,12 +250,13 @@ async function prefsOf(d: ReturnType<typeof db>, owner: Target): Promise<Record<
 // Each push carries the inbox's unread count for the app icon's badge, and
 // its key in the url, so tapping it marks it read.
 async function deliver(owner: Target, key: string | null, alert: string, push: Push, d: ReturnType<typeof db>,
-                       env: Env, fetchImpl: Fetch, nowMs: number) {
-  const subs: Sub[] = await d.get(`push_subscriptions?${d.mine(owner)}&select=endpoint,p256dh,auth`) || [];
+                       env: Env, fetchImpl: Fetch, nowMs: number, endpoint?: string) {
+  const subs: Sub[] = (await d.get(`push_subscriptions?${d.mine(owner)}&select=endpoint,p256dh,auth`) || [])
+    .filter((x: Sub) => !endpoint || x.endpoint === endpoint);
   if (!key && !subs.length) return { sent: 0, gone: 0, skipped: 'no devices' };
   if (key && !(await d.claim(owner, key, alert, push, nowMs))) return { sent: 0, gone: 0, skipped: 'already sent' };
   if (!subs.length) { await d.record(owner, key as string, false, nowMs); return { sent: 0, gone: 0, skipped: 'no devices' }; }
-  const out: Push = { ...push };
+  const { property: _p, ...out } = push as Push;
   if (key) {
     out.url = `${push.url}${push.url.includes('#') ? '&' : '#'}n=${encodeURIComponent(key)}`;
     const badge = await d.unread(owner, nowMs);
@@ -352,7 +356,7 @@ export async function dailyPushes(owner: string, d: ReturnType<typeof db>, nowMs
 // — inserted, or brought back after an undo — is worth a push; a stamp, an
 // undo, or the same mark again is not (push_log keeps it to once per mark).
 export async function eventPush(payload: Record<string, any>, d: ReturnType<typeof db>):
-    Promise<{ owner: string; key: string; alert: string; push: Push } | null> {
+    Promise<{ owner: string; key: string; alert: string; push: Push; need: Need } | null> {
   const table = payload.table, sent = payload.record || {}, old = payload.old_record || null;
   if (table !== 'attendance' && table !== 'utensil_marks') return null;
   if (!sent.id) return null;
@@ -365,19 +369,27 @@ export async function eventPush(payload: Record<string, any>, d: ReturnType<type
   const col = d.col();
   if (d.stay && !sent.account_id) return null;
   const rec = (await d.get(`${table}?${d.stay ? `account_id=eq.${encodeURIComponent(sent.account_id)}&` : ''}id=eq.${encodeURIComponent(sent.id)}` +
-    `&select=id,${col},staff_id,date,marked_at,deleted_at`) || [])[0];
+    `&select=id,${col},staff_id,date,marked_at,deleted_at${d.stay ? ',property_id' : ''}`) || [])[0];
   if (!rec || !rec[col] || rec.deleted_at) return null;
   rec.owner_id = rec[col];
-  const staff = (await d.get(`staff?id=eq.${encodeURIComponent(rec.staff_id)}&${col}=eq.${rec.owner_id}&select=name`) || [])[0];
-  const who = (staff && String(staff.name).split(/\s+/)[0]) || 'Your house help';
-  const at = rec.marked_at ? ` at ${istTime(rec.marked_at)}` : '';
+  const staff = (await d.get(`staff?id=eq.${encodeURIComponent(rec.staff_id)}&${col}=eq.${rec.owner_id}&select=name${d.stay ? ',works_at' : ''}`)
+    .catch(() => d.get(`staff?id=eq.${encodeURIComponent(rec.staff_id)}&${col}=eq.${rec.owner_id}&select=name`)) || [])[0];
+  // Her full name, as the app has it (v69; it was the first name only).
+  const who = (staff && String(staff.name || '').trim()) || 'Your house help';
+  // Her time, where the account is.
+  const zone = d.stay ? ((await d.get(`accounts?id=eq.${rec.owner_id}&select=time_zone`) || [])[0] || {}).time_zone || 'Asia/Kolkata' : 'Asia/Kolkata';
+  const at = rec.marked_at ? ` at ${timeIn(rec.marked_at, zone)}` : '';
+  // Who hears of it (new model): those who manage staff, at the property she
+  // marked at, or else any of the properties she works at.
+  const need: Need = { perm: 'manage_staff', ...(rec.property_id ? { property: rec.property_id } : { anyOf: (staff && staff.works_at) || [] }) };
+  const property = rec.property_id || ((staff && staff.works_at && staff.works_at.length === 1) ? staff.works_at[0] : null);
   return table === 'attendance'
-    ? { owner: rec.owner_id, alert: 'attendance', key: `mark:${rec.id}`, push: {
+    ? { owner: rec.owner_id, alert: 'attendance', key: `mark:${rec.id}`, need, push: {
         title: `${who} came in today`, body: `Marked present${at}, ${fmtDay(rec.date)}.`,
-        url: './#open=cloud', tag: `att-${rec.id}` } }
-    : { owner: rec.owner_id, alert: 'utensils', key: `mark:${rec.id}`, push: {
+        url: './#open=cloud', tag: `att-${rec.id}`, property } }
+    : { owner: rec.owner_id, alert: 'utensils', key: `mark:${rec.id}`, need, push: {
         title: `${who} cleaned the utensils`, body: `Reported${at}, ${fmtDay(rec.date)} — to be paid by you.`,
-        url: './#open=cloud', tag: `ute-${rec.id}` } };
+        url: './#open=cloud', tag: `ute-${rec.id}`, property } };
 }
 
 // New stays from the calendar import. ical-sync names the events it has just
@@ -412,8 +424,10 @@ export const icalBookingId = (e: { feed_id: string; uid: string }) =>
 // Every event looked at is stamped announced_at — sent or not — so the next
 // run does not ask again; one left unstamped (a run cut short) is asked again.
 export async function newBookingPushes(list: unknown, d: ReturnType<typeof db>, nowMs: number, account?: string) {
-  const out: { owner: string; key: string; alert: string; push: Push; skipped?: string; settle?: string }[] = [];
-  const today = istDate(nowMs);
+  const out: { owner: string; key: string; alert: string; push: Push; skipped?: string; settle?: string; need?: Need }[] = [];
+  let today = istDate(nowMs);
+  if (d.stay && typeof account === 'string')
+    today = localParts(((await d.get(`accounts?id=eq.${account}&select=time_zone`) || [])[0] || {}).time_zone, nowMs).date;
   const rows: Record<string, any>[] = [];
   if (d.stay && typeof account !== 'string') return out;
   for (const e of (Array.isArray(list) ? list : []).slice(0, 50) as Record<string, unknown>[]) {
@@ -443,13 +457,138 @@ export async function newBookingPushes(list: unknown, d: ReturnType<typeof db>, 
     }
     const prop = (await d.get(`properties?${d.col()}=eq.${r.owner_id}&id=eq.${encodeURIComponent(r.property_id)}&select=name`) || [])[0];
     const n = nightsBetween(r.start_date, r.end_date);
-    out.push({ owner: r.owner_id, key, alert: 'newBookings', settle, push: {
+    out.push({ owner: r.owner_id, key, alert: 'newBookings', settle, need: { property: r.property_id }, push: {
       title: `New ${r.platform} booking`,
       body: [stayDates(r.start_date, r.end_date), `${n} night${n === 1 ? '' : 's'}`, prop && prop.name].filter(Boolean).join(' · '),
       url: `./#open=stay&prop=${encodeURIComponent(r.property_id)}&in=${r.start_date}&out=${r.end_date}`,
-      tag: `stay-${r.property_id}-${r.start_date}` } });
+      tag: `stay-${r.property_id}-${r.start_date}`, property: r.property_id } });
   }
   return out;
+}
+
+// ── The new model: who gets what (v69) ─────────────────────────────────────
+// Each reminder says what it needs: a property (a manager must hold it), a
+// set of properties (any one will do; empty = any), a permission, owners
+// only, or one person (a device's own alerts). Owners get everything that is
+// not one person's. The rules are stay.holds() and stay.can()'s, read here
+// with the service key: a manager holds the properties assigned to them, and
+// a permission not set takes its default.
+export type Need = { property?: string | null; anyOf?: string[] | null; perm?: string; ownerOnly?: boolean; user?: string };
+type Member = { user_id: string; role: string; permissions: Record<string, unknown>; props: Set<string> };
+const PERM_DEFAULT_ON = new Set(['edit_bookings', 'send_messages', 'mark_paid', 'add_expenses']);
+export function memberCan(m: { role: string; permissions?: Record<string, unknown> }, perm: string) {
+  if (m.role === 'owner') return true;
+  if (m.role !== 'manager' || perm === 'manage_calendar') return false;
+  const v = (m.permissions || {})[perm];
+  return typeof v === 'boolean' ? v : v == null ? PERM_DEFAULT_ON.has(perm) : String(v) === 'true';
+}
+export function routes(team: Member[], need: Need): string[] {
+  return team.filter(m => {
+    if (need.user) return m.user_id === need.user;
+    if (m.role === 'owner') return true;
+    if (need.ownerOnly || m.role !== 'manager') return false;
+    if (need.perm && !memberCan(m, need.perm)) return false;
+    if (need.property) return m.props.has(need.property);
+    if (need.anyOf) return need.anyOf.length ? need.anyOf.some(p => m.props.has(p)) : m.props.size > 0;
+    return true;
+  }).map(m => m.user_id);
+}
+async function teamOf(d: ReturnType<typeof db>, account: string, cache: Map<string, Member[]>): Promise<Member[]> {
+  if (cache.has(account)) return cache.get(account) as Member[];
+  const ms = await d.get(`members?account_id=eq.${account}&active=is.true&select=user_id,role,permissions`) || [];
+  const mp = await d.get(`member_properties?account_id=eq.${account}&select=user_id,property_id`) || [];
+  const team = ms.map((m: Record<string, any>) => ({ ...m, props: new Set(mp.filter((x: Record<string, string>) => x.user_id === m.user_id).map((x: Record<string, string>) => x.property_id)) }));
+  cache.set(account, team);
+  return team;
+}
+
+export const DAILY_HOUR = 9;                 // the daily reminders, from 9 AM where the account is
+const POOL = 4;                              // accounts handled at once
+export function localParts(tz: string | null | undefined, ms: number) {
+  const zone = tz || 'Asia/Kolkata';
+  try {
+    const p = Object.fromEntries(new Intl.DateTimeFormat('en-CA', { timeZone: zone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', hourCycle: 'h23' })
+      .formatToParts(new Date(ms)).map(x => [x.type, x.value]));
+    return { date: `${p.year}-${p.month}-${p.day}`, hour: Number(p.hour) % 24, zone };
+  } catch { return { date: istDate(ms), hour: new Date(ms + 5.5 * 3600e3).getUTCHours(), zone: 'Asia/Kolkata' }; }
+}
+const nextDay = (iso: string) => new Date(Date.parse(iso + 'T00:00:00Z') + 86400e3).toISOString().slice(0, 10);
+const timeIn = (iso: string, zone: string) => new Date(iso).toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit', timeZone: zone });
+export const money = (n: number, currency = 'INR') => currency === 'INR' ? rupees(n)
+  : new Intl.NumberFormat('en-IN', { style: 'currency', currency, ...(Number(n) % 1 ? { minimumFractionDigits: 2 } : { maximumFractionDigits: 0 }) }).format(n);
+type Account = { id: string; name?: string; time_zone?: string; currency?: string; pays_directly_sources?: string[] };
+type Item = { key: string; alert: string; push: Push; need: Need };
+
+// One account's daily reminders, on its own date.
+export async function accountDaily(a: Account, d: ReturnType<typeof db>, nowMs: number): Promise<Item[]> {
+  const { date: today, zone } = localParts(a.time_zone, nowMs), tomorrow = nextDay(today);
+  const out: Item[] = [];
+  const T = `account_id=eq.${a.id}`;
+  const props: { id: string; name: string }[] = await d.get(`properties?${T}&deleted_at=is.null&select=id,name`) || [];
+  const propName = (id: string) => (props.find(p => p.id === id) || { name: '' }).name;
+  const cols = 'id,guests,property_id,check_in,check_out,status';
+  const stay = (b: Record<string, any>) => {
+    const g = Number(b.guests) || 1, n = nightsBetween(b.check_in, b.check_out);
+    return [`${g} guest${g > 1 ? 's' : ''}`, n > 0 ? `${n} night${n === 1 ? '' : 's'}` : '', propName(b.property_id)].filter(Boolean).join(' · ');
+  };
+  // Guests arriving tomorrow: no name (the phone has it).
+  for (const b of await d.get(`bookings?${T}&deleted_at=is.null&status=neq.cancelled&check_in=eq.${tomorrow}&select=${cols}`) || [])
+    out.push({ alert: 'arrivals', key: `arrival:${b.id}:${b.check_in}`, need: { property: b.property_id }, push: {
+      title: 'Guest arriving tomorrow', body: `${stay(b)}. Tap to send the arrival message.`,
+      url: `./#open=${encodeURIComponent(b.id)}&send=arrival`, tag: `arrival-${b.id}`, property: b.property_id } });
+  // A balance at check-out tomorrow — never on the day itself — only for the
+  // account's own sources that pay the house, and only to those who may see money.
+  const paysUs = new Set(Array.isArray(a.pays_directly_sources) ? a.pays_directly_sources : [...PAYS_US]);
+  for (const b of await d.get(`bookings?${T}&deleted_at=is.null&status=neq.cancelled&check_out=eq.${tomorrow}&select=${cols},source,total_amount,paid,round_off`) || []) {
+    if (!paysUs.has(String(b.source || '').trim() || 'Direct')) continue;
+    const due = balanceDue(b, paysUs);
+    if (!(due > 0)) continue;
+    out.push({ alert: 'balances', key: `balance:${b.id}:${b.check_out}`, need: { property: b.property_id, perm: 'see_money' }, push: {
+      title: 'Balance due at check-out tomorrow',
+      body: `${money(due, a.currency)} to collect${propName(b.property_id) ? ' · ' + propName(b.property_id) : ''}. Tap to send the payment request.`,
+      url: `./#open=${encodeURIComponent(b.id)}&send=payment`, tag: `balance-${b.id}`, property: b.property_id } });
+  }
+  // Each device: changes not sent for 2 days, or a change to look at. Only to
+  // the person whose device it is.
+  for (const s of await d.get(`sync_status?${T}&select=device_id,user_id,device_name,oldest_unsent,conflicts`) || []) {
+    const where = s.device_name ? `your ${s.device_name}` : 'one of your devices';
+    if (s.oldest_unsent && Date.parse(s.oldest_unsent) < nowMs - STALE_DAYS * 86400e3) {
+      const days = Math.floor((nowMs - Date.parse(s.oldest_unsent)) / 86400e3);
+      out.push({ alert: 'stale', key: `stale:${s.device_id}:${today}`, need: { user: s.user_id }, push: {
+        title: 'Changes not sent yet', body: `Changes made on ${where} ${days} days ago have not reached the cloud. Open StayLog there with a connection.`,
+        url: './#open=cloud', tag: `stale-${s.device_id}` } });
+    }
+    if (Number(s.conflicts) > 0)
+      out.push({ alert: 'syncConflict', key: `conflict:${s.device_id}:${today}`, need: { user: s.user_id }, push: {
+        title: Number(s.conflicts) === 1 ? 'A change to look at' : `${s.conflicts} changes to look at`,
+        body: `Something you changed on ${where} was also changed elsewhere. Open StayLog to choose which to keep.`,
+        url: './#open=cloud', tag: `conflict-${s.device_id}` } });
+  }
+  // The encrypted backup: none in 3 days (quiet until the first exists). Owners only.
+  const last = (await d.get(`backups?${T}&select=created_at&order=created_at.desc&limit=1`).catch(() => []) || [])[0];
+  if (last && Date.parse(last.created_at) < nowMs - BACKUP_DAYS * 86400e3) {
+    const days = Math.floor((nowMs - Date.parse(last.created_at)) / 86400e3);
+    out.push({ alert: 'backup', key: `backup:${today}`, need: { ownerOnly: true }, push: {
+      title: 'No backup for ' + days + ' days', body: 'The last encrypted backup was ' + days + ' days ago. Open StayLog with a connection to back up.',
+      url: './#open=backup', tag: 'backup' } });
+  }
+  return out;
+}
+
+// At most `limit` at once.
+async function inPool<T>(items: T[], limit: number, work: (x: T) => Promise<void>) {
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, async () => {
+    while (next < items.length) await work(items[next++]);
+  }));
+}
+async function allAccounts(d: ReturnType<typeof db>): Promise<Account[]> {
+  const out: Account[] = [];
+  for (let from = 0; ; from += 1000) {
+    const page = await d.get(`accounts?select=id,name,time_zone,currency,pays_directly_sources&order=id&limit=1000&offset=${from}`) || [];
+    out.push(...page);
+    if (page.length < 1000) return out;
+  }
 }
 
 // ── the handler ──────────────────────────────────────────────────────────────
@@ -461,11 +600,14 @@ export async function handle(req: Request, env: Env, fetchImpl: Fetch = fetch as
   const body = await req.json().catch(() => ({}));
   await d.model();
   // One reminder for a tenant, to each of its recipients, by their own choices.
-  const toAll = async (tenant: string, key: string, alert: string, push: Push) => {
+  // New model: the recipients are the members the reminder's need routes to.
+  const team = new Map<string, Member[]>();
+  const toAll = async (tenant: string, key: string, alert: string, push: Push, need: Need = {}) => {
     const out: unknown[] = [];
-    for (const t of await d.recipients(tenant)) {
-      if (!(await prefsOf(d, t))[alert]) { out.push({ key, skipped: 'turned off' }); continue; }
-      out.push({ key, ...(await deliver(t, key, alert, push, d, env, fetchImpl, nowMs)) });
+    const targets: Target[] = d.stay ? routes(await teamOf(d, tenant, team), need).map(user => ({ tenant, user })) : await d.recipients(tenant);
+    for (const t of targets) {
+      if (!(await prefsOf(d, t))[alert]) { out.push({ key, user: t.user, skipped: 'turned off' }); continue; }
+      out.push({ key, user: t.user, ...(await deliver(t, key, alert, push, d, env, fetchImpl, nowMs)) });
     }
     return out;
   };
@@ -473,6 +615,21 @@ export async function handle(req: Request, env: Env, fetchImpl: Fetch = fetch as
   const given = req.headers.get('x-cron-secret') || '';
   if (given) {
     if (!sameSecret(given, String(env.PUSH_CRON_SECRET || ''))) return json({ error: 'not allowed' }, 401);
+    if (body && body.job === 'daily' && d.stay) {
+      // New model (v69): the cron runs hourly; each account is handled from
+      // 9 AM on its own clock (a missed hour is caught by the next one; each
+      // reminder's key is per day, so it still goes once). Accounts are
+      // paged, a few at a time, each on its own: one failing stops no other.
+      await d.del(`push_log?sent_at=lt.${new Date(nowMs - KEEP_LOG_DAYS * 86400e3).toISOString()}`).catch(() => {});
+      const due = (await allAccounts(d)).filter(a => body.force === true || localParts(a.time_zone, nowMs).hour >= DAILY_HOUR);
+      const report: unknown[] = [], failed: { account: string; error: string }[] = [];
+      await inPool(due, POOL, async a => {
+        try {
+          for (const item of await accountDaily(a, d, nowMs)) report.push(...await toAll(a.id, item.key, item.alert, item.push, item.need));
+        } catch (e) { failed.push({ account: a.id, error: (e as Error)?.message || String(e) }); }
+      });
+      return json({ ok: true, job: 'daily', accounts: due.length, report, ...(failed.length ? { failed } : {}) });
+    }
     if (body && body.job === 'daily') {
       // Everyone with a device, and everyone whose phone syncs: the inbox keeps
       // a reminder even when no device is left to take it.
@@ -493,7 +650,7 @@ export async function handle(req: Request, env: Env, fetchImpl: Fetch = fetch as
       const report: unknown[] = [];
       for (const item of await newBookingPushes(body.events, d, nowMs, body.account)) {
         if (item.skipped) report.push({ key: item.key, skipped: item.skipped });
-        else report.push(...await toAll(item.owner, item.key, item.alert, item.push));
+        else report.push(...await toAll(item.owner, item.key, item.alert, item.push, item.need));
         // New model: settled, sent or not (a push already claimed is not sent twice).
         if (item.settle) await d.patch(item.settle + '&announced_at=is.null', { announced_at: new Date(nowMs).toISOString() }).catch(() => {});
       }
@@ -502,7 +659,7 @@ export async function handle(req: Request, env: Env, fetchImpl: Fetch = fetch as
     if (body && body.table) {
       const ev = await eventPush(body, d);
       if (!ev) return json({ ok: true, skipped: 'not a new mark' });
-      const sent = await toAll(ev.owner, ev.key, ev.alert, ev.push) as Record<string, unknown>[];
+      const sent = await toAll(ev.owner, ev.key, ev.alert, ev.push, ev.need) as Record<string, unknown>[];
       if (sent.length && sent.every(x => x.skipped === 'turned off')) return json({ ok: true, skipped: 'turned off' });
       return json({ ok: true, key: ev.key, ...(sent.find(x => !x.skipped) || sent[0] || {}), recipients: sent.length });
     }
@@ -517,12 +674,14 @@ export async function handle(req: Request, env: Env, fetchImpl: Fetch = fetch as
   if (!user || !user.id) return json({ error: 'not allowed' }, 401);
   if (!body || body.job !== 'test') return json({ error: 'unknown job' }, 400);
   const test = { title: 'StayLog test', body: 'Notifications are on for this iPhone.', url: './#open=menu', tag: 'test' };
-  if (!d.stay) return json({ ok: true, ...(await deliver({ tenant: String(user.id), user: String(user.id) }, null, 'test', test, d, env, fetchImpl, nowMs)) });
+  // Only the device that asked (v69), when it says which; else all of theirs.
+  const endpoint = typeof body.endpoint === 'string' && body.endpoint ? body.endpoint : undefined;
+  if (!d.stay) return json({ ok: true, ...(await deliver({ tenant: String(user.id), user: String(user.id) }, null, 'test', test, d, env, fetchImpl, nowMs, endpoint)) });
   // New model: their own devices, in each account they belong to.
   const accts = await d.get(`members?user_id=eq.${user.id}&active=is.true&select=account_id`) || [];
   let sent = 0, gone = 0;
   for (const a of accts) {
-    const r = await deliver({ tenant: a.account_id, user: String(user.id) }, null, 'test', test, d, env, fetchImpl, nowMs);
+    const r = await deliver({ tenant: a.account_id, user: String(user.id) }, null, 'test', test, d, env, fetchImpl, nowMs, endpoint);
     sent += r.sent; gone += r.gone;
   }
   return json({ ok: true, sent, gone, ...(sent || gone ? {} : { skipped: 'no devices' }) });

@@ -133,6 +133,18 @@ const SEED = { properties: [{ id: 'p1', name: 'Raaya Vasyam' }, { id: 'p2', name
     const menu = await page.evaluate(() => { state.modal = 'menu'; render(); return document.body.innerText; });
     ok('⋯: no Team, Add property, Encrypted backup or Inventory', !/\bTeam\b|Add property|Encrypted backup|Inventory/.test(menu));
     ok('the property picker: no editing', await page.evaluate(() => { state.modal = 'propPicker'; render(); return document.querySelectorAll('[aria-label^="Edit "]').length; }) === 0);
+    // v69: the alerts they can be sent, and the inbox by property
+    const alerts = await page.evaluate(() => { closeModal(); return pushAlertsForMe().map(a => a[0]).join(); });
+    ok('notification switches: only the alerts a manager can be sent (no staff marks, balances or backup without those rights)',
+      alerts === 'newBookings,arrivals,stale,syncConflict', alerts);
+    const shown = await page.evaluate(() => {
+      inbox.rows = [{ key: 'arrival:b2:x', title: 'Guest arriving tomorrow', sent_at: new Date().toISOString(), property_id: 'p2' },
+        { key: 'arrival:b9:x', title: 'Guest arriving tomorrow', sent_at: new Date().toISOString(), property_id: 'p1' },
+        { key: 'conflict:dev:x', title: 'A change to look at', sent_at: new Date().toISOString(), property_id: null }];
+      const r = {}; for (const p of ['all', 'p2', 'p1']) { state.filterProp = p; r[p] = inboxRows().map(x => x.key.split(':')[1]).join(); }
+      state.filterProp = 'p2'; r.unread = inboxUnread(); return r; });
+    ok('the inbox follows the property picker; rows about no property always show; the badge counts them all',
+      shown.all === 'b2,b9,dev' && shown.p2 === 'b2,dev' && shown.p1 === 'b9,dev' && shown.unread === 3, shown);
     ok('no page errors', errs.length === 0, errs);
     await ctx.close(); }
 

@@ -1110,7 +1110,8 @@
     const c = await client();
     const since = new Date(Date.now() - 30 * 86400e3).toISOString();
     const acct = stayAcct();
-    let q0 = T(c, 'push_log').select('key,title,body,url,alert,sent_at,delivered,read_at');
+    // New model: each row's property, for the property picker (v69).
+    let q0 = T(c, 'push_log').select('key,title,body,url,alert,sent_at,delivered,read_at' + (acct ? ',property_id' : ''));
     q0 = acct ? q0.eq('account_id', acct).eq('recipient', session.user.id) : q0.eq('owner_id', session.user.id);
     const { data, error } = await q0.not('title', 'is', null).gte('sent_at', since).order('sent_at', { ascending: false });
     if (error) throw new Error(inboxExplain(error));
@@ -1129,10 +1130,11 @@
     if (error) throw new Error(inboxExplain(error));
   }
 
-  async function pushTest() {
+  // Only to this device when its subscription is given (v69).
+  async function pushTest(endpoint) {
     if (!session) throw new Error('not signed in');
     const c = await client();
-    const { data, error } = await c.functions.invoke('notify', { body: { job: 'test' } });
+    const { data, error } = await c.functions.invoke('notify', { body: endpoint ? { job: 'test', endpoint } : { job: 'test' } });
     if (error) {
       let detail = '';
       try { detail = (await error.context.json()).error || ''; } catch {}

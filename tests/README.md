@@ -54,6 +54,7 @@ kept outside it and was lost when the machine running them was reset.
     node tests/test_checkboxes.js     # v66: checkboxes show their tick
     node tests/test_move_app.js       # phase 3: Move to the new system — copy, compare, switch, another phone joins, rollback
     node tests/test_notify_stay.js    # phase 3: notify over `stay`
+    node tests/test_notify_team.js    # phase 8: notifications for the team
     node tests/test_ical_server.js    # phase 7: the calendar import on the server (ical-sync makes the bookings)
     STAYLOG_PG="…" node tests/test_ical_server_sql.js   # phase 7: 09-calendar.sql
     STAYLOG_PG="…" node tests/test_cutover_sql.js    # phase 3: 05-migrate.sql, the switch, rollback-cutover.sql
