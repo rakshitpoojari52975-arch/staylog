@@ -59,6 +59,11 @@ checks as (
                    and to_regprocedure('public.staff_profile()') is not null
               then 'ok' else 'not yet — run 07-staff.sql' end
   union all
+  -- 9. phase 6: the team
+  select 'the team: invites, my_access, team() (08-team.sql)',
+         case when to_regprocedure('stay.team(uuid)') is not null and to_regprocedure('stay.my_access(uuid)') is not null
+              then 'ok' else 'not yet — run 08-team.sql' end
+  union all
   -- 7. the old app's tables are still there and untouched by this phase
   select 'old table public.' || t, case when to_regclass('public.' || t) is not null then 'ok (unchanged)' else 'not found' end
   from unnest(array['properties','bookings','expenses','staff','loans','loan_repayments','attendance']) t

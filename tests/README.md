@@ -48,6 +48,9 @@ kept outside it and was lost when the machine running them was reset.
     node tests/test_staff_app.js      # phase 5: staff in the app
     node tests/test_staff_login_function.js   # phase 5: the staff-login Edge Function
     STAYLOG_PG="…" node tests/test_staff_sql.js      # phase 5: 07-staff.sql
+    node tests/test_team_app.js       # phase 6: the team in the app
+    node tests/test_team_invite_function.js   # phase 6: the team-invite Edge Function
+    STAYLOG_PG="…" node tests/test_team_sql.js       # phase 6: 08-team.sql
     node tests/test_move_app.js       # phase 3: Move to the new system — copy, compare, switch, another phone joins, rollback
     node tests/test_notify_stay.js    # phase 3: notify over `stay`
     node tests/test_ical_stay.js      # phase 3: ical-sync over `stay`

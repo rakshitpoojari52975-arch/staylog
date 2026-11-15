@@ -344,6 +344,50 @@ Agreed decisions (his answers, 15 Nov 2026):
   properties. Offline copy per login (`staylog_staff_cache:<user id>`; the old
   shared `rv_staff_cache` is removed). Without 07 (no profile) it still works.
 
+### Phase 6 — v65 (the team)
+- **`supabase/stay/08-team.sql`** (after 07): `stay.invites.label` (who it
+  is for); the owner's invite policies — read, **insert only `role =
+  'manager'`** (new owners join by platform invite, phase 9), withdraw by
+  `expires_at`; **`stay.my_access(acct)`** (role, every permission as
+  `stay.can()` decides it, the properties a manager holds — null for an
+  owner); **`stay.team(acct)`** (owner only: members with their Auth email,
+  role, permissions, properties, `me`; invites still open). `check.sql`
+  checks it.
+- **Edge Function `team-invite`** (Verify JWT off): `peek` (no sign-in:
+  business, property names, label — nothing private) and `accept` (name,
+  email, password → makes the login with `email_confirm`, or a signed-in
+  token → that login). Only a live, unused manager invite; claimed
+  atomically (`PATCH … used_by=is.null&expires_at=gt.now`); member row with
+  the invite's permissions (upsert, so a switched-off manager comes back) and
+  `member_properties` for its live properties. Already on the team → 409,
+  nothing used. A failure half-way deletes the login it made and frees the
+  invite. An email that already has a login: "sign in first, then open the
+  link". Public sign-up stays off.
+- **App:** `myAccess()` = `StayLogSync.status().me` (read each sync, kept
+  offline); `isOwner()`, `can(perm)` — the old model and "not known yet" are
+  the owner. **Hidden by role:** tabs (`tabAllowed`: Expenses needs
+  add_expenses or see_money, Loans manage_staff, Reports see_money; a hidden
+  tab is never left showing), Home money (hero, Avg tariff) without
+  see_money, the loans card without manage_staff, booking Add/Edit/Cancel/
+  Check in–out without edit_bookings, Send without send_messages, Mark
+  paid/payout and Receipt without mark_paid, property editing without
+  edit_properties, Add property / Team / Encrypted backup / Inventory /
+  calendar boxes for owners only. Row-level security is the real limit.
+- **⋯ → Team** (`renderTeamModal`, owner, new model): members with emails;
+  a manager's properties (`setMemberProperties`) and permissions
+  (`setMember`, the whole set kept) change from their card; Switch off/on
+  (`active`; the account keeps one owner). Invites waiting (Share link,
+  Withdraw). **Invite a manager**: who it is for, properties (at least one),
+  permissions (`PERMS`, the defaults ticked) → `StayLogSync.invite` (an
+  18-byte random code) → the link `<app>#join=<code>`, shared with
+  `navigator.share` or copied.
+- **Joining** (`#join=<code>`, `joinCode` kept in sessionStorage until the
+  app is unlocked → `renderJoinModal`): peek, then name / email / password
+  (or "join as <email>" when signed in) → accept → sign in → `followModel`
+  moves the phone onto the account (or `switchAccount` when it already has
+  one). A new manager's phone first makes its own PIN, as any phone.
+- Not yet (phase 8): notifications to managers; inbox per property.
+
 ## Deploying
 
 - GitHub Pages serves `main`. Work on a branch and open a PR; Rakshit merges.
@@ -989,6 +1033,9 @@ also fetch from Supabase with `cache: 'no-store'` as a second layer.
     node tests/test_staff_app.js         # phase 5 app: Works at + filter, staff logins (create/reset/switch off), owner name, held marks on Home, payday-dated loan cut, Shared expense saves
     node tests/test_staff_login_function.js   # the staff-login Edge Function: who may, the address, nothing half-made, reset/disable on old logins
     STAYLOG_PG="…" node tests/test_staff_sql.js      # 07-staff.sql: works_at ↔ staff_properties, her profile, marking at a property
+    node tests/test_team_app.js          # phase 6: Team (members, permissions, properties, switch off, invites, withdraw), a manager's hidden areas, joining from a link
+    node tests/test_team_invite_function.js   # the team-invite Edge Function: peek, accept (new login / signed in), once only, expired, owner invites refused, nothing half-made
+    STAYLOG_PG="…" node tests/test_team_sql.js       # 08-team.sql: manager-only invites, my_access, team(), what a manager reads
     node tests/test_move_app.js          # phase 3 in the app: Move to the new system — copy, compare (match / mismatch), switch, another phone joins, rollback
     node tests/test_notify_stay.js       # notify in the new model: by account, every owner, own devices/prefs/inbox, amounts + pays_directly_sources, marks, test push
     node tests/test_ical_stay.js         # ical-sync in the new model: stay feeds/events by account, Import now = owned accounts only

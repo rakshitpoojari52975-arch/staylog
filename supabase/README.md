@@ -22,6 +22,14 @@ Built beside the tables above; the app does not use it yet, and nothing in
 To undo: `stay/rollback-phase1.sql` (refuses once an account exists in
 `stay`), then remove `stay` from Exposed schemas.
 
+**Phase 6 (v65) — the team.** After merging:
+1. `stay/08-team.sql`, then `stay/check.sql` (all `ok`).
+2. Edge Functions → **Deploy a new function** named `team-invite`: paste
+   `functions/team-invite/index.ts`, turn **Verify JWT off**, deploy (no new
+   secrets).
+3. In the app: ⋯ → **Team** → **Invite a manager**, and send them the link.
+   Public sign-up stays off: an invite is the only way in.
+
 **Phase 5 (v64) — staff.** After merging:
 1. `stay/07-staff.sql`, then `stay/check.sql` (all `ok`).
 2. Edge Functions → **Deploy a new function** named `staff-login`: paste

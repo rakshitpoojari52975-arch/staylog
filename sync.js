@@ -381,6 +381,13 @@
     } catch {}
   }
 
+  // What this login may do in the account (v65): role, each permission as
+  // stay.can() decides it, and the properties a manager holds. Kept with the
+  // local state so the screens stay right offline.
+  async function myAccess(account) {
+    try { const a = await rpc('my_access', { p_account: account }); if (a) S.me = a; } catch {}
+  }
+
   async function pull(account, touched) {
     for (const t of ORDER) {
       const since = S.cursor[t] ? new Date(Date.parse(S.cursor[t]) - PULL_OVERLAP_MS).toISOString() : null;
@@ -518,6 +525,7 @@
         baseBefore = clone(S.base);
         await pull(m.account, touched);
         await heldMarks(m.account);
+        await myAccess(m.account);
         await drainIcal(m.account);
         await push(m.account, opts.manual, touched);
         await stampEvents(m.account);
@@ -578,7 +586,7 @@
     return { active: !!m, account: m && m.account, user: m && m.user, running: !!running,
       lastPull: S && S.lastPull, lastPush: S && S.lastPush, outbox: pending, held: (S && S.held) || 0,
       conflicts: (S && S.conflicts) || [], errors: (S && S.errors) || [], lastError: (S && S.lastError) || '',
-      heldMarks: (S && S.heldMarks) || [] };
+      heldMarks: (S && S.heldMarks) || [], me: (S && S.me) || null };
   }
 
   window.StayLogSync = {
@@ -662,6 +670,49 @@
         let msg = '';
         try { msg = (await error.context.json()).error || ''; } catch {}
         throw new Error(msg || (/404|not found/i.test(error.message || '') ? 'The staff-login function is not deployed yet.' : (error.message || 'That did not work.')));
+      }
+      return data;
+    },
+    // ── The team (v65): the owner's Team screen and the invite link ──────────
+    team: () => { const m = model(); return rpc('team', { p_account: m.account }); },
+    async invite({ label, propertyIds, permissions }) {
+      const m = model(); if (!m) throw new Error('Not switched over yet');
+      const bytes = crypto.getRandomValues(new Uint8Array(18));
+      const code = btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+      const db = await stay();
+      const { error } = await db.from('invites').insert({ code, account_id: m.account, role: 'manager', label: label || null,
+        property_ids: propertyIds || [], permissions: permissions || {}, created_by: m.user });
+      if (error) throw new Error(error.message || String(error));
+      return code;
+    },
+    async withdrawInvite(code) {
+      const m = model(); const db = await stay();
+      const { error } = await db.from('invites').update({ expires_at: new Date().toISOString() }).eq('account_id', m.account).eq('code', code);
+      if (error) throw new Error(error.message || String(error));
+    },
+    async setMember(userId, fields) {
+      const m = model(); const db = await stay();
+      const { error } = await db.from('members').update(fields).eq('account_id', m.account).eq('user_id', userId);
+      if (error) throw new Error(/an owner/i.test(error.message || '') ? 'The account needs at least one owner.' : (error.message || String(error)));
+    },
+    async setMemberProperties(userId, ids) {
+      const m = model(); const db = await stay();
+      const { data: have, error: e0 } = await db.from('member_properties').select('property_id').eq('account_id', m.account).eq('user_id', userId);
+      if (e0) throw new Error(e0.message || String(e0));
+      const now = new Set((have || []).map(x => x.property_id)), want = new Set(ids);
+      const gone = [...now].filter(x => !want.has(x)), add = [...want].filter(x => !now.has(x));
+      if (gone.length) { const { error } = await db.from('member_properties').delete().eq('account_id', m.account).eq('user_id', userId).in('property_id', gone);
+        if (error) throw new Error(error.message || String(error)); }
+      if (add.length) { const { error } = await db.from('member_properties').insert(add.map(p => ({ account_id: m.account, user_id: userId, property_id: p })));
+        if (error) throw new Error(error.message || String(error)); }
+    },
+    // Joining from a link: works before this phone has any account.
+    async joinCall(body) {
+      const c = await C().client();
+      const { data, error } = await c.functions.invoke('team-invite', { body });
+      if (error) {
+        let msg = ''; try { msg = (await error.context.json()).error || ''; } catch {}
+        throw new Error(msg || (/404|not found/i.test(error.message || '') ? 'That invite was not found.' : (error.message || 'That did not work.')));
       }
       return data;
     },
