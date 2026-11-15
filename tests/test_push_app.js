@@ -129,12 +129,13 @@ console.log('\n— turning it on from the Home Screen app —');
      &&(await page.locator('[data-push-pref][aria-checked="true"]').count())===7);
   await page.click('[data-push-pref="arrivals"]'); await page.waitForTimeout(150);
   ok('turning one off saves just that one off', JSON.stringify((await S(page)).prefs)===
-     JSON.stringify({attendance:true,utensils:true,newBookings:true,arrivals:false,balances:true,stale:true,backup:true}), (await S(page)).prefs);
+     JSON.stringify({attendance:true,utensils:true,newBookings:true,arrivals:false,balances:true,stale:true,syncConflict:true,backup:true}), (await S(page)).prefs);
   ok('and the toggle shows it', await page.locator('[data-push-pref="arrivals"]').getAttribute('aria-checked')==='false');
   await page.click('[data-push-test]'); await page.waitForTimeout(150);
   const inv=(await S(page)).invoked;
-  ok('Send test asks the notify function for a test', inv.length===1&&inv[0].name==='notify'&&inv[0].body.job==='test', inv);
-  ok('and says it went', /Sent to 1 device/.test(await page.locator('[data-push-msg]').innerText()));
+  ok('Send test asks the notify function for a test, to this device only (v69)', inv.length===1&&inv[0].name==='notify'&&inv[0].body.job==='test'
+     &&typeof inv[0].body.endpoint==='string'&&inv[0].body.endpoint.length>0, inv);
+  ok('and says it went to this device', /Sent to this /.test(await page.locator('[data-push-msg]').innerText()));
   await page.click('[data-push-off]'); await page.waitForTimeout(200);
   ok('Turn off unsubscribes the browser', (await P(page)).unsubscribed===1);
   ok('and removes this device from the cloud', Object.keys((await S(page)).subs).length===0, (await S(page)).subs);

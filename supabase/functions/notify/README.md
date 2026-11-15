@@ -44,7 +44,10 @@ Do these in order, once.
    (Or, with the Supabase CLI: `supabase functions deploy notify --no-verify-jwt`.)
 
 5. **Schedule the 9 AM run.** Integrations → Cron → Create job:
-   - Schedule `30 3 * * *` (03:30 UTC is 9:00 AM IST)
+   - Schedule `30 3 * * *` (03:30 UTC is 9:00 AM IST).
+     **New model (v69 and later):** make it hourly, `0 * * * *`. Each account is
+     then handled from 9 AM in its own time zone; every reminder still goes once
+     a day (its key carries the date), and a missed hour is caught by the next.
    - Type: Supabase Edge Function → `notify`, method POST
    - Body `{"job":"daily"}`
    - Header `x-cron-secret` with the value from step 3

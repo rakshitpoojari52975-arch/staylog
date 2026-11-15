@@ -240,7 +240,7 @@ const mark={id:'att_stf1_20261020',owner_id:OWNER,staff_id:'stf1',date:'2026-10-
 { const W=world(base());
   await fire(W,att('INSERT',mark));
   let ms=await pushesFor(W,iphone);
-  ok('she marks attendance: a push', ms.length===1&&ms[0].title==='Laxmi came in today'&&/Marked present at 9:12\s?am, 20 Oct/i.test(ms[0].body), ms);
+  ok('she marks attendance: a push, with her full name', ms.length===1&&ms[0].title==='Laxmi Walikar came in today'&&/Marked present at 9:12\s?am, 20 Oct/i.test(ms[0].body), ms);
   ok('opening the cloud panel', ms[0]&&ms[0].url==='./#open=cloud');
   await fire(W,att('UPDATE',{...mark,expense_id:'wag_stf1_20261020'},mark));
   ok('the app stamping it is not news', (await pushesFor(W,iphone)).length===1);
@@ -250,7 +250,7 @@ const mark={id:'att_stf1_20261020',owner_id:OWNER,staff_id:'stf1',date:'2026-10-
   ok('marking again after an undo does not notify a second time', (await pushesFor(W,iphone)).length===1);
   await fire(W,{type:'INSERT',table:'utensil_marks',record:{...mark,id:'ute_stf1_20261020'}});
   ms=await pushesFor(W,iphone);
-  ok('she reports utensil cleaning: a push', ms.length===2&&ms[1].title==='Laxmi cleaned the utensils'&&/to be paid by you/.test(ms[1].body), ms[1]);
+  ok('she reports utensil cleaning: a push', ms.length===2&&ms[1].title==='Laxmi Walikar cleaned the utensils'&&/to be paid by you/.test(ms[1].body), ms[1]);
   await F.handle(post({type:'INSERT',table:'bookings',record:{id:'x',owner_id:OWNER}},CRON),ENV,W.fetch,NOW);
   ok('another table\'s webhook sends nothing', (await pushesFor(W,iphone)).length===2); }
 { const W=world({...base(),notification_prefs:[{owner_id:OWNER,prefs:{attendance:false}}]});
@@ -265,7 +265,7 @@ const mark={id:'att_stf1_20261020',owner_id:OWNER,staff_id:'stf1',date:'2026-10-
   let ms=await pushesFor(W,iphone);
   ok('a body naming another owner still notifies the mark\'s real owner, with its real date', ms.length===1&&/20 Oct/.test(ms[0].body)
      &&(await pushesFor(W,someoneElse)).length===0, ms);
-  ok('and names his own staff member, not another account\'s with the same id', ms[0]&&ms[0].title==='Laxmi came in today', ms[0]);
+  ok('and names his own staff member, not another account\'s with the same id', ms[0]&&ms[0].title==='Laxmi Walikar came in today', ms[0]);
   await F.handle(post(att('INSERT',{...mark,id:'att_stf1_20991231',date:'2099-12-31'}),CRON),ENV,W.fetch,NOW);
   ok('a body for a mark that does not exist sends nothing', (await pushesFor(W,iphone)).length===1);
   W.tables.attendance.push({...mark,id:'att_stf1_20261019',date:'2026-10-19',deleted_at:'2026-10-19T04:00:00Z'});

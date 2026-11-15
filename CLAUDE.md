@@ -396,7 +396,43 @@ Agreed decisions (his answers, 15 Nov 2026):
   opens the Join sheet), and the Join sheet tells them to keep the email and
   password for the Home Screen app. On Android (Chrome), the installed app
   shares Chrome's storage, so joining in Chrome is enough.
-- Not yet (phase 8): notifications to managers; inbox per property.
+- Phase 8 (v69) added notifications to managers and the inbox per property.
+
+### Phase 8 — v69 (notifications for the team)
+- **Routing** (`notify`, new model only; the old model is unchanged for the
+  rollback): every reminder carries a `Need` — a property, a set of
+  properties (`anyOf`, empty = any), a permission, owners only, or one person
+  — and `routes(team, need)` picks the active members: owners get everything
+  but another person's own alerts; a manager only what they hold
+  (`member_properties`) and may (`memberCan`, the same defaults as
+  `stay.can()`). Each recipient then by their own prefs, devices, inbox row
+  (`push_log.property_id` filled) and badge.
+  | alert | need |
+  |---|---|
+  | arrivals, newBookings | the booking's property |
+  | balances | the property + `see_money` (amount in the account's currency, its `pays_directly_sources`) |
+  | attendance, utensils | `manage_staff` + the mark's property, else any of her `works_at` (empty = any) |
+  | backup | owners only |
+  | stale | the device's person: `sync_status.oldest_unsent` over 2 days ("Changes not sent yet"; key `stale:<device>:<date>`) |
+  | syncConflict (new) | the device's person: `sync_status.conflicts > 0` (key `conflict:<device>:<date>`) |
+  The old "no device synced in 2 days" is gone from the new model: the server
+  holds the data, so reminders are no longer out of date when a phone is.
+- **Hourly daily job**: cron `0 * * * *` with `{"job":"daily"}`. Accounts are
+  paged (`allAccounts`), handled 4 at a time, each in its own try/catch (the
+  answer lists `failed`), each from 9 AM (`DAILY_HOUR`) on its own clock
+  (`localParts(time_zone)`) with its own "tomorrow"; keys carry the date, so a
+  reminder goes once however often it runs, and a missed hour is caught.
+  `{"force":true}` handles every account now (for a manual run).
+- Her marks name her **full name**, the time in the account's zone (old model
+  too: full name). New bookings: "today" in the account's zone.
+- **Send test** goes to the device that asked (`{job:'test', endpoint}`;
+  never another person's device even when named).
+- **App:** `PUSH_ALERTS` names no one ("Staff mark attendance") and each has
+  who may get it; `pushAlertsForMe()` shows only those switches. The inbox
+  follows the property picker (`inboxRows()`: a row about no property always
+  shows; the badge counts all). Done for a phone's own alerts: `stale:` →
+  this phone has nothing waiting; `conflict:` → nothing left to look at here
+  (another device's: shown done here).
 
 ### Phase 7 — v68 (the calendar import on the server)
 - **`ical-sync` makes the bookings** in the new model: a stay is on every
@@ -1101,6 +1137,7 @@ also fetch from Supabase with `cache: 'no-store'` as a second layer.
     node tests/test_checkboxes.js        # v66: every checkbox keeps its tick — appearance, a tap ticks it, and it looks different ticked (pixels), light and dark
     node tests/test_move_app.js          # phase 3 in the app: Move to the new system — copy, compare (match / mismatch), switch, another phone joins, rollback
     node tests/test_notify_stay.js       # notify in the new model: by account, every owner, own devices/prefs/inbox, amounts + pays_directly_sources, marks, test push
+    node tests/test_notify_team.js       # phase 8: routing by property and permission, own inbox row + badge, her marks by manage_staff, a device's own alerts, hourly per time zone and currency, one account failing, Send test to this device only
     node tests/test_ical_server.js       # phase 7: the import on the server — same plan as the phone (400 cases), bookings written, echoes, cancelled stays, moved/gone, version guard, announced once (cut short, notify down), parallel/deadline/cap, Import now throttle, one account failing, time zone, old model
     STAYLOG_PG="…" node tests/test_ical_server_sql.js   # 09-calendar.sql: twice, announced backfill only once, ical_runs owner-only, min_version 68
     STAYLOG_PG="…" node tests/test_cutover_sql.js    # 05-migrate.sql + rollback-cutover.sql: account, rows, placeholders, prune, copy, switch, her page on stay, read-only old tables, rollback, again
