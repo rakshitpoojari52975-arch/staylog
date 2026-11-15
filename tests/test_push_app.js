@@ -125,6 +125,12 @@ console.log('\n— turning it on from the Home Screen app —');
   ok('the subscription is stored in the cloud, owner and keys included', row&&row.owner_id==='owner-1'&&row.p256dh&&row.auth&&row.device==='iPhone', row);
   t=await page.locator('[data-push]').innerText();
   ok('status: on for this iPhone', /On for this iPhone/.test(t), t);
+  // v70: any phone now, not only an iPhone
+  const names=await page.evaluate(()=>{const out={};const real=Object.getOwnPropertyDescriptor(Navigator.prototype,'userAgent');
+    for(const [k,ua] of Object.entries({android:'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 Chrome/124 Mobile Safari/537.36',desktop:'Mozilla/5.0 (X11; Linux x86_64) Chrome/124'})){
+      Object.defineProperty(navigator,'userAgent',{value:ua,configurable:true});out[k]=deviceName();}
+    delete navigator.userAgent;return out;});
+  ok('an Android phone is "this phone", anything else "this device" (never "this this device")', names.android==='phone'&&names.desktop==='device', names);
   ok('every alert has a toggle, all on by default', await page.locator('[data-push-pref]').count()===7
      &&(await page.locator('[data-push-pref][aria-checked="true"]').count())===7);
   await page.click('[data-push-pref="arrivals"]'); await page.waitForTimeout(150);

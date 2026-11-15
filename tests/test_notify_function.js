@@ -116,7 +116,7 @@ console.log('\n— Send test, and what reaches Apple —');
   ok('the test goes to each of the owner\'s devices', r.sent===2&&W.pushes.length===2, r);
   ok('and to nobody else\'s', !W.pushes.some(p=>p.endpoint===someoneElse.row.endpoint));
   const [m]=await pushesFor(W,iphone);
-  ok('the payload decrypts with the device\'s own keys (RFC 8291)', m&&m.title==='StayLog test'&&/on for this iPhone/.test(m.body), m);
+  ok('the payload decrypts with the device\'s own keys (RFC 8291)', m&&m.title==='StayLog test'&&m.body==='Notifications are on for this device.', m);
   ok('it carries a visible title and body, and where to go on tap', !!(m.title&&m.body&&m.url&&m.tag), m);
   const h=W.pushes[0].headers;
   ok('sent as aes128gcm with a TTL', h['Content-Encoding']==='aes128gcm'&&h.TTL==='86400');

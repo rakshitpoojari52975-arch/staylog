@@ -673,7 +673,7 @@ export async function handle(req: Request, env: Env, fetchImpl: Fetch = fetch as
   const user = who.ok ? await who.json().catch(() => null) : null;
   if (!user || !user.id) return json({ error: 'not allowed' }, 401);
   if (!body || body.job !== 'test') return json({ error: 'unknown job' }, 400);
-  const test = { title: 'StayLog test', body: 'Notifications are on for this iPhone.', url: './#open=menu', tag: 'test' };
+  const test = { title: 'StayLog test', body: 'Notifications are on for this device.', url: './#open=menu', tag: 'test' };
   // Only the device that asked (v69), when it says which; else all of theirs.
   const endpoint = typeof body.endpoint === 'string' && body.endpoint ? body.endpoint : undefined;
   if (!d.stay) return json({ ok: true, ...(await deliver({ tenant: String(user.id), user: String(user.id) }, null, 'test', test, d, env, fetchImpl, nowMs, endpoint)) });
