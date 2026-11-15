@@ -422,6 +422,33 @@ create table if not exists stay.backups (
   primary key (account_id, id)
 );
 
+-- Row-level security on from the start. Until 03-access.sql adds the rules,
+-- nobody signed in can read or write these tables (the dashboard's SQL editor
+-- also asks about this when a script creates tables).
+alter table stay.accounts enable row level security;
+alter table stay.platform_admins enable row level security;
+alter table stay.members enable row level security;
+alter table stay.properties enable row level security;
+alter table stay.member_properties enable row level security;
+alter table stay.staff enable row level security;
+alter table stay.staff_properties enable row level security;
+alter table stay.staff_logins enable row level security;
+alter table stay.invites enable row level security;
+alter table stay.bookings enable row level security;
+alter table stay.loans enable row level security;
+alter table stay.expenses enable row level security;
+alter table stay.loan_repayments enable row level security;
+alter table stay.attendance enable row level security;
+alter table stay.utensil_marks enable row level security;
+alter table stay.receipt_series enable row level security;
+alter table stay.ical_feeds enable row level security;
+alter table stay.ical_events enable row level security;
+alter table stay.push_subscriptions enable row level security;
+alter table stay.notification_prefs enable row level security;
+alter table stay.push_log enable row level security;
+alter table stay.sync_status enable row level security;
+alter table stay.backups enable row level security;
+
 -- Platform admins: everyone in public.owners today (that is Rakshit).
 do $seed$ begin
   if to_regclass('public.owners') is not null then
