@@ -151,7 +151,11 @@ ok('no "owners only" policy is left', sql(`select count(*) from pg_policies wher
 ok('nor the mark-id checks', sql(`select count(*) from pg_constraint where conname in ('attendance_id_matches','utensil_marks_id_matches')`).out.trim()==='0');
 ok('no data changed', sql(`select md5(string_agg(row_to_json(x)::text,'|' order by x.id)) from public.bookings x`).out.trim()===beforeUndo);
 ok('the owner still works', n(as(OWNER,`select count(*) from public.bookings`))!=='error');
-r=psql(DB,['-f',F('security-v60.sql')]); ok('and security-v60.sql can be run again after it', !r.err, r.err);
+// setup.sql was re-run above, which brings back its old staff_standing: the
+// script rightly refuses until utensils.sql has put the owner match back.
+r=psql(DB,['-f',F('security-v60.sql')]); ok('security-v60.sql refuses while an old staff_standing is in place', /Run supabase\/utensils\.sql first/.test(r.err), r.err);
+psql(DB,['-f',F('utensils.sql')]);
+r=psql(DB,['-f',F('security-v60.sql')]); ok('and runs again once utensils.sql has', !r.err, r.err);
 
 psql('postgres',['-c',`drop database if exists ${DB}`]);
 console.log(`\n${pass} passed, ${fail} failed`);
