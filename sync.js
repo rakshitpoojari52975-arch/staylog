@@ -412,6 +412,9 @@
     // v74: the plan and whether this account can be written (12-plans.sql;
     // Postgres decides, this is only for the app to show it). Kept offline.
     try { const ps = await rpc('account_state', { p_account: account }); if (ps) S.plan = ps; } catch {}
+    // v75: billing (owners only: sales open?, the plan bought, cancelling,
+    // an order waiting for Razorpay). Null for anyone else, or before 13.
+    try { const bs = await rpc('billing_state', { p_account: account }); S.billing = bs || null; } catch {}
   }
 
   async function pull(account, touched) {
@@ -824,8 +827,56 @@
       await loadState(); S.plan = st; await persist(); changed();
       return st;
     },
+    // v75: paying for a plan. The order and the cancel go through the billing
+    // Edge Function (Razorpay's keys are its secrets); the rest is read here.
+    async billingPlans() {
+      const db = await stay();
+      const [{ data: plans, error }, { data: st }] = await Promise.all([
+        db.from('plans').select('id,plan,period,amount_paise,currency,properties_allowed,active,sort').eq('active', true).order('sort'),
+        db.from('platform_settings').select('billing_open,gst_enabled,gst_rate').eq('id', 1)]);
+      if (error) throw new Error(error.message || String(error));
+      return { plans: plans || [], settings: (st && st[0]) || {} };
+    },
+    async invoices() {
+      const m = model(); if (!m) return [];
+      const db = await stay();
+      const { data, error } = await db.from('invoices').select('*').eq('account_id', m.account).order('issued_at', { ascending: false });
+      if (error) throw new Error(error.message || String(error));
+      return data || [];
+    },
+    async billingCall(action, fields) {
+      const m = model(); if (!m) throw new Error('Not switched over yet');
+      const c = await C().client();
+      const { data, error } = await c.functions.invoke('billing', { body: { action, account: m.account, ...fields } });
+      if (error) {
+        let msg = '';
+        try { msg = (await error.context.json()).error || ''; } catch {}
+        throw new Error(msg || (/404|not found/i.test(error.message || '') ? 'The billing function is not deployed yet.' : (error.message || 'That did not work.')));
+      }
+      return data;
+    },
+    subscribe(plan) { return this.billingCall('subscribe', { plan }); },
+    async cancelPlan() { const r = await this.billingCall('cancel', {}); await this.refreshPlan(); return r; },
+    async refreshPlan() { const m = model(); if (!m) return; await loadState(); await myAccess(m.account); await persist(); changed(); },
+    async saveGstin(gstin) {
+      const m = model(); if (!m) return;
+      const db = await stay();
+      const { error } = await db.from('accounts').update({ gstin: gstin || null }).eq('id', m.account);
+      if (error) throw new Error(/gstin_check/.test(error.message || '') ? 'That GSTIN does not look right (15 letters and digits).' : (error.message || String(error)));
+      await this.refreshPlan();
+    },
+    billing: () => (S && S.billing) || null,
     // v74: the platform admin's screen (no guest data)
     admin: {
+      // v75: prices, sales and GST, billing per account
+      async plans() { const db = await stay(); const { data, error } = await db.from('plans').select('*').order('sort');
+        if (error) throw new Error(error.message || String(error)); return data || []; },
+      async settings() { const db = await stay(); const { data, error } = await db.from('platform_settings').select('*').eq('id', 1);
+        if (error) throw new Error(error.message || String(error)); return (data && data[0]) || null; },
+      savePlan: p => rpc('admin_save_plan', { p_id: p.id, p_amount_paise: p.amount_paise, p_razorpay_plan_id: p.razorpay_plan_id,
+        p_properties: p.properties_allowed, p_active: !!p.active }),
+      saveSettings: s => rpc('admin_save_settings', { p: s }),
+      billing: () => rpc('admin_billing', {}),
       accounts: () => rpc('admin_accounts', {}),
       extendTrial: (account, days) => rpc('admin_extend_trial', { p_account: account, p_days: days }),
       setPlan: (account, plan) => rpc('admin_set_plan', { p_account: account, p_plan: plan }),

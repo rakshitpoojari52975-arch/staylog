@@ -93,6 +93,19 @@ checks as (
               when (select bool_and(to_jsonb(a) ->> 'plan' = 'owner') from stay.accounts a where to_jsonb(a) ->> 'migrated_from' is not null) then 'ok'
               else 'PROBLEM: not on plan owner' end
   union all
+  -- 14. stage 3: billing with Razorpay
+  select 'billing: plans, events, invoices (13-billing.sql)',
+         case when to_regclass('stay.billing_events') is not null and to_regprocedure('stay.billing_record(text,jsonb)') is not null
+                   and exists (select 1 from pg_trigger where tgname = 'append_only' and tgrelid = to_regclass('stay.billing_events'))
+                   and exists (select 1 from pg_trigger where tgname = 'append_only' and tgrelid = to_regclass('stay.invoices'))
+              then 'ok' else 'not yet — run 13-billing.sql' end
+  union all
+  select 'billing never on the account moved in from the old app',
+         case when to_regclass('stay.billing_events') is null then 'ok (13 not run)'
+              when exists (select 1 from stay.accounts a where to_jsonb(a) ->> 'migrated_from' is not null
+                           and (to_jsonb(a) ->> 'razorpay_subscription_id' is not null or to_jsonb(a) ->> 'plan' <> 'owner'))
+              then 'PROBLEM: it has a subscription or another plan' else 'ok' end
+  union all
   -- 7. the old app's tables are still there and untouched by this phase
   select 'old table public.' || t, case when to_regclass('public.' || t) is not null then 'ok (unchanged)' else 'not found' end
   from unnest(array['properties','bookings','expenses','staff','loans','loan_repayments','attendance']) t

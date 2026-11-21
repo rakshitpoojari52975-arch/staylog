@@ -38,7 +38,15 @@ function world(o = {}) {
     const u = new URL(url), m = (init.method || 'GET').toUpperCase(), h = init.headers || {};
     const res = (s, b) => new Response(b === undefined ? null : JSON.stringify(b), { status: s });
     if (h.apikey !== 'service-key') return res(401, {});
-    if (u.pathname === '/auth/v1/user') { const id = W.users[(h.Authorization || '').replace('Bearer ', '')]; return id ? res(200, { id }) : res(401, {}); }
+    if (u.pathname === '/auth/v1/user') { const id = W.users[(h.Authorization || '').replace('Bearer ', '')];
+      return id ? res(200, { id, email: (W.auth.find(a => a.id === id) || {}).email }) : res(401, {}); }
+    if (u.pathname === '/rest/v1/rpc/trial_fingerprint') {      // as 13-billing.sql: email seen on another account → no trial
+      const a = JSON.parse(init.body); W.fp = W.fp || {}; W.fpCalls = (W.fpCalls || 0) + 1;
+      const h0 = a.p_hashes[0], other = W.fp[h0];
+      if (!/^[0-9a-f]{64}$/.test(h0)) return res(400, { message: 'check' });
+      if (!other) { W.fp[h0] = a.p_account; return res(200, { repeat: false }); }
+      return res(200, other === a.p_account ? { repeat: false } : { repeat: true, trial: false });
+    }
     if (u.pathname.startsWith('/auth/v1/admin/users')) {
       const body = init.body ? JSON.parse(init.body) : {}, id = u.pathname.split('/')[5];
       if (m === 'POST') { if (W.auth.some(a => a.email === body.email)) return res(422, {}); const n = { id: 'u-new' + W.auth.length, email: body.email, password: body.password }; W.auth.push(n); return res(200, n); }
@@ -73,8 +81,8 @@ function world(o = {}) {
 }
 const ENV = { SUPABASE_URL: 'https://proj.supabase.co', SUPABASE_SERVICE_ROLE_KEY: 'service-key' };
 let F;
-const call = async (W, body, tok) => { const r = await F.handle(new Request('https://proj.supabase.co/functions/v1/team-invite',
-  { method: 'POST', headers: { 'content-type': 'application/json', ...(tok ? { authorization: 'Bearer ' + tok } : {}) }, body: JSON.stringify(body) }), ENV, W.fetch, NOW);
+const call = async (W, body, tok, env = ENV) => { const r = await F.handle(new Request('https://proj.supabase.co/functions/v1/team-invite',
+  { method: 'POST', headers: { 'content-type': 'application/json', ...(tok ? { authorization: 'Bearer ' + tok } : {}) }, body: JSON.stringify(body) }), env, W.fetch, NOW);
   return { status: r.status, body: await r.json() }; };
 
 (async () => {
@@ -162,6 +170,31 @@ const call = async (W, body, tok) => { const r = await F.handle(new Request('htt
   { const W = world({ failOpen: true });
     const r = await call(W, { action: 'owner-accept', accepted: true, code: PINV, name: 'Asha', email: 'asha@example.com', password: 'asha-pass-1', business: 'Sea Breeze', account_code: 'seabreeze' });
     ok('opening fails: the login made is deleted again and the invite stays free', r.status === 500 && !W.auth.some(a => a.email === 'asha@example.com') && !W.stay.platform_invites[0].used_by, r); }
+
+  console.log('\n— one free trial per business (v75) —');
+  { const PEP = { ...ENV, FINGERPRINT_PEPPER: 'fake-pepper-for-tests' };
+    const W = world();
+    const asha = { action: 'owner-accept', accepted: true, code: PINV, name: 'Asha', email: 'asha@example.com', password: 'asha-pass-1', business: 'Sea Breeze', account_code: 'seabreeze' };
+    let r = await call(W, asha, null, PEP);
+    const hashes = Object.keys(W.fp || {});
+    ok('a new owner: the trial stands, only a 64-hex hash kept (never the email)', r.status === 200 && r.body.trial === true && hashes.length === 1
+      && /^[0-9a-f]{64}$/.test(hashes[0]) && !JSON.stringify(W.fp).includes('asha'), { r, fp: W.fp });
+    W.stay.platform_invites.push({ code: 'secondsecondsecondsecond', label: '', expires_at: '2026-11-25T00:00:00Z', used_by: null, account_id: null });
+    r = await call(W, { ...asha, code: 'secondsecondsecondsecond', email: 'Asha+homestay@Example.com', account_code: 'seabreeze2' }, null, PEP);
+    ok('the same mailbox written differently (+tag, case): no free trial, and told why', r.status === 200 && r.body.trial === false
+      && /free trial before/.test(r.body.note), r.body);
+    ok('emailKey: case, +tag and Gmail dots are the same mailbox; other domains keep their dots',
+      F.emailKey(' A.Sha+x@GMAIL.com ') === 'asha@gmail.com' && F.emailKey('asha@googlemail.com') === 'asha@gmail.com'
+      && F.emailKey('A.Sha+x@example.com') === 'a.sha@example.com');
+    const W2 = world();
+    W2.stay.platform_invites.push({ code: 'thirdthirdthirdthirdthird', label: '', expires_at: '2026-11-25T00:00:00Z', used_by: null, account_id: null });
+    await call(W2, { ...asha, email: 'ravi.k@gmail.com' }, null, PEP);
+    r = await call(W2, { ...asha, code: 'thirdthirdthirdthirdthird', email: 'Ravik+2@gmail.com', account_code: 'ravi2' }, null, PEP);
+    ok('a Gmail address seen before (dots and +tag aside): the new account starts without a free trial', r.status === 200 && r.body.trial === false
+      && /free trial before/.test(r.body.note), r.body);
+    const W3 = world();
+    r = await call(W3, asha);
+    ok('no pepper set: nothing kept, the trial stands', r.status === 200 && r.body.trial === true && !W3.fpCalls); }
 
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
