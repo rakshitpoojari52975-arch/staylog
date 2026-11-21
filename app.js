@@ -6,7 +6,7 @@
 // ─── Build ────────────────────────────────────────────────────────────────────
 // Bump BOTH of these together. This date sat at 28 Sept through a dozen
 // releases and was read, reasonably, as proof the upload had not landed.
-const APP_VERSION='v74', APP_BUILT='21 Nov 2026';
+const APP_VERSION='v75', APP_BUILT='21 Nov 2026';
 // The CACHE_NAME of the sw.js released with this app.js. Every release bumps
 // APP_VERSION and CACHE_NAME together, so one is derived from the other rather
 // than being a fourth thing to forget; the tests fail if they ever disagree.
@@ -73,7 +73,7 @@ const planState=()=>{try{const Y=window.StayLogSync;return Y&&Y.plan?Y.plan():nu
 const readOnly=()=>{const p=planState();return !!(p&&p.can_write===false);};
 const pausedProp=id=>{const p=planState();return !!(p&&id&&(p.paused_properties||[]).includes(id));};
 const PAUSED_PROP_TEXT='This property is read-only on your plan. Choose it as active in Account settings, or move to a bigger plan.';
-const writeRefusal=propId=>readOnly()?((planState()||{}).reason||'This account is read-only.'):pausedProp(propId)?PAUSED_PROP_TEXT:'';
+const writeRefusal=propId=>readOnly()?planReason(planState()):pausedProp(propId)?PAUSED_PROP_TEXT:'';
 // may do this (role) and may write now (plan, and the property if one is given)
 const canWrite=(perm,propId)=>can(perm)&&!writeRefusal(propId);
 // This phone's id (v60, staylog_device): a phone's own alerts name it.
@@ -1805,6 +1805,8 @@ function renderStartModal(){
         if(stayActive()){Y.switchAccount(r.account);state.data=await loadDataFromIDB();Y.start();}
         else{await C.refreshModel();await followModel();}
         showToast(`Welcome to StayLog${r.business?', '+r.business:''}`);render();
+        // v75: an email that has had a free trial before opens without one
+        if(r.trial===false)setTimeout(()=>alert(STORE_BUILD?'This email has had a StayLog free trial before, so this account starts without one.':r.note),300);
       }catch(e){sn.busy=false;sn.err=e.message||String(e);render();}
     }},sn.busy?'Setting up…':'Open my account'));
     w.appendChild(btn({className:'btn-ghost',style:{width:'100%'},onClick:()=>{done();closeModal();}},'Not now'));
@@ -1958,11 +1960,11 @@ function planBanner(){
     fontSize:13.5,lineHeight:1.5,color:'var(--text)'}},div({},text),acts.length?div({style:{display:'flex',gap:8,marginTop:8,flexWrap:'wrap'}},...acts):null);
   const b=(label,onClick,attr)=>btn({className:'btn-ghost btn-sm',[attr]:'1',onClick},label);
   if(p.can_write===false)
-    return box('read-only',p.reason||'This account is read-only.',
+    return box('read-only',planReason(p),
       isOwner()?b('Export everything',()=>setState({modal:'exportAll'}),'data-plan-export'):null,
       isOwner()?b('Account settings',()=>setState({modal:'account'}),'data-plan-settings'):null);
   if(p.status==='trialing'&&p.days_left!=null&&p.days_left<=2)
-    return box('trial',`Your free trial ends in ${p.days_left} day${p.days_left===1?'':'s'}. Subscribe in Account settings to keep adding bookings — your data stays safe either way.`,
+    return box('trial',`Your free trial ends in ${p.days_left} day${p.days_left===1?'':'s'}.${STORE_BUILD?' Your data stays safe either way.':' Subscribe in Account settings to keep adding bookings — your data stays safe either way.'}`,
       isOwner()?b('Account settings',()=>setState({modal:'account'}),'data-plan-settings'):null);
   return null;
 }
@@ -1986,11 +1988,144 @@ function planSection(){
       `${(p.paused_properties||[]).length} ${(p.paused_properties||[]).length===1?'property is':'properties are'} read-only on this plan.`));
   if(p.plan!=='owner'&&state.data.properties.length>1&&p.properties_allowed!=null)
     w.appendChild(btn({className:'btn-ghost btn-sm','data-choose-active':'1',style:{alignSelf:'flex-start'},onClick:()=>setState({modal:'activeProps'})},'Choose active properties'));
-  if(p.plan!=='owner')
-    w.appendChild(div({'data-subscribe-soon':'1',style:{fontSize:12.5,color:'var(--muted)',lineHeight:1.5}},
-      'Paid plans open soon. To keep going after your trial, write to ',h('a',{href:'contact.html',target:'_blank',rel:'noopener'},'StayLog'),'.'));
-  if(p.can_write===false)w.appendChild(div({style:{fontSize:12.5,color:'var(--danger)',lineHeight:1.5}},p.reason));
+  if(p.can_write===false)w.appendChild(div({style:{fontSize:12.5,color:'var(--danger)',lineHeight:1.5}},planReason(p)));
+  if(p.plan!=='owner'&&!STORE_BUILD&&isOwner())w.appendChild(billingSection(p));
   return w;
+}
+
+// ─── Paying for a plan (v75) ─────────────────────────────────────────────────
+// Through Razorpay's own payment page: the billing Edge Function makes the
+// subscription and returns its link; the app opens it. No Razorpay code or key
+// here. Postgres turns the account active when Razorpay's webhook says paid.
+// A store build (cloud-config.js storeBuild: true) shows no price, no plan to
+// buy and no word of where to buy one: Apple and Google require their own
+// in-app purchase for that (guideline 3.1.1; Play Billing).
+const STORE_BUILD=!!(window.STAYLOG_CLOUD||{}).storeBuild;
+const READ_ONLY_PLAIN='This account is read-only. Your data is safe, and you can still see and export everything.';
+function planReason(p){return STORE_BUILD?READ_ONLY_PLAIN:(p&&p.reason)||'This account is read-only.';}
+const PERIOD_WORD={monthly:'month',yearly:'year'};
+const PLAN_TITLE={starter:'Starter',pro:'Pro'};
+// Plans are priced in rupees whatever the account's own currency.
+function fmtPaise(p,pdf){const r=(p||0)/100;const t=r.toLocaleString('en-IN',{minimumFractionDigits:r%1?2:0,maximumFractionDigits:2});return (pdf?'Rs. ':'₹')+t;}
+const bl={plans:null,settings:null,invoices:null,err:'',busy:false,at:0};
+// The section draws itself in place (Account settings has fields that a
+// redraw of the sheet would empty).
+function billingSection(p){
+  const box=div({'data-billing':'1',style:{display:'flex',flexDirection:'column',gap:8,marginTop:6}});
+  const paint=()=>{box.replaceChildren(...billingBody(p,paint));};
+  paint();
+  if(Date.now()-bl.at>60000)(async()=>{        // read again at most once a minute
+    bl.at=Date.now();
+    try{const r=await window.StayLogSync.billingPlans();bl.plans=r.plans;bl.settings=r.settings;bl.invoices=await window.StayLogSync.invoices();bl.err='';}
+    catch(e){bl.err=e.message||String(e);}
+    paint();
+  })();
+  return box;
+}
+function billingBody(p,paint){
+  const out=[], Y=window.StayLogSync, b=(Y&&Y.billing&&Y.billing())||null;
+  const note=(t,color)=>div({style:{fontSize:12.5,color:color||'var(--muted)',lineHeight:1.5}},t);
+  if(!b||!b.open){
+    out.push(div({'data-subscribe-soon':'1',style:{fontSize:12.5,color:'var(--muted)',lineHeight:1.5}},
+      'Paid plans open soon. To keep going after your trial, write to ',h('a',{href:'contact.html',target:'_blank',rel:'noopener'},'StayLog'),'.'));
+    return out;
+  }
+  const until=p.current_period_end?fmtDate(isoOf(new Date(p.current_period_end))):'';
+  const live=p.status==='active'&&b.has_subscription&&!b.cancel_at_period_end;
+  if(b.repeat_trial&&p.plan==='trial')out.push(note('This email or listing has had a free trial before, so this account has none. Subscribe to start.','var(--warn)'));
+  if(b.pending&&!live)out.push(div({'data-billing-pending':'1',style:{fontSize:13,lineHeight:1.5,padding:'8px 10px',borderRadius:'var(--radius-sm)',background:'var(--gold-light, #fbf3e2)'}},
+    'Waiting for Razorpay to confirm your payment. It shows here within a minute or two of paying. ',
+    btn({className:'btn-ghost btn-sm','data-billing-refresh':'1',onClick:async e=>{const t=e.currentTarget;t.disabled=true;
+      try{await Y.refreshPlan();}catch{}t.disabled=false;paint();}},'Check again')));
+  if(live){
+    out.push(btn({className:'btn-ghost btn-sm','data-plan-cancel':'1',disabled:bl.busy,style:{alignSelf:'flex-start',color:'var(--danger)'},onClick:async e=>{
+      const t=e.currentTarget;
+      if(!confirm(`Cancel your plan? It runs until ${until}, then the account becomes read-only. Nothing is deleted, and you can subscribe again any time.`))return;
+      t.disabled=true;bl.busy=true;
+      try{await Y.cancelPlan();showToast(`Your plan ends on ${until}`);}catch(err){alert(err.message||err);}
+      bl.busy=false;paint();
+    }},'Cancel plan'));
+  }else{
+    if(b.cancel_at_period_end&&p.status==='active')out.push(note(`Your plan ends on ${until}. Subscribe again to keep going after that — a new plan starts the moment it is paid for, so near ${until} is the best time.`));
+    if(bl.err)out.push(note('Could not load the plans — '+bl.err,'var(--danger)'));
+    else if(!bl.plans)out.push(note('Loading plans…'));
+    else if(!bl.plans.length)out.push(note('No plan is on sale just now. Write to us from the contact page.'));
+    else{
+      out.push(div({className:'label',style:{marginTop:4}},'Subscribe'));
+      bl.plans.forEach(pl=>{
+        out.push(div({'data-plan-offer':pl.id,style:{display:'flex',alignItems:'center',gap:10,border:'1px solid var(--border)',borderRadius:'var(--radius-sm)',padding:'9px 11px'}},
+          div({style:{flex:1,minWidth:0}},
+            div({style:{fontWeight:700,fontSize:14}},`${PLAN_TITLE[pl.plan]||pl.plan} · ${fmtPaise(pl.amount_paise)} a ${PERIOD_WORD[pl.period]||pl.period}`),
+            div({style:{fontSize:12,color:'var(--muted)'}},`${pl.properties_allowed===1?'1 property':'Up to '+pl.properties_allowed+' properties'}${pl.period==='yearly'?' · billed yearly':''}`)),
+          btn({className:'btn-primary btn-sm','data-subscribe':pl.id,disabled:bl.busy,onClick:async e=>{
+            const t=e.currentTarget;
+            // A window opened straight from the tap (Safari blocks one opened after a wait)
+            let win=null;try{win=window.open('','_blank');}catch{}
+            t.disabled=true;bl.busy=true;
+            try{
+              const r=await Y.subscribe(pl.id);
+              if(win){win.opener=null;win.location.href=r.url;}else location.assign(r.url);
+              showToast('Razorpay opened — come back here once you have paid');
+              await Y.refreshPlan().catch(()=>{});
+            }catch(err){if(win)try{win.close();}catch{}alert(err.message||err);}
+            bl.busy=false;paint();
+          }},'Subscribe')));
+      });
+      const terms=note(`Paid through Razorpay (UPI, cards, net banking). Renews automatically until you cancel; cancelling keeps the plan until the end of what you paid for.${bl.settings&&bl.settings.gst_enabled?' Prices include GST.':''} See the `);
+      terms.append(h('a',{href:'refund.html',target:'_blank',rel:'noopener'},'refund policy'),'.');
+      out.push(terms);
+    }
+  }
+  // the GSTIN printed on their invoices
+  const g=h('input',{type:'text','data-gstin':'1',placeholder:'GSTIN (optional)',value:b.gstin||'',maxLength:15,autocapitalize:'characters',style:{flex:1,minWidth:0}});
+  out.push(div({className:'label',style:{marginTop:4}},'GSTIN for your invoices'));
+  out.push(div({style:{display:'flex',gap:8}},g,btn({className:'btn-ghost btn-sm','data-gstin-save':'1',onClick:async e=>{
+    const t=e.currentTarget;const v=g.value.trim().toUpperCase();
+    if(v&&!/^[0-9]{2}[A-Z0-9]{13}$/.test(v)){alert('A GSTIN is 15 letters and digits, starting with the 2-digit state code.');return;}
+    t.disabled=true;try{await Y.saveGstin(v);showToast(v?'GSTIN saved':'GSTIN removed');}catch(err){alert(err.message||err);}t.disabled=false;
+  }},'Save')));
+  // invoices
+  if(bl.invoices&&bl.invoices.length){
+    out.push(div({className:'label',style:{marginTop:4}},'Invoices'));
+    bl.invoices.forEach(inv=>out.push(div({'data-invoice':inv.number,style:{display:'flex',alignItems:'center',gap:8,fontSize:13}},
+      span({style:{flex:1}},`${fmtDate(isoOf(new Date(inv.issued_at)))} · ${inv.number} · ${fmtPaise(inv.amount_paise)}`),
+      btn({className:'btn-ghost btn-sm','data-invoice-pdf':inv.number,onClick:async()=>{
+        try{(await buildInvoicePDF(inv)).save(inv.number.replace(/\//g,'-')+'.pdf');}catch(err){pdfError(err);}}},'PDF'))));
+  }
+  return out;
+}
+
+// One invoice as a PDF: a tax invoice when GST was charged, else a receipt
+// that says no GST was charged. Everything printed comes from the invoice row
+// as it was issued (seller and buyer included), never from today's settings.
+async function buildInvoicePDF(inv){
+  const jsPDF=await loadJsPDF();
+  const doc=new jsPDF({unit:'pt',format:'a4'});
+  const L=56, R=539; let y=64;
+  const s=inv.seller||{}, bu=inv.buyer||{};
+  const line=(t,o={})=>{doc.setFont('helvetica',o.bold?'bold':'normal');doc.setFontSize(o.size||10.5);doc.text(String(t),o.x||L,y,o.right?{align:'right'}:undefined);};
+  line(inv.tax_invoice?'TAX INVOICE':'RECEIPT',{bold:true,size:18});y+=26;
+  line(s.name||'StayLog',{bold:true});y+=14;
+  String(s.address||'').split(/,\s*/).reduce((acc,part)=>{const last=acc[acc.length-1];if(last&&(last+', '+part).length<=48)acc[acc.length-1]=last+', '+part;else acc.push(part);return acc;},[])
+    .forEach(t=>{line(t);y+=13;});
+  if(inv.tax_invoice&&s.gstin){line('GSTIN: '+s.gstin);y+=13;}
+  y+=10;
+  const kv=(k,v)=>{line(k,{bold:true});line(v,{x:L+110});y+=15;};
+  kv('Number',inv.number);
+  kv('Date',fmtDate(isoOf(new Date(inv.issued_at))));
+  kv('Billed to',bu.name||'');
+  if(bu.gstin)kv('Buyer GSTIN',bu.gstin);
+  if(inv.period_start&&inv.period_end)kv('Period',`${fmtDate(isoOf(new Date(inv.period_start)))} – ${fmtDate(isoOf(new Date(inv.period_end)))}`);
+  if(inv.razorpay_payment_id)kv('Payment ref.',inv.razorpay_payment_id);
+  y+=12;doc.setDrawColor(180);doc.line(L,y,R,y);y+=18;
+  line(inv.description+(inv.tax_invoice&&s.sac?`  (SAC ${s.sac})`:''));line(fmtPaise(inv.tax_invoice?inv.taxable_paise:inv.amount_paise,true),{x:R,right:true});y+=18;
+  if(inv.tax_invoice){line(`GST @ ${Number(inv.gst_rate)}%`);line(fmtPaise(inv.gst_paise,true),{x:R,right:true});y+=18;}
+  doc.line(L,y-6,R,y-6);y+=8;
+  line(inv.tax_invoice?'Total':'Amount received',{bold:true});line(fmtPaise(inv.amount_paise,true),{x:R,right:true,bold:true});y+=30;
+  doc.setFontSize(9.5);doc.setFont('helvetica','normal');
+  doc.text(inv.tax_invoice?'Paid in full through Razorpay. This is a computer-made invoice and needs no signature.'
+    :'Paid in full through Razorpay. No GST was charged on this payment; this is a receipt, not a tax invoice.',L,y,{maxWidth:R-L});
+  return doc;
 }
 
 // Rule B: the owner picks the properties that stay active.
@@ -2073,7 +2208,63 @@ function renderExportModal(){
 // last activity; extend a trial, set a plan, cancel — each in the audit log.
 // No guest data reaches it (stay.admin_accounts returns none).
 const adm={list:null,err:'',busy:false};
-async function loadAdmin(){try{adm.list=await window.StayLogSync.admin.accounts();adm.err='';}catch(e){adm.err=e.message||String(e);}if(state.modal==='admin')render();}
+async function loadAdmin(){
+  const A=window.StayLogSync.admin;
+  try{adm.list=await A.accounts();adm.err='';}catch(e){adm.err=e.message||String(e);}
+  // v75: billing (before 13-billing.sql there is none, and the screen is as before)
+  try{const [pl,st,bi]=await Promise.all([A.plans(),A.settings(),A.billing()]);adm.plans=pl;adm.settings=st;adm.billing=bi||{};}
+  catch{adm.plans=null;adm.settings=null;adm.billing={};}
+  if(state.modal==='admin')render();
+}
+// Prices, sales and GST (v75): each save is in the admin audit log.
+function adminBillingBlocks(act){
+  const out=[];
+  if(adm.settings){
+    const st=adm.settings, f={};
+    const field=(k,label,attrs={})=>{f[k]=h('input',{type:'text',value:st[k]==null?'':String(st[k]),[`data-admin-set-${k}`]:'1',...attrs});
+      return div({style:{display:'flex',flexDirection:'column',gap:3}},div({style:{fontSize:12,color:'var(--muted)'}},label),f[k]);};
+    const tick=(k,label)=>{f[k]=h('input',{type:'checkbox',checked:!!st[k],[`data-admin-set-${k}`]:'1'});
+      return h('label',{style:{display:'flex',alignItems:'center',gap:8,fontSize:13.5}},f[k],label);};
+    out.push(div({'data-admin-settings':'1',style:{border:'1px solid var(--border)',borderRadius:'var(--radius-sm)',padding:'10px 12px',display:'flex',flexDirection:'column',gap:8}},
+      div({style:{fontWeight:700,fontSize:14}},'Sales and GST'),
+      tick('billing_open','Paid plans open (owners see Subscribe)'),
+      tick('gst_enabled','Charge GST (needs your GSTIN; your CA decides)'),
+      field('gst_rate','GST rate (%)',{inputmode:'decimal'}),field('seller_name','Name on invoices'),field('seller_address','Address on invoices'),
+      field('seller_gstin','Your GSTIN',{maxLength:15}),field('sac_code','SAC code',{inputmode:'numeric'}),field('invoice_prefix','Invoice prefix',{maxLength:6}),
+      btn({className:'btn-primary btn-sm','data-admin-settings-save':'1',style:{alignSelf:'flex-start'},onClick:()=>{
+        const v={billing_open:f.billing_open.checked,gst_enabled:f.gst_enabled.checked,gst_rate:Number(f.gst_rate.value)||0,
+          seller_name:f.seller_name.value,seller_address:f.seller_address.value,seller_gstin:f.seller_gstin.value.trim().toUpperCase(),
+          sac_code:f.sac_code.value.trim(),invoice_prefix:f.invoice_prefix.value.trim().toUpperCase()};
+        if(v.gst_enabled&&!/^[0-9]{2}[A-Z0-9]{13}$/.test(v.seller_gstin)){alert('GST needs your GSTIN (15 letters and digits).');return;}
+        act(()=>window.StayLogSync.admin.saveSettings(v),'Saved');
+      }},'Save')));
+  }
+  if(adm.plans){
+    const card=div({'data-admin-plans':'1',style:{border:'1px solid var(--border)',borderRadius:'var(--radius-sm)',padding:'10px 12px',display:'flex',flexDirection:'column',gap:10}},
+      div({style:{fontWeight:700,fontSize:14}},'Plans and prices'),
+      div({style:{fontSize:12,color:'var(--muted)',lineHeight:1.5}},'Make each plan in Razorpay first (Subscriptions → Plans), then paste its plan id here. A plan is on sale only with a price and a plan id.'));
+    adm.plans.forEach(pl=>{
+      const amt=h('input',{type:'text',inputmode:'decimal',value:pl.amount_paise!=null?String(pl.amount_paise/100):'',placeholder:'Price (₹)',[`data-admin-plan-amount`]:pl.id,style:{width:110}});
+      const rid=h('input',{type:'text',value:pl.razorpay_plan_id||'',placeholder:'Razorpay plan id',[`data-admin-plan-rzp`]:pl.id,style:{flex:1,minWidth:120}});
+      const props=h('input',{type:'text',inputmode:'numeric',value:String(pl.properties_allowed),[`data-admin-plan-props`]:pl.id,style:{width:56}});
+      const on=h('input',{type:'checkbox',checked:!!pl.active,[`data-admin-plan-active`]:pl.id});
+      card.appendChild(div({style:{display:'flex',flexDirection:'column',gap:5}},
+        div({style:{fontSize:13.5,fontWeight:600}},`${PLAN_TITLE[pl.plan]||pl.plan} · ${pl.period}`),
+        div({style:{display:'flex',gap:6,flexWrap:'wrap',alignItems:'center'}},amt,rid,props,span({style:{fontSize:12,color:'var(--muted)'}},'properties'),
+          h('label',{style:{display:'flex',alignItems:'center',gap:5,fontSize:13}},on,'On sale'),
+          btn({className:'btn-ghost btn-sm','data-admin-plan-save':pl.id,onClick:()=>{
+            const rupees=amt.value.trim()===''?null:Number(amt.value);
+            if(rupees!=null&&!(rupees>0)){alert('The price is in rupees, more than 0.');return;}
+            const n=Math.round(Number(props.value));
+            if(!(n>=1)){alert('At least 1 property.');return;}
+            if(on.checked&&(rupees==null||!rid.value.trim())){alert('A plan on sale needs a price and its Razorpay plan id.');return;}
+            act(()=>window.StayLogSync.admin.savePlan({id:pl.id,amount_paise:rupees==null?null:Math.round(rupees*100),razorpay_plan_id:rid.value.trim(),properties_allowed:n,active:on.checked}),'Plan saved');
+          }},'Save'))));
+    });
+    out.push(card);
+  }
+  return out;
+}
 function renderAdminModal(){
   if(!adm.list&&!adm.err)loadAdmin();
   return modal('All accounts',()=>{
@@ -2081,6 +2272,7 @@ function renderAdminModal(){
     if(adm.err)w.appendChild(div({style:{color:'var(--danger)',fontSize:13}},adm.err));
     if(!adm.list){w.appendChild(div({style:{color:'var(--muted)',fontSize:13}},'Loading…'));return w;}
     const act=async(fn,ok)=>{adm.busy=true;try{await fn();showToast(ok);}catch(e){alert(e.message||e);}adm.busy=false;adm.list=null;loadAdmin();};
+    adminBillingBlocks(act).forEach(x=>w.appendChild(x));
     adm.list.forEach(a=>{
       const card=div({'data-admin-account':a.id,style:{border:'1px solid var(--border)',borderRadius:'var(--radius-sm)',padding:'10px 12px'}});
       card.appendChild(div({style:{display:'flex',justifyContent:'space-between',gap:8}},div({style:{fontWeight:700,fontSize:14}},`${a.name} · ${a.code}`),
@@ -2091,6 +2283,12 @@ function renderAdminModal(){
          `${a.properties} propert${a.properties===1?'y':'ies'}${a.properties_allowed!=null?' of '+a.properties_allowed:''}`,
          a.owner?`owner ${a.owner}`:'',
          a.last_activity?`last active ${fmtDate(isoOf(new Date(a.last_activity)))}`:'never synced'].filter(Boolean).join(' · ')));
+      const bi=(adm.billing||{})[a.id];
+      if(bi&&(bi.subscription_plan||bi.invoices||bi.cancel_at_period_end))card.appendChild(div({'data-admin-billing':a.id,style:{fontSize:12.5,color:'var(--muted)',marginTop:2}},
+        [bi.subscription_plan?`bought ${bi.subscription_plan.replace('_',' ')}`:'',bi.cancel_at_period_end?'cancelling':'',
+         bi.invoices?`${bi.invoices} invoice${bi.invoices===1?'':'s'}, ${fmtPaise(bi.paid_paise)} paid`:''].filter(Boolean).join(' · ')));
+      if(bi&&bi.repeat_trial)card.appendChild(div({'data-admin-repeat':a.id,style:{fontSize:12.5,color:'var(--warn)',marginTop:2}},
+        `Repeat trial — first seen on ${bi.repeat_of||'another account'}`));
       if(a.plan!=='owner'){
         const row=div({style:{display:'flex',gap:6,flexWrap:'wrap',marginTop:8}});
         if(a.plan==='trial')row.appendChild(btn({className:'btn-ghost btn-sm','data-admin-extend':a.id,disabled:adm.busy,

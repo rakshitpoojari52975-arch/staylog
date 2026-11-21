@@ -80,6 +80,7 @@ function world(o = {}) {
         if (!W.readOnly) return res(404, { message: 'function not found' });
         return res(200, JSON.parse(init.body).p_accounts.map(a => ({ account_id: a, can_write: !W.readOnly.has(a) })));
       }
+      if (t === 'rpc/trial_fingerprint') { (W.fp = W.fp || []).push(JSON.parse(init.body)); return res(200, { repeat: false }); }
       const S = h['Accept-Profile'] === 'stay' ? W.stay : W.pub, q = [...u.searchParams];
       if (S === W.pub) (W.touchedPublic = W.touchedPublic || []).push(m + ' ' + t);
       if (W.fail[t] && W.fail[t](m, u)) return res(500, { message: 'boom' });
@@ -341,6 +342,21 @@ const post = h => new Request('https://proj.supabase.co/functions/v1/ical-sync',
       !W.fetchedUrls.includes(Bx) && W.fetchedUrls.includes(A) && W.stay.bookings.every(b => b.account_id === ACC) && W.stay.bookings.length === 1, W.fetchedUrls);
     ok('…and the reason is logged and in the answer', r.skipped && r.skipped[0].account === ACC2 && r.skipped[0].reason === 'read_only'
       && logs.some(l => /skipped — read-only/.test(l)), { skipped: r.skipped, logs }); }
+
+  console.log('\n— one free trial per business (v75): the Airbnb listing —');
+  { const W = world();
+    const A = W.feed(ACC, '48151623', 'p1', 'Airbnb'); W.feeds[A] = ICS([]);
+    const B = W.feed(ACC, 'bk1', 'p1', 'Booking.com'); W.feeds[B] = ICS([]);
+    await (await F.handle(post(CRON), { ...ENV, FINGERPRINT_PEPPER: 'fake-pepper' }, W.fetch, { clock })).json();
+    const sent = JSON.stringify(W.fp || []);
+    ok('the listing goes as a keyed hash, once per account, Airbnb only', (W.fp || []).length === 1 && W.fp[0].p_account === ACC
+      && W.fp[0].p_kind === 'airbnb_listing' && W.fp[0].p_hashes.length === 1 && /^[0-9a-f]{64}$/.test(W.fp[0].p_hashes[0]), W.fp);
+    ok('…never the link, its token or the listing id', !sent.includes('48151623') && !sent.includes('secret-') && !sent.includes('airbnb.com'));
+    ok('airbnbListing reads the id from a real-shaped link only', F.airbnbListing('https://www.airbnb.co.in/calendar/ical/48151623.ics?s=x') === '48151623'
+      && F.airbnbListing('https://admin.booking.com/ical/48151623.ics') === null);
+    const W2 = world(); const A2 = W2.feed(ACC, '48151623', 'p1', 'Airbnb'); W2.feeds[A2] = ICS([]);
+    await run(W2);
+    ok('no pepper set: nothing sent', !W2.fp); }
 
   console.log('\n— pasted before 09-calendar.sql has run —');
   { const W = world();

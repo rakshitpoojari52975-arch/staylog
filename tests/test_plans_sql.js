@@ -78,7 +78,7 @@ ok('set up', !r.err, r.err);
 console.log('\n— the script —');
 r = load('12-plans.sql'); ok('12-plans.sql runs', !r.err, r.err);
 r = load('12-plans.sql'); ok('runs twice', !r.err, r.err);
-const check = psql(DB, ['-F', '|', '-f', F('check.sql')]).out.trim().split('\n').filter(Boolean).filter(l => !/^old table|^platform admin/.test(l));
+const check = psql(DB, ['-F', '|', '-f', F('check.sql')]).out.trim().split('\n').filter(Boolean).filter(l => !/^old table|^platform admin|13-billing|billing never/.test(l));
 ok('check.sql: every row about the new schema ok, plans among them', check.every(l => /\|ok/.test(l)) && check.some(l => /12-plans/.test(l)), check.filter(l => !/\|ok/.test(l)));
 ok('Raaya Vasyam: plan owner, unlimited properties', v(`select plan || '|' || status || '|' || coalesce(properties_allowed::text, 'none') from stay.accounts where id = '${RV}'`) === 'owner|active|none');
 ok('any other account: a 7-day trial with 5 properties', v(`select plan || '|' || status || '|' || properties_allowed || '|' || round(extract(epoch from trial_ends_at - trial_started_at) / 86400) from stay.accounts where id = '${ACC}'`) === 'trial|trialing|5|7');

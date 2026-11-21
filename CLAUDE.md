@@ -472,6 +472,77 @@ Rakshit's spec (21 Nov 2026, "Add a 7-day free trial and paid subscriptions
   notify owners and the Board within 72 hours with an email template, recover)
   and `docs/region.md` (how to read the region; a move plan to Mumbai, not run).
 
+### Stage 3 — v75 (billing with Razorpay)
+- **`supabase/stay/13-billing.sql`** (after 12): `stay.plans` (starter /
+  pro × monthly / yearly; price in paise, Razorpay plan id, properties; **not
+  on sale until priced and ticked** — a check refuses on sale without both),
+  `stay.platform_settings` (one row: `billing_open`, `gst_enabled` — off,
+  needs `seller_gstin` —, rate, seller name/address/GSTIN/SAC, invoice
+  prefix), `stay.billing_events` (Razorpay event id as key, append-only),
+  `stay.invoices` (one per payment id, `<prefix>/<FY>/<nnnn>` per Indian
+  financial year, seller and buyer as they stood, GST inside the amount when
+  on; append-only), `stay.trial_fingerprints` (kind email / airbnb_listing,
+  64-hex keyed hash only, no FK: kept after deletion). `accounts` gains
+  `gstin` (the owner may set it: a column grant), `subscription_plan_id`,
+  `pending_subscription_id` / `pending_at`, `cancel_at_period_end`,
+  `billing_event_at`, `trial_repeat_of`.
+- **`stay.billing_record(event_id, payload)`** (service key; advisory lock
+  per event id; a repeat → 'duplicate') → **`billing_apply`**: never touches
+  plan owner; authenticated → on order; activated / charged / resumed →
+  active, `current_end`, the plan's properties (`fit_properties`, rule B);
+  charged → `make_invoice`; pending / halted → past_due, 3 days' grace kept,
+  not restarted; cancelled / completed / paused → runs to the period's end
+  (`cancel_at_period_end`), cancelled if already past. Events older than the
+  last applied change nothing (an invoice is still made). An event of a
+  subscription that is not the account's live or ordered one is ignored —
+  except a second one activating while one is live: `cancel_subscription`,
+  which the function cancels at Razorpay at once.
+- `billing_prepare(acct, user, plan)` (who may buy: an active owner, not plan
+  owner, a plan on sale, sales open — platform admins may test before; one
+  live non-cancelling plan at a time), `billing_pending`, `billing_cancelling`,
+  `billing_sweep()` (trial past → expired; cancelling past → cancelled;
+  active past with no renewal heard → past_due + 3 days; grace past →
+  expired; `inactive_since` set — for Stage 5's retention),
+  `trial_fingerprint(acct, kind, hashes)` (an email seen on another account →
+  no free trial: `trial_ends_at` = now; a listing → flagged only),
+  `billing_state(acct)` (owner only), admin `admin_save_plan`,
+  `admin_save_settings`, `admin_billing` (audited; no guest data).
+- **Edge Function `billing`** (Verify JWT off): Razorpay's webhook
+  (`X-Razorpay-Signature` = HMAC-SHA256 hex of the raw body with
+  `RAZORPAY_WEBHOOK_SECRET`, constant-time; event id from
+  `X-Razorpay-Event-Id`, else `sha256:` of the body; 500 only when the
+  database did not take it), the daily `{"job":"sweep"}` (`x-cron-secret` =
+  `PUSH_CRON_SECRET`), and the owner's `subscribe` (Razorpay subscription
+  with `notes.account_id`, 120 monthly / 10 yearly cycles, returns
+  `short_url`) and `cancel` (`cancel_at_cycle_end`). Secrets
+  `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, `RAZORPAY_WEBHOOK_SECRET`. Setup
+  in `supabase/functions/billing/README.md`. Razorpay's event names, its
+  event-id header and the subscription fields are from its SDK and memory:
+  **to confirm in the dashboard, test mode first**.
+- **One trial per business:** `FINGERPRINT_PEPPER` (secret, never changed).
+  `team-invite` owner-accept hashes the email (`emailKey`: lower case, no
+  "+tag", Gmail's dots dropped) → a repeat opens the account with no trial
+  and says so (`trial: false`, `note`); `ical-sync` hashes Airbnb listing ids
+  (`airbnbListing`) → flagged for the admin. No pepper: nothing kept.
+- **App:** Account settings (owner, not plan owner) → `billingSection`,
+  drawn in place (the sheet's fields survive): sales closed → "Paid plans
+  open soon"; open → the plans with ₹ prices (`fmtPaise`; plans are rupees
+  whatever the account's currency), **Subscribe** (a window opened from the
+  tap, then pointed at Razorpay's page; a refusal in the function's words),
+  "Waiting for Razorpay…" + Check again while an order is pending, **Cancel
+  plan** (confirmed), "Your plan ends on …"; a repeat trial says why; GSTIN
+  for invoices; invoices with a PDF each (`buildInvoicePDF`: TAX INVOICE with
+  GSTINs, SAC, taxable + GST, or RECEIPT "No GST was charged"). ⋯ → All
+  accounts: **Sales and GST**, **Plans and prices**, per account what was
+  bought, invoices and **Repeat trial — first seen on …**.
+- **Store build** (`cloud-config.js` `storeBuild: true`; none exists yet):
+  no price, no Subscribe, no Razorpay, no "paid plans", the read-only reason
+  in plain words (`planReason`) — Apple 3.1.1 / Play Billing.
+- `tests/test_secrets.js`: no Razorpay key id or secret, Supabase secret key
+  or service_role JWT, or assigned function secret in any file or commit.
+- Legal pages: renewal, 3 days' grace, Cancel plan, changing plans, invoices
+  (Refund policy; Terms); billing draft notes removed. Versions unchanged.
+
 ### Stage 2 — v74 (plans, the trial, read-only accounts)
 - **`supabase/stay/12-plans.sql`** (after 11). `accounts` gains `plan`
   (trial / starter / pro / owner), `status` (trialing / active / past_due /
@@ -1359,6 +1430,10 @@ also fetch from Supabase with `cache: 'no-store'` as a second layer.
     node tests/test_checkboxes.js        # v66: every checkbox keeps its tick — appearance, a tap ticks it, and it looks different ticked (pixels), light and dark
     node tests/test_move_app.js          # phase 3 in the app: Move to the new system — copy, compare (match / mismatch), switch, another phone joins, rollback
     node tests/test_notify_stay.js       # notify in the new model: by account, every owner, own devices/prefs/inbox, amounts + pays_directly_sources, marks, test push
+    node tests/test_billing_app.js       # v75 app: sales closed/open, Subscribe opens Razorpay from the tap, pending, Cancel plan, GSTIN, invoice PDFs (tax invoice / receipt), store build shows no buying, plan owner none, admin prices + GST
+    node tests/test_billing_function.js  # v75 billing Edge Function: webhook signature (wrong / other secret / changed body), once per event id, retry on DB failure, second subscription cancelled, sweep secret, subscribe/cancel via billing_prepare, no secret in logs
+    STAYLOG_PG="…" node tests/test_billing_sql.js    # 13-billing.sql: plans not on sale until priced, who reads what, events once, active/charged/invoice numbering/GST split, grace kept, cancel to period end, older events, second subscription, Raaya Vasyam untouched, sweep, GSTIN, one trial per business, append-only
+    node tests/test_secrets.js           # v75: no Razorpay / Supabase secret key or assigned function secret in any file or commit; STAYLOG_REAL_SECRETS=… searches for your real values
     node tests/test_plans_app.js         # v74 app: trial chip and banner, read-only (no forms, nothing changed or sent, all visible), rule B on bookings and the booking form, Export everything (PIN, JSON + CSVs, no ID photo), Choose active, the admin screen, Raaya Vasyam never shown any of it
     STAYLOG_PG="…" node tests/test_plans_sql.js      # 12-plans.sql: owner plan / 7-day trial, writes refused by SQL after the trial (app role and service key), reads kept, active/past-due/grace, plan owner writes at any status and date, property limit and rule B, read-only exceptions, her page paused, admin functions + append-only audit
     node tests/test_legal_pages.js       # v73: the four pages (draft, version = SQL, contact, roles, sub-processors, processing terms, refunds), runbook, region note, links from the app

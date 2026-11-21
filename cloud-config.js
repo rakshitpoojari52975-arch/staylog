@@ -17,5 +17,9 @@ window.STAYLOG_CLOUD = {
   // half is a Supabase secret (VAPID_PRIVATE_KEY) and never goes here or
   // anywhere in this repository. Blank = the menu says notifications are not
   // set up yet.
+  // A build for the App Store or Play Store (none yet: StayLog is a web app).
+  // true = no price, no plan to buy and no word of where to buy one anywhere
+  // in the app — the stores require their own in-app purchase (v75).
+  storeBuild: false,
   vapidPublicKey: 'BK323IMnSHkhKGLf22615H2fOma9-qvhLb8ZKCRVPJvFZyJFv_IqY7MbCL0r-eTfWYVXcl19x9xIsb8ptbMCZPY',
 };

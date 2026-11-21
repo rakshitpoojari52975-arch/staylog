@@ -32,7 +32,23 @@
 //   to the notify function for a "New booking" push
 // ─────────────────────────────────────────────────────────────────────────────
 
-export type Env = { SUPABASE_URL?: string; SUPABASE_SERVICE_ROLE_KEY?: string; ICAL_CRON_SECRET?: string; PUSH_CRON_SECRET?: string };
+export type Env = { SUPABASE_URL?: string; SUPABASE_SERVICE_ROLE_KEY?: string; ICAL_CRON_SECRET?: string; PUSH_CRON_SECRET?: string;
+  FINGERPRINT_PEPPER?: string };
+
+// v75, one free trial per business: an Airbnb link names its listing
+// (…/calendar/ical/<listing>.ics). Its keyed hash (FINGERPRINT_PEPPER) goes to
+// stay.trial_fingerprint, which flags an account whose listing another
+// account showed first (for the platform admin; the trial is not ended for
+// it). Never the link or the listing id itself. No pepper: nothing is sent.
+export function airbnbListing(url: string): string | null {
+  const m = /airbnb\.[a-z.]+\/calendar\/ical\/(\d{3,20})\.ics/i.exec(String(url || ''));
+  return m ? m[1] : null;
+}
+async function listingHash(pepper: string, listing: string): Promise<string> {
+  const k = await crypto.subtle.importKey('raw', new TextEncoder().encode(pepper), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  return [...new Uint8Array(await crypto.subtle.sign('HMAC', k, new TextEncoder().encode('airbnb_listing:' + listing)))]
+    .map(b => b.toString(16).padStart(2, '0')).join('');
+}
 export type IcsEvent = { uid: string; start: string; end: string; summary: string; description: string; status: string };
 type Fetch = (input: string, init?: Record<string, unknown>) => Promise<Response>;
 
@@ -573,6 +589,15 @@ async function runStay(who: { all: true } | { owner: string }, d: ReturnType<typ
     .map((f: Record<string, string>) => ({ ...f, owner_id: f.account_id }) as unknown as Feed);
   // Oldest read first; at most MAX_FEEDS_PER_ACCOUNT of one account in a run.
   all.sort((a, b) => String(a.last_fetched_at || '').localeCompare(String(b.last_fetched_at || '')) || a.id.localeCompare(b.id));
+  if (env.FINGERPRINT_PEPPER) {
+    const byAcct: Record<string, Set<string>> = {};
+    for (const f of all) { const l = f.platform === 'Airbnb' ? airbnbListing(f.url) : null; if (l) (byAcct[f.owner_id] ||= new Set()).add(l); }
+    for (const [a, ls] of Object.entries(byAcct)) {
+      try { await d.rpc('trial_fingerprint', { p_account: a, p_kind: 'airbnb_listing',
+        p_hashes: await Promise.all([...ls].map(l => listingHash(env.FINGERPRINT_PEPPER as string, l))) }); }
+      catch { /* 13-billing.sql not run yet */ }
+    }
+  }
   const per: Record<string, number> = {}, feeds: Feed[] = [], later: Feed[] = [];
   for (const f of all) ((per[f.owner_id] = (per[f.owner_id] || 0) + 1) <= MAX_FEEDS_PER_ACCOUNT ? feeds : later).push(f);
   const done = await inPool(feeds, POOL, started + fetchDeadlineMs, clock, (f, left) => syncFeed(f, d, fetchImpl, now, [], left));
@@ -629,5 +654,6 @@ if (typeof Deno !== 'undefined' && Deno.serve) {
     SUPABASE_SERVICE_ROLE_KEY: Deno.env.get('SUPABASE_SERVICE_ROLE_KEY'),
     ICAL_CRON_SECRET: Deno.env.get('ICAL_CRON_SECRET'),
     PUSH_CRON_SECRET: Deno.env.get('PUSH_CRON_SECRET'),
+    FINGERPRINT_PEPPER: Deno.env.get('FINGERPRINT_PEPPER'),
   }));
 }

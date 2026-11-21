@@ -27,11 +27,18 @@
 // An invite is used once (claimed atomically) and only before it expires. A
 // team invite can only make a manager. If joining fails half-way, the login made here is
 // deleted again and the invite is free again.
+// One free trial per business (v75): a new owner's email is kept only as a
+// keyed hash (HMAC-SHA256 with the FINGERPRINT_PEPPER secret, of the address
+// lower-cased, "+tag" dropped, and Gmail's dots dropped). An address seen
+// before on another account opens the account without a free trial
+// (stay.trial_fingerprint, 13-billing.sql); the answer says so. No pepper set,
+// or 13 not run: nothing is kept and the trial stands.
 // Turn OFF "Verify JWT" for this function (it checks a token itself when one comes).
-// Environment: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY (provided by Supabase).
+// Environment: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY (provided by Supabase);
+// FINGERPRINT_PEPPER (a long random secret, v75; optional).
 // ─────────────────────────────────────────────────────────────────────────────
 
-export type Env = { SUPABASE_URL?: string; SUPABASE_SERVICE_ROLE_KEY?: string };
+export type Env = { SUPABASE_URL?: string; SUPABASE_SERVICE_ROLE_KEY?: string; FINGERPRINT_PEPPER?: string };
 type Fetch = (input: string, init?: Record<string, unknown>) => Promise<Response>;
 
 const CORS: Record<string, string> = {
@@ -74,7 +81,7 @@ async function joiner(req: Request, body: Record<string, any>, d: ReturnType<typ
     const who = await fetchImpl(`${d.base}/auth/v1/user`, { headers: { apikey: d.key, Authorization: `Bearer ${token}` } });
     const user = who.ok ? await who.json().catch(() => null) : null;
     if (!user || !user.id) throw new Refusal('Your sign-in has expired. Sign in again, then open the link.', 401);
-    return { userId: String(user.id), name, undo: async () => {} };
+    return { userId: String(user.id), name, email: String(user.email || '').trim().toLowerCase(), undo: async () => {} };
   }
   const email = String(body.email || '').trim().toLowerCase(), password = String(body.password || '');
   if (!name) throw new Refusal('Please give your name.');
@@ -100,10 +107,31 @@ async function recordAcceptance(d: ReturnType<typeof api>, userId: string) {
   } catch { /* asked again in the app */ }
 }
 
+// The same mailbox written differently is the same mailbox.
+export function emailKey(email: string): string {
+  const e = String(email || '').trim().toLowerCase(), at = e.lastIndexOf('@');
+  if (at < 1) return e;
+  let local = e.slice(0, at).replace(/\+.*$/, ''); const domain = e.slice(at + 1);
+  if (domain === 'gmail.com' || domain === 'googlemail.com') return local.replace(/\./g, '') + '@gmail.com';
+  return local + '@' + domain;
+}
+async function hmacHex(secret: string, text: string): Promise<string> {
+  const k = await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  return [...new Uint8Array(await crypto.subtle.sign('HMAC', k, new TextEncoder().encode(text)))].map(b => b.toString(16).padStart(2, '0')).join('');
+}
+async function trialFingerprint(env: Env, d: ReturnType<typeof api>, account: string, email: string): Promise<boolean> {
+  if (!env.FINGERPRINT_PEPPER || !email) return true;
+  try {
+    const r = await d.write('POST', 'rpc/trial_fingerprint', { p_account: account, p_kind: 'email',
+      p_hashes: [await hmacHex(env.FINGERPRINT_PEPPER, 'email:' + emailKey(email))] });
+    return !(r.ok && r.data && (r.data as Record<string, any>).trial === false);
+  } catch { return true; }
+}
+
 // A platform invite: a new owner opens their own account.
 const ACCOUNT_CODE = /^[a-z0-9]{2,12}$/;
 const CURRENCY = /^[A-Z]{3}$/;
-async function ownerInvite(req: Request, body: Record<string, any>, code: string, now: string, d: ReturnType<typeof api>, fetchImpl: Fetch) {
+async function ownerInvite(req: Request, body: Record<string, any>, code: string, now: string, d: ReturnType<typeof api>, fetchImpl: Fetch, env: Env) {
   const inv = (await d.get(`platform_invites?code=eq.${encodeURIComponent(code)}&used_by=is.null&expires_at=gt.${encodeURIComponent(now)}&select=code,label,expires_at`))[0];
   if (!inv) throw new Refusal('This invite has been used, withdrawn or has expired. Ask for a new link.', 404);
   if (body.action === 'owner-peek') return { ok: true, label: inv.label || '', expires_at: inv.expires_at };
@@ -136,7 +164,9 @@ async function ownerInvite(req: Request, body: Record<string, any>, code: string
     throw new Refusal('Your account could not be opened. Try again.', 500);
   }
   await recordAcceptance(d, userId);
-  return { ok: true, account: r.data, business, code: acode };
+  const trial = await trialFingerprint(env, d, String(r.data), j.email || '');
+  return { ok: true, account: r.data, business, code: acode, trial,
+    ...(trial ? {} : { note: 'This email has had a StayLog free trial before, so this account starts without one. Subscribe in Account settings to start adding bookings — or ask us.' }) };
 }
 
 export async function handle(req: Request, env: Env, fetchImpl: Fetch = fetch as unknown as Fetch, nowMs = Date.now()): Promise<Response> {
@@ -149,7 +179,7 @@ export async function handle(req: Request, env: Env, fetchImpl: Fetch = fetch as
     const code = String(body.code || '');
     if (!CODE.test(code)) throw new Refusal('That invite link is not complete. Ask for it again.', 404);
     const now = new Date(nowMs).toISOString();
-    if (body.action === 'owner-peek' || body.action === 'owner-accept') return json(await ownerInvite(req, body, code, now, d, fetchImpl));
+    if (body.action === 'owner-peek' || body.action === 'owner-accept') return json(await ownerInvite(req, body, code, now, d, fetchImpl, env));
     const live = async () => (await d.get(`invites?code=eq.${encodeURIComponent(code)}&used_by=is.null&expires_at=gt.${encodeURIComponent(now)}` +
       '&select=code,account_id,role,property_ids,permissions,label,expires_at'))[0];
     const inv = await live();
@@ -216,5 +246,6 @@ if (typeof Deno !== 'undefined' && Deno.serve) {
   Deno.serve((req: Request) => handle(req, {
     SUPABASE_URL: Deno.env.get('SUPABASE_URL'),
     SUPABASE_SERVICE_ROLE_KEY: Deno.env.get('SUPABASE_SERVICE_ROLE_KEY'),
+    FINGERPRINT_PEPPER: Deno.env.get('FINGERPRINT_PEPPER'),
   }));
 }
