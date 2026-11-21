@@ -75,6 +75,11 @@ function world(o = {}) {
         return id ? res(200, { id }) : res(401, {}); }
       const t = u.pathname.replace('/rest/v1/', '');
       if (t === 'app_status') return res(200, [{ id: 1, model: W.model }]);
+      // v74: 12-plans.sql's answer (absent unless the test sets W.readOnly)
+      if (t === 'rpc/accounts_can_write') {
+        if (!W.readOnly) return res(404, { message: 'function not found' });
+        return res(200, JSON.parse(init.body).p_accounts.map(a => ({ account_id: a, can_write: !W.readOnly.has(a) })));
+      }
       const S = h['Accept-Profile'] === 'stay' ? W.stay : W.pub, q = [...u.searchParams];
       if (S === W.pub) (W.touchedPublic = W.touchedPublic || []).push(m + ' ' + t);
       if (W.fail[t] && W.fail[t](m, u)) return res(500, { message: 'boom' });
@@ -324,6 +329,18 @@ const post = h => new Request('https://proj.supabase.co/functions/v1/ical-sync',
     const r = await run(W);
     const f = W.stay.ical_feeds[0];
     ok('a failed read is recorded without the link (it is the password)', /connection reset/.test(f.last_error) && !f.last_error.includes('secret-') && !JSON.stringify(r).includes('secret-'), f.last_error); }
+
+  console.log('\n— a read-only account (v74: its trial or plan has ended) —');
+  { const W = world();
+    const A = W.feed(ACC, 'fa', 'p1', 'Airbnb'); W.feeds[A] = ICS([['ok@airbnb', '2026-12-01', '2026-12-03', RES]]);
+    const Bx = W.feed(ACC2, 'fq', 'q1', 'Airbnb'); W.feeds[Bx] = ICS([['ro@airbnb', '2026-12-01', '2026-12-03', RES]]);
+    W.readOnly = new Set([ACC2]);
+    const logs = []; const real = console.log; console.log = (...a) => logs.push(a.join(' '));
+    let r; try { r = await run(W); } finally { console.log = real; }
+    ok('its links are not read and it gets no bookings; the other account imports as usual',
+      !W.fetchedUrls.includes(Bx) && W.fetchedUrls.includes(A) && W.stay.bookings.every(b => b.account_id === ACC) && W.stay.bookings.length === 1, W.fetchedUrls);
+    ok('…and the reason is logged and in the answer', r.skipped && r.skipped[0].account === ACC2 && r.skipped[0].reason === 'read_only'
+      && logs.some(l => /skipped — read-only/.test(l)), { skipped: r.skipped, logs }); }
 
   console.log('\n— pasted before 09-calendar.sql has run —');
   { const W = world();

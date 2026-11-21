@@ -53,7 +53,7 @@ ok('set up', !r.err, r.err);
 console.log('\n— the script —');
 r = load('10-onboarding.sql'); ok('10-onboarding.sql runs', !r.err, r.err);
 r = load('10-onboarding.sql'); ok('runs twice', !r.err, r.err);
-const check = psql(DB, ['-F', '|', '-f', F('check.sql')]).out.trim().split('\n').filter(Boolean).filter(l => !/^old table|^platform admin/.test(l));
+const check = psql(DB, ['-F', '|', '-f', F('check.sql')]).out.trim().split('\n').filter(Boolean).filter(l => !/^old table|^platform admin|12-plans|plan of the account/.test(l));
 ok('check.sql: every row about the new schema ok, onboarding among them', check.every(l => /\|ok/.test(l)) && check.some(l => /10-onboarding/.test(l)), check.filter(l => !/\|ok/.test(l)));
 ok('the existing account passes the new checks untouched', v(`select name || '|' || code from stay.accounts`) === 'Raaya Vasyam|raaya');
 

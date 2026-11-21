@@ -45,7 +45,7 @@ const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { ...CORS, 'Content-Type': 'application/json' } });
 
 // The alert types, each with an on/off in notification_prefs. Missing = on.
-export const ALERTS = ['attendance', 'utensils', 'newBookings', 'arrivals', 'balances', 'stale', 'backup', 'syncConflict'] as const;
+export const ALERTS = ['attendance', 'utensils', 'newBookings', 'arrivals', 'balances', 'stale', 'backup', 'syncConflict', 'trial'] as const;
 const STALE_DAYS = 2, BACKUP_DAYS = 3, INBOX_DAYS = 30, KEEP_LOG_DAYS = 60;
 // Who pays at the property (as in the app: paysUsDirectly). Others never get a
 // balance alert.
@@ -161,6 +161,7 @@ function db(env: Env, fetchImpl: Fetch) {
     get: (p: string) => call('GET', p),
     del: (p: string) => call('DELETE', p),
     patch: (p: string, body: unknown) => call('PATCH', p, body, { Prefer: 'return=minimal' }),
+    rpc: (name: string, body: unknown) => call('POST', `rpc/${name}`, body),
     col: () => d.stay ? 'account_id' : 'owner_id',
     mine,
     // Read once per request, from public: which model is live.
@@ -516,7 +517,8 @@ const nextDay = (iso: string) => new Date(Date.parse(iso + 'T00:00:00Z') + 86400
 const timeIn = (iso: string, zone: string) => new Date(iso).toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit', timeZone: zone });
 export const money = (n: number, currency = 'INR') => currency === 'INR' ? rupees(n)
   : new Intl.NumberFormat('en-IN', { style: 'currency', currency, ...(Number(n) % 1 ? { minimumFractionDigits: 2 } : { maximumFractionDigits: 0 }) }).format(n);
-type Account = { id: string; name?: string; time_zone?: string; currency?: string; pays_directly_sources?: string[] };
+type Account = { id: string; name?: string; time_zone?: string; currency?: string; pays_directly_sources?: string[];
+  plan?: string; status?: string; trial_ends_at?: string | null };
 type Item = { key: string; alert: string; push: Push; need: Need };
 
 // One account's daily reminders, on its own date.
@@ -572,6 +574,12 @@ export async function accountDaily(a: Account, d: ReturnType<typeof db>, nowMs: 
       title: 'No backup for ' + days + ' days', body: 'The last encrypted backup was ' + days + ' days ago. Open StayLog with a connection to back up.',
       url: './#open=backup', tag: 'backup' } });
   }
+  // v74: the free trial ends tomorrow (day 6 of 7, on the account's clock). Owners only.
+  if (a.status === 'trialing' && a.trial_ends_at && Date.parse(a.trial_ends_at) > nowMs && localParts(a.time_zone, Date.parse(a.trial_ends_at)).date === tomorrow)
+    out.push({ alert: 'trial', key: `trial:${a.id}:${a.trial_ends_at.slice(0, 10)}`, need: { ownerOnly: true }, push: {
+      title: 'Your free trial ends tomorrow',
+      body: 'Subscribe in Account settings to keep adding bookings. Your data stays safe either way, and you can always view and export it.',
+      url: './#open=account', tag: 'trial' } });
   return out;
 }
 
@@ -584,11 +592,24 @@ async function inPool<T>(items: T[], limit: number, work: (x: T) => Promise<void
 }
 async function allAccounts(d: ReturnType<typeof db>): Promise<Account[]> {
   const out: Account[] = [];
+  // v74 adds the plan columns; before 12-plans.sql, read without them.
+  let cols = 'id,name,time_zone,currency,pays_directly_sources,plan,status,trial_ends_at';
   for (let from = 0; ; from += 1000) {
-    const page = await d.get(`accounts?select=id,name,time_zone,currency,pays_directly_sources&order=id&limit=1000&offset=${from}`) || [];
+    let page;
+    try { page = await d.get(`accounts?select=${cols}&order=id&limit=1000&offset=${from}`) || []; }
+    catch (e) { if (!cols.includes('plan')) throw e; cols = 'id,name,time_zone,currency,pays_directly_sources'; from -= 1000; continue; }
     out.push(...page);
     if (page.length < 1000) return out;
   }
+}
+// v74: accounts whose trial or plan has ended get no reminders (Postgres
+// decides, through 12-plans.sql; before it every account is writable).
+async function readOnlyOf(d: ReturnType<typeof db>, ids: string[]): Promise<Set<string>> {
+  if (!ids.length) return new Set();
+  try {
+    const rows: { account_id: string; can_write: boolean }[] = await d.rpc('accounts_can_write', { p_accounts: ids }) || [];
+    return new Set(rows.filter(r => r.can_write === false).map(r => r.account_id));
+  } catch { return new Set(); }
 }
 
 // ── the handler ──────────────────────────────────────────────────────────────
@@ -621,14 +642,18 @@ export async function handle(req: Request, env: Env, fetchImpl: Fetch = fetch as
       // reminder's key is per day, so it still goes once). Accounts are
       // paged, a few at a time, each on its own: one failing stops no other.
       await d.del(`push_log?sent_at=lt.${new Date(nowMs - KEEP_LOG_DAYS * 86400e3).toISOString()}`).catch(() => {});
-      const due = (await allAccounts(d)).filter(a => body.force === true || localParts(a.time_zone, nowMs).hour >= DAILY_HOUR);
+      let due = (await allAccounts(d)).filter(a => body.force === true || localParts(a.time_zone, nowMs).hour >= DAILY_HOUR);
+      const ro = await readOnlyOf(d, due.map(a => a.id));
+      const skipped = due.filter(a => ro.has(a.id)).map(a => ({ account: a.id, reason: 'read_only' }));
+      for (const x of skipped) console.log(`notify: account ${x.account} skipped — read-only (trial or plan ended)`);
+      due = due.filter(a => !ro.has(a.id));
       const report: unknown[] = [], failed: { account: string; error: string }[] = [];
       await inPool(due, POOL, async a => {
         try {
           for (const item of await accountDaily(a, d, nowMs)) report.push(...await toAll(a.id, item.key, item.alert, item.push, item.need));
         } catch (e) { failed.push({ account: a.id, error: (e as Error)?.message || String(e) }); }
       });
-      return json({ ok: true, job: 'daily', accounts: due.length, report, ...(failed.length ? { failed } : {}) });
+      return json({ ok: true, job: 'daily', accounts: due.length, report, ...(failed.length ? { failed } : {}), ...(skipped.length ? { skipped } : {}) });
     }
     if (body && body.job === 'daily') {
       // Everyone with a device, and everyone whose phone syncs: the inbox keeps

@@ -30,8 +30,8 @@ ok('the grievance contact: name, email and address, on Contact and in the Privac
 ok('the Privacy Policy explains both roles', /StayLog is the Data Fiduciary/.test(privacy) && /owner is the Data Fiduciary/.test(privacy) && /Data Processor/.test(privacy));
 for (const sp of ['Supabase', 'GitHub', 'Apple', 'Google', 'Mozilla', 'Razorpay', 'jsDelivr'])
   ok(`sub-processor listed: ${sp}`, new RegExp(sp).test(privacy));
-ok('the Privacy Policy covers retention, rights, breach and the region still to confirm', /How long we keep it/.test(privacy) && /Your rights/.test(privacy)
-  && /breach/.test(privacy) && /Region/.test(privacy) && /Data Protection Board/.test(privacy));
+ok('the Privacy Policy covers retention, rights, breach, and where data is stored (India, Mumbai — checked 21 Nov 2026)', /How long we keep it/.test(privacy) && /Your rights/.test(privacy)
+  && /breach/.test(privacy) && /in India, in its Mumbai region \(ap-south-1\)/.test(privacy) && /Data Protection Board/.test(privacy));
 ok('ID photos are said never to leave the phone', /Photographs of identity documents never leave the owner's phone/.test(privacy));
 ok('the Terms: a data processing section, StayLog as Processor, the owner as Fiduciary with their duties', /Data processing/.test(terms)
   && /StayLog is your Data Processor/.test(terms) && /you are the Data Fiduciary/.test(terms) && /Form C/.test(terms) && /last 4 digits of an Aadhaar/.test(terms));

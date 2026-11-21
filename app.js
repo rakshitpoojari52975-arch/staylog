@@ -6,7 +6,7 @@
 // ─── Build ────────────────────────────────────────────────────────────────────
 // Bump BOTH of these together. This date sat at 28 Sept through a dozen
 // releases and was read, reasonably, as proof the upload had not landed.
-const APP_VERSION='v73', APP_BUILT='21 Nov 2026';
+const APP_VERSION='v74', APP_BUILT='21 Nov 2026';
 // The CACHE_NAME of the sw.js released with this app.js. Every release bumps
 // APP_VERSION and CACHE_NAME together, so one is derived from the other rather
 // than being a fourth thing to forget; the tests fail if they ever disagree.
@@ -65,6 +65,17 @@ const curSym=()=>{const c=curCode();if(SYM[c])return SYM[c];
   try{SYM[c]=new Intl.NumberFormat('en',{style:'currency',currency:c,currencyDisplay:'narrowSymbol'}).formatToParts(0).find(p=>p.type==='currency').value;}
   catch(e){SYM[c]=c+' ';}
   return SYM[c];};
+// ─── The plan (v74) ───────────────────────────────────────────────────────────
+// Postgres decides whether this account can be written (12-plans.sql); the
+// app only shows it and avoids asking for what would be refused. Old model,
+// or not read yet: writable.
+const planState=()=>{try{const Y=window.StayLogSync;return Y&&Y.plan?Y.plan():null;}catch(e){return null;}};
+const readOnly=()=>{const p=planState();return !!(p&&p.can_write===false);};
+const pausedProp=id=>{const p=planState();return !!(p&&id&&(p.paused_properties||[]).includes(id));};
+const PAUSED_PROP_TEXT='This property is read-only on your plan. Choose it as active in Account settings, or move to a bigger plan.';
+const writeRefusal=propId=>readOnly()?((planState()||{}).reason||'This account is read-only.'):pausedProp(propId)?PAUSED_PROP_TEXT:'';
+// may do this (role) and may write now (plan, and the property if one is given)
+const canWrite=(perm,propId)=>can(perm)&&!writeRefusal(propId);
 // This phone's id (v60, staylog_device): a phone's own alerts name it.
 const lsDevice=()=>{try{return localStorage.getItem('staylog_device')||'';}catch(e){return '';}};
 // ── Who may do what (v65): in the new model, my_access from the server (role,
@@ -173,11 +184,24 @@ let state={
   calMonth:{year:new Date().getFullYear(),month:new Date().getMonth()},
   _loading:true,
 };
-function setState(p){Object.assign(state,typeof p==='function'?p(state):p);render();}
+// v74: forms that change data do not open on a read-only account (or for a
+// row at a property that is read-only on the plan); the reason is said instead.
+const EDIT_MODALS=new Set(['addBooking','addExpense','addLoan','addProp','addRepayment','addStaff','settleWages','staffLogin']);
+function setState(p){
+  if(typeof p!=='function'&&p&&EDIT_MODALS.has(p.modal)){
+    const it=p.editItem, why=writeRefusal(it&&(p.modal==='addProp'?it.id:it.propertyId));
+    if(why){showToast(why);return;}
+  }
+  Object.assign(state,typeof p==='function'?p(state):p);render();
+}
 // Every change can move a wage: a booking added, moved or cancelled turns a day
 // into a checkout day or out of one. So every change re-prices (cheap, and a
 // no-op when nothing moved). See repriceWages.
-function mutateData(fn){fn(state.data);if(!stayActive())repriceWages(state.data);saveData(state.data);render();}
+// v74: nothing is changed on a read-only account (Postgres would refuse it anyway).
+function mutateData(fn){
+  if(readOnly()){showToast((planState()||{}).reason||'This account is read-only.');return false;}
+  fn(state.data);if(!stayActive())repriceWages(state.data);saveData(state.data);render();
+}
 
 // ─── Attendance wages ─────────────────────────────────────────────────────────
 // A marked day pays the daily wage, or the checkout-day wage if any booking
@@ -629,6 +653,12 @@ function renderHeader(){
       ico('chevron-down',{style:{fontSize:13,color:'var(--muted)',flexShrink:0}})));
   }
   header.appendChild(div({style:{marginLeft:'auto'}}));
+  // v74: a quiet chip for the trial, or for a read-only account
+  const ps=planState();
+  if(ps&&(ps.status==='trialing'||ps.can_write===false))
+    header.appendChild(btn({'data-plan-chip':'1',style:{...CHIP,flexShrink:0,color:ps.can_write===false?'var(--danger)':'var(--text-mid)'},
+      onClick:()=>setState({modal:isOwner()?'account':'menu'})},
+      ps.can_write===false?'Read-only':`Trial · ${ps.days_left} day${ps.days_left===1?'':'s'} left`));
   if(state.tab==='dashboard'){
     const n=inboxUnread();
     header.appendChild(btn({className:'btn-icon','data-bell':String(n),'aria-label':n?`Notifications, ${n} unread`:'Notifications',
@@ -1041,6 +1071,7 @@ function applyPendingOpen(){
   if(!o)return;
   if(o.n)inboxMarkRead([o.n]);     // the push's own inbox row: tapping the phone's notification reads it
   if(o.open==='menu'||o.open==='cloud'||o.open==='backup'){setState({modal:o.open,editItem:null});return;}
+  if(o.open==='account'){setState({modal:stayActive()&&isOwner()?'account':'menu',editItem:null});return;}
   if(o.open==='stay'){openStay(o);return;}
   const b=state.data.bookings.find(x=>x.id===o.open);
   if(!b){setState({tab:'bookings',modal:null,editItem:null});return;}
@@ -1469,6 +1500,8 @@ function renderMenuModal(){
     stayActive()&&isOwner()?menuRow('users','Team','Managers, the properties they hold and what they may do',()=>setState({modal:'team'})):null,
     // v71: the account's own settings, and (a platform admin only) new owners.
     stayActive()&&isOwner()?menuRow('building','Account settings','Business name, time zone, currency, who pays you directly',()=>setState({modal:'account'})):null,
+    stayActive()&&isOwner()?menuRow('file-export','Export everything','All your data as files — always available',()=>setState({modal:'exportAll'})):null,
+    stayActive()&&window.StayLogSync.status().platformAdmin?menuRow('building-community','All accounts','Plans, trials and status — no guest data',()=>{adm.list=null;adm.err='';setState({modal:'admin'});}):null,
     stayActive()&&window.StayLogSync.status().platformAdmin?menuRow('user-plus','Invite a new owner','A link for someone to open their own StayLog account',()=>setState({modal:'owners'})):null,
     // The only backup there is: encrypted on this phone (backup.js). There is no
     // plain export — a readable file would carry guest names, phone and ID numbers.
@@ -1691,9 +1724,9 @@ function renderLegalAcceptModal(){
     w.appendChild(msg);
     w.appendChild(btn({className:'btn-primary','data-legal-accept-go':'1',style:{width:'100%',minHeight:46},onClick:async e=>{
       if(!cb.checked){msg.textContent='Tick the box once you have read them.';return;}
-      e.currentTarget.disabled=true;
+      const b=e.currentTarget; b.disabled=true;
       try{await Y.acceptLegal(['terms','privacy']);closeModal();showToast('Thank you');}
-      catch(err){e.currentTarget.disabled=false;msg.textContent='Not saved — '+(err.message||err)+'. Try again when online.';}
+      catch(err){b.disabled=false;msg.textContent='Not saved — '+(err.message||err)+'. Try again when online.';}
     }},'Accept'));
     w.appendChild(btn({className:'btn-ghost',style:{width:'100%'},onClick:closeModal},'Later'));
     return w;
@@ -1786,6 +1819,7 @@ function renderAccountModal(){
   const Y=window.StayLogSync, S0=acctSettings()||{};
   const content=()=>{
     const w=div({'data-account':'1',style:{display:'flex',flexDirection:'column',gap:10}});
+    const ps=planSection(); if(ps)w.appendChild(ps);
     const label=t=>div({className:'label',style:{marginTop:2}},t);
     const name=h('input',{type:'text','data-account-name':'1',value:S0.name||'',placeholder:'Business name'});
     const owner=h('input',{type:'text','data-account-owner':'1',value:S0.owner_name||'',placeholder:'Your name'});
@@ -1911,6 +1945,168 @@ function guideCard(){
   card.appendChild(btn({'data-guide-hide':'1',className:'btn-sm',style:{background:'none',border:'none',color:'var(--muted)',fontSize:12.5,padding:'6px 0 0'},
     onClick:()=>{try{localStorage.setItem(GUIDE_KEY+acct,new Date().toISOString());}catch(e){}render();}},'Hide this guide'));
   return card;
+}
+
+// ─── Plan banner, Export everything, choosing active properties, the
+// platform admin's screen (v74) ─────────────────────────────────────────────
+// Read-only: the reason, and Export (always). The trial's last days: a nudge.
+function planBanner(){
+  const p=planState();
+  if(!p)return null;
+  const box=(tone,text,...acts)=>div({'data-plan-banner':tone,style:{margin:'8px 12px 0',padding:'11px 13px',borderRadius:'var(--radius-sm)',
+    border:`1px solid ${tone==='read-only'?'var(--danger)':'var(--gold-line)'}`,background:tone==='read-only'?'var(--danger-light, #fbeaea)':'var(--gold-light, #fbf3e2)',
+    fontSize:13.5,lineHeight:1.5,color:'var(--text)'}},div({},text),acts.length?div({style:{display:'flex',gap:8,marginTop:8,flexWrap:'wrap'}},...acts):null);
+  const b=(label,onClick,attr)=>btn({className:'btn-ghost btn-sm',[attr]:'1',onClick},label);
+  if(p.can_write===false)
+    return box('read-only',p.reason||'This account is read-only.',
+      isOwner()?b('Export everything',()=>setState({modal:'exportAll'}),'data-plan-export'):null,
+      isOwner()?b('Account settings',()=>setState({modal:'account'}),'data-plan-settings'):null);
+  if(p.status==='trialing'&&p.days_left!=null&&p.days_left<=2)
+    return box('trial',`Your free trial ends in ${p.days_left} day${p.days_left===1?'':'s'}. Subscribe in Account settings to keep adding bookings — your data stays safe either way.`,
+      isOwner()?b('Account settings',()=>setState({modal:'account'}),'data-plan-settings'):null);
+  return null;
+}
+
+// The plan in Account settings.
+const PLAN_NAMES={trial:'Free trial',starter:'Starter — 1 property',pro:'Pro — up to 5 properties',owner:'Owner (no billing)'};
+const STATUS_NAMES={trialing:'On trial',active:'Active',past_due:'Payment due',expired:'Ended — read-only',cancelled:'Cancelled — read-only'};
+function planSection(){
+  const p=planState();
+  if(!p)return null;
+  const w=div({'data-plan':'1',style:{display:'flex',flexDirection:'column',gap:6,padding:'4px 0 10px',borderBottom:'1px solid var(--border-soft)'}});
+  const row=(k,v,attr)=>div({style:{display:'flex',justifyContent:'space-between',gap:10,fontSize:13.5}},span({style:{color:'var(--muted)'}},k),span({[attr||'data-x']:'1',style:{fontWeight:600,textAlign:'right'}},v));
+  w.appendChild(div({className:'label'},'Your plan'));
+  w.appendChild(row('Plan',PLAN_NAMES[p.plan]||p.plan,'data-plan-name'));
+  w.appendChild(row('Status',STATUS_NAMES[p.status]||p.status,'data-plan-status'));
+  if(p.status==='trialing'&&p.trial_ends_at)w.appendChild(row('Trial ends',fmtDate(isoOf(new Date(p.trial_ends_at)))));
+  if(p.current_period_end&&p.plan!=='owner')w.appendChild(row(p.status==='active'?'Renews':'Paid until',fmtDate(isoOf(new Date(p.current_period_end)))));
+  if(p.properties_allowed!=null)w.appendChild(row('Properties',`${p.properties_active} active of ${p.properties_allowed} allowed`,'data-plan-props'));
+  if((p.paused_properties||[]).length)
+    w.appendChild(div({style:{fontSize:12.5,color:'var(--warn)',lineHeight:1.5}},
+      `${(p.paused_properties||[]).length} ${(p.paused_properties||[]).length===1?'property is':'properties are'} read-only on this plan.`));
+  if(p.plan!=='owner'&&state.data.properties.length>1&&p.properties_allowed!=null)
+    w.appendChild(btn({className:'btn-ghost btn-sm','data-choose-active':'1',style:{alignSelf:'flex-start'},onClick:()=>setState({modal:'activeProps'})},'Choose active properties'));
+  if(p.plan!=='owner')
+    w.appendChild(div({'data-subscribe-soon':'1',style:{fontSize:12.5,color:'var(--muted)',lineHeight:1.5}},
+      'Paid plans open soon. To keep going after your trial, write to ',h('a',{href:'contact.html',target:'_blank',rel:'noopener'},'StayLog'),'.'));
+  if(p.can_write===false)w.appendChild(div({style:{fontSize:12.5,color:'var(--danger)',lineHeight:1.5}},p.reason));
+  return w;
+}
+
+// Rule B: the owner picks the properties that stay active.
+function renderActivePropsModal(){
+  const p=planState()||{}, max=p.properties_allowed;
+  return modal('Choose active properties',()=>{
+    const w=div({'data-active-props':'1',style:{display:'flex',flexDirection:'column',gap:8}});
+    w.appendChild(div({style:{fontSize:13,lineHeight:1.5,color:'var(--muted)'}},
+      `Your plan allows ${max} active ${max===1?'property':'properties'}. The others stay visible and can be exported, but nothing new can be added there until you move to a bigger plan.`));
+    const boxes=state.data.properties.map(pr=>{const cb=h('input',{type:'checkbox','data-active-prop':pr.id});cb.checked=!pausedProp(pr.id);
+      w.appendChild(h('label',{style:{display:'flex',alignItems:'center',gap:10,minHeight:42,fontSize:14}},cb,pr.name));return [pr.id,cb];});
+    const msg=div({style:{fontSize:12.5,color:'var(--danger)',minHeight:16}});
+    w.appendChild(msg);
+    w.appendChild(btn({className:'btn-primary','data-active-save':'1',style:{width:'100%',minHeight:46},onClick:async e=>{
+      const ids=boxes.filter(([,cb])=>cb.checked).map(([id])=>id);
+      if(!ids.length){msg.textContent='Choose at least one.';return;}
+      if(max!=null&&ids.length>max){msg.textContent=`Your plan allows ${max}. Untick ${ids.length-max}.`;return;}
+      const b=e.currentTarget; b.disabled=true;
+      try{await window.StayLogSync.chooseActive(ids);closeModal();showToast('Saved');}
+      catch(err){b.disabled=false;msg.textContent=err.message||String(err);}
+    }},'Save'));
+    return w;
+  });
+}
+
+// Export everything (owner): all of this account's data as one JSON file and
+// a CSV per table — readable, so behind the PIN, and never the ID photos
+// (they stay on this phone). Always available, read-only or not. It reverses
+// the old "no readable export" rule on Rakshit's instruction (21 Nov 2026).
+const EXPORT_TABLES=['properties','bookings','expenses','staff','loans'];
+function exportData(){
+  const D=JSON.parse(JSON.stringify(state.data||{}));
+  (D.bookings||[]).forEach(b=>{delete b.idProofImage;});
+  (D.properties||[]).forEach(p=>{delete p.signature;delete p.upiQr;});   // images: on the phone, not in a data export
+  return D;
+}
+function csvOf(rows){
+  const cols=[...new Set(rows.flatMap(r=>Object.keys(r)))].filter(k=>k!=='repayments');
+  const cell=v=>{if(v==null)return '';const t=typeof v==='object'?JSON.stringify(v):String(v);return /[",\n]/.test(t)?'"'+t.replace(/"/g,'""')+'"':t;};
+  return [cols.join(','),...rows.map(r=>cols.map(c=>cell(r[c])).join(','))].join('\n');
+}
+function exportFiles(){
+  const D=exportData(), day=today(), name=String((acctSettings()||{}).code||'staylog');
+  const files=[{name:`${name}-export-${day}.json`,type:'application/json',text:JSON.stringify({exported_at:new Date().toISOString(),app:APP_VERSION,data:D},null,2)}];
+  EXPORT_TABLES.forEach(t=>files.push({name:`${name}-${t}-${day}.csv`,type:'text/csv',text:csvOf(D[t]||[])}));
+  const reps=(D.loans||[]).flatMap(l=>(l.repayments||[]).map(r=>({loanId:l.id,...r})));
+  files.push({name:`${name}-loan_repayments-${day}.csv`,type:'text/csv',text:csvOf(reps)});
+  return files;
+}
+async function deliverExport(){
+  const files=exportFiles();
+  const fs=files.map(x=>new File([x.text],x.name,{type:x.type}));
+  if(navigator.canShare&&navigator.canShare({files:fs})){try{await navigator.share({files:fs,title:'StayLog export'});return 'shared';}catch(e){if(e&&e.name==='AbortError')return 'cancelled';}}
+  for(const x of files){const a=h('a',{href:URL.createObjectURL(new Blob([x.text],{type:x.type})),download:x.name});document.body.appendChild(a);a.click();a.remove();}
+  return 'downloaded';
+}
+function renderExportModal(){
+  return modal('Export everything',()=>{
+    const w=div({'data-export':'1',style:{display:'flex',flexDirection:'column',gap:10}});
+    w.appendChild(div({style:{fontSize:13.5,lineHeight:1.55}},
+      'All of this account’s data — properties, bookings with guest details, expenses, staff, loans — as one JSON file and a spreadsheet (CSV) for each. Identity photos are not included; they never leave this phone.'));
+    w.appendChild(div({style:{fontSize:12.5,lineHeight:1.5,color:'var(--warn)'}},
+      'The files are readable by anyone who has them. Keep them somewhere private, and delete them when you no longer need them.'));
+    const pin=h('input',{type:'password',inputmode:'numeric',autocomplete:'off',placeholder:'Your PIN','data-export-pin':'1',maxLength:8});
+    w.appendChild(pin);
+    const msg=div({style:{fontSize:12.5,color:'var(--danger)',minHeight:16}});
+    w.appendChild(msg);
+    w.appendChild(btn({className:'btn-primary','data-export-go':'1',style:{width:'100%',minHeight:46},onClick:async e=>{
+      const b=e.currentTarget;            // kept: after an await, currentTarget is gone
+      if(!(await checkPin(pin.value))){msg.textContent='That PIN is not right.';pin.value='';return;}
+      b.disabled=true;
+      try{const how=await deliverExport();if(how!=='cancelled'){closeModal();showToast(how==='shared'?'Export ready':'Export downloaded');}else b.disabled=false;}
+      catch(err){b.disabled=false;msg.textContent='Could not export — '+(err.message||err);}
+    }},'Export'));
+    return w;
+  });
+}
+
+// The platform admin's screen: accounts, plan, status, trial end, properties,
+// last activity; extend a trial, set a plan, cancel — each in the audit log.
+// No guest data reaches it (stay.admin_accounts returns none).
+const adm={list:null,err:'',busy:false};
+async function loadAdmin(){try{adm.list=await window.StayLogSync.admin.accounts();adm.err='';}catch(e){adm.err=e.message||String(e);}if(state.modal==='admin')render();}
+function renderAdminModal(){
+  if(!adm.list&&!adm.err)loadAdmin();
+  return modal('All accounts',()=>{
+    const w=div({'data-admin':'1',style:{display:'flex',flexDirection:'column',gap:10}});
+    if(adm.err)w.appendChild(div({style:{color:'var(--danger)',fontSize:13}},adm.err));
+    if(!adm.list){w.appendChild(div({style:{color:'var(--muted)',fontSize:13}},'Loading…'));return w;}
+    const act=async(fn,ok)=>{adm.busy=true;try{await fn();showToast(ok);}catch(e){alert(e.message||e);}adm.busy=false;adm.list=null;loadAdmin();};
+    adm.list.forEach(a=>{
+      const card=div({'data-admin-account':a.id,style:{border:'1px solid var(--border)',borderRadius:'var(--radius-sm)',padding:'10px 12px'}});
+      card.appendChild(div({style:{display:'flex',justifyContent:'space-between',gap:8}},div({style:{fontWeight:700,fontSize:14}},`${a.name} · ${a.code}`),
+        div({style:{fontSize:12,fontWeight:700,color:a.can_write?'var(--accent)':'var(--danger)'}},a.can_write?'Can write':'Read-only')));
+      card.appendChild(div({style:{fontSize:12.5,color:'var(--muted)',lineHeight:1.5,marginTop:2}},
+        [`${PLAN_NAMES[a.plan]||a.plan} · ${STATUS_NAMES[a.status]||a.status}`,
+         a.trial_ends_at&&a.plan==='trial'?`trial ends ${fmtDate(isoOf(new Date(a.trial_ends_at)))}`:'',
+         `${a.properties} propert${a.properties===1?'y':'ies'}${a.properties_allowed!=null?' of '+a.properties_allowed:''}`,
+         a.owner?`owner ${a.owner}`:'',
+         a.last_activity?`last active ${fmtDate(isoOf(new Date(a.last_activity)))}`:'never synced'].filter(Boolean).join(' · ')));
+      if(a.plan!=='owner'){
+        const row=div({style:{display:'flex',gap:6,flexWrap:'wrap',marginTop:8}});
+        if(a.plan==='trial')row.appendChild(btn({className:'btn-ghost btn-sm','data-admin-extend':a.id,disabled:adm.busy,
+          onClick:()=>act(()=>window.StayLogSync.admin.extendTrial(a.id,7),'Trial extended by 7 days')},'Extend trial 7 days'));
+        ['starter','pro','owner'].forEach(pl=>row.appendChild(btn({className:'btn-ghost btn-sm',[`data-admin-plan-${pl}`]:a.id,disabled:adm.busy||a.plan===pl,
+          onClick:()=>{if(confirm(`Set ${a.name} to ${PLAN_NAMES[pl]}?${pl==='owner'?' It will never expire and never be billed.':''}`))act(()=>window.StayLogSync.admin.setPlan(a.id,pl),'Plan set');}},
+          pl==='owner'?'Comp (owner)':pl[0].toUpperCase()+pl.slice(1))));
+        row.appendChild(btn({className:'btn-ghost btn-sm','data-admin-cancel':a.id,disabled:adm.busy||!a.can_write,style:{color:'var(--danger)'},
+          onClick:()=>{if(confirm(`Cancel ${a.name}? It becomes read-only now. Nothing is deleted.`))act(()=>window.StayLogSync.admin.cancel(a.id),'Cancelled');}},'Cancel'));
+        card.appendChild(row);
+      }
+      w.appendChild(card);
+    });
+    w.appendChild(div({style:{fontSize:11.5,color:'var(--muted)'}},'Every change here is kept in the admin audit log.'));
+    return w;
+  });
 }
 
 function renderNotesPickModal(){
@@ -2201,24 +2397,24 @@ function bookingCard(b){   // dense row; expands into the full detail
     }
     if(b.notes)detail.appendChild(div({style:{fontSize:12.5,color:'var(--muted)',fontStyle:'italic',margin:'6px 0 10px',lineHeight:1.5,background:'var(--white)',padding:'8px 10px',borderRadius:8,border:'1px solid var(--border)'}},`"${b.notes}"`));
     const actions=div({style:{display:'flex',gap:7,flexWrap:'wrap',marginTop:8}});
-    if(can('edit_bookings')&&b.status==='confirmed')actions.appendChild(btn({className:'btn-primary btn-sm',onClick:()=>updateStatus(b.id,'checkedin')},ico('door-enter',{style:{marginRight:5}}),'Check In'));
-    if(can('edit_bookings')&&b.status==='checkedin')actions.appendChild(btn({className:'btn-primary btn-sm',onClick:()=>updateStatus(b.id,'checkedout')},ico('door-exit',{style:{marginRight:5}}),'Check Out'));
+    if(canWrite('edit_bookings',b.propertyId)&&b.status==='confirmed')actions.appendChild(btn({className:'btn-primary btn-sm',onClick:()=>updateStatus(b.id,'checkedin')},ico('door-enter',{style:{marginRight:5}}),'Check In'));
+    if(canWrite('edit_bookings',b.propertyId)&&b.status==='checkedin')actions.appendChild(btn({className:'btn-primary btn-sm',onClick:()=>updateStatus(b.id,'checkedout')},ico('door-exit',{style:{marginRight:5}}),'Check Out'));
     // Bookings are never deleted from the app: Cancel keeps it on record.
-    if(can('edit_bookings')&&(b.status==='confirmed'||b.status==='checkedin'))actions.appendChild(btn({className:'btn-ghost btn-sm','data-cancel-booking':'1',
+    if(canWrite('edit_bookings',b.propertyId)&&(b.status==='confirmed'||b.status==='checkedin'))actions.appendChild(btn({className:'btn-ghost btn-sm','data-cancel-booking':'1',
       onClick:()=>cancelBooking(b.id)},'Cancel'));
-    else if(can('edit_bookings')&&b.status==='checkedout')actions.appendChild(div({style:{display:'flex',alignItems:'center',gap:6}},
+    else if(canWrite('edit_bookings',b.propertyId)&&b.status==='checkedout')actions.appendChild(div({style:{display:'flex',alignItems:'center',gap:6}},
       btn({className:'btn-ghost btn-sm','data-cancel-booking':'1',disabled:true,'aria-disabled':'true',
         style:{opacity:.45,cursor:'not-allowed'},onClick:()=>{}},'Cancel'),
       span({'data-cancel-note':'1',style:{fontSize:11.5,color:'var(--muted)'}},'Checked out — can’t be cancelled')));
-    if(can('edit_bookings'))actions.appendChild(btn({className:'btn-ghost btn-sm',onClick:()=>setState({modal:'addBooking',editItem:b})},ico('edit',{style:{marginRight:4}}),'Edit'));
+    if(canWrite('edit_bookings',b.propertyId))actions.appendChild(btn({className:'btn-ghost btn-sm',onClick:()=>setState({modal:'addBooking',editItem:b})},ico('edit',{style:{marginRight:4}}),'Edit'));
     if(waNumber(b.phone)&&can('send_messages'))actions.appendChild(btn({className:'btn-ghost btn-sm',style:{color:'var(--accent)',borderColor:'var(--accent-line)'},onClick:()=>setState({modal:'sendConfirm',editItem:b})},ico('brand-whatsapp',{style:{marginRight:4,fontSize:15}}),'Send'));
     actions.appendChild(btn({className:'btn-gold btn-sm',onClick:()=>downloadConfirmation(b)},ico('file-text',{style:{marginRight:4,fontSize:14}}),'PDF'));
-    if(can('mark_paid')&&canReceipt(b)&&b.status!=='cancelled'&&balanceDue(b)>0)actions.appendChild(btn({className:'btn-primary btn-sm','data-mark-paid':'1',
+    if(canWrite('mark_paid',b.propertyId)&&canReceipt(b)&&b.status!=='cancelled'&&balanceDue(b)>0)actions.appendChild(btn({className:'btn-primary btn-sm','data-mark-paid':'1',
       onClick:()=>markBookingPaid(b)},ico('circle-check',{style:{marginRight:4,fontSize:14}}),'Mark paid'));
     // Airbnb and the other platforms pay out the full amount themselves.
-    if(can('mark_paid')&&!paysUsDirectly(b)&&b.status!=='cancelled'&&balanceDue(b)>0)actions.appendChild(btn({className:'btn-primary btn-sm','data-mark-payout':'1',
+    if(canWrite('mark_paid',b.propertyId)&&!paysUsDirectly(b)&&b.status!=='cancelled'&&balanceDue(b)>0)actions.appendChild(btn({className:'btn-primary btn-sm','data-mark-payout':'1',
       onClick:()=>markPayoutReceived(b)},ico('circle-check',{style:{marginRight:4,fontSize:14}}),'Mark payout received'));
-    if(can('mark_paid')&&canReceipt(b))actions.appendChild(btn({className:'btn-gold btn-sm',onClick:()=>shareReceipt(b)},
+    if(canWrite('mark_paid',b.propertyId)&&canReceipt(b))actions.appendChild(btn({className:'btn-gold btn-sm',onClick:()=>shareReceipt(b)},
       ico('receipt',{style:{marginRight:4,fontSize:14}}),b.receiptNo?'Receipt again':'Receipt'));
     detail.appendChild(actions);card.appendChild(detail);
   }
@@ -4016,7 +4212,7 @@ function renderCalDayModal(){
       ));
       card.appendChild(div({style:{fontSize:12,color:'var(--muted)'}},`${fmtDate(b.checkIn)} → ${fmtDate(b.checkOut)}`));
       const acts=div({style:{display:'flex',gap:6,marginTop:8,flexWrap:'wrap'}});
-      if(can('edit_bookings'))acts.appendChild(btn({className:'btn-ghost btn-sm',onClick:()=>{closeModal();setState({modal:'addBooking',editItem:b});}},ico('edit',{style:{marginRight:3}}),'Edit'));
+      if(canWrite('edit_bookings',b.propertyId))acts.appendChild(btn({className:'btn-ghost btn-sm',onClick:()=>{closeModal();setState({modal:'addBooking',editItem:b});}},ico('edit',{style:{marginRight:3}}),'Edit'));
       if(waNumber(b.phone)&&can('send_messages'))acts.appendChild(btn({className:'btn-ghost btn-sm',style:{padding:'6px 10px',fontSize:12,color:'var(--accent)',borderColor:'var(--accent-line)'},onClick:()=>{closeModal();setState({modal:'sendConfirm',editItem:b});}},ico('brand-whatsapp',{style:{marginRight:3,fontSize:14}}),'Send'));
       acts.appendChild(btn({className:'btn-gold btn-sm',style:{padding:'6px 10px',fontSize:12},onClick:()=>downloadConfirmation(b)},ico('file-text',{style:{marginRight:3,fontSize:13}}),'PDF'));
       card.appendChild(acts);wrap.appendChild(card);
@@ -5640,11 +5836,13 @@ function renderPropertyModal(){
 function renderBookingModal(){
   const{data,editItem}=state;
   const isEdit=!!editItem;
-  const f=isEdit?{...editItem}:{propertyId:data.properties[0]?.id||'',guestName:'',phone:'',checkIn:'',checkOut:'',guests:1,totalAmount:'',paid:'',source:'Direct',status:'confirmed',notes:'',idProofType:'',idProofNumber:'',idProofImage:''};
+  // v74: a new booking goes only to a property that is not read-only on the plan
+  const bookable=data.properties.filter(p=>!pausedProp(p.id)||(isEdit&&editItem.propertyId===p.id));
+  const f=isEdit?{...editItem}:{propertyId:bookable[0]?.id||'',guestName:'',phone:'',checkIn:'',checkOut:'',guests:1,totalAmount:'',paid:'',source:'Direct',status:'confirmed',notes:'',idProofType:'',idProofNumber:'',idProofImage:''};
   const content=()=>{
     const wrap=div({style:{display:'flex',flexDirection:'column',gap:11}});
     const propSel=h('select');
-    data.properties.forEach(p=>propSel.appendChild(h('option',{value:p.id,selected:f.propertyId===p.id},p.name)));
+    bookable.forEach(p=>propSel.appendChild(h('option',{value:p.id,selected:f.propertyId===p.id},p.name)));
     propSel.addEventListener('change',e=>{f.propertyId=e.target.value;autoCalc();});wrap.appendChild(propSel);
     const guestInp=h('input',{type:'text',placeholder:'Guest name *',value:f.guestName||''});guestInp.addEventListener('input',e=>f.guestName=e.target.value);wrap.appendChild(guestInp);
     const phoneInp=h('input',{type:'tel',placeholder:'Phone number',value:f.phone||''});phoneInp.addEventListener('input',e=>f.phone=e.target.value);wrap.appendChild(phoneInp);
@@ -6015,6 +6213,7 @@ function render(){
   app.appendChild(renderHeader());
   const rtb=retiredBanner(); if(rtb)app.appendChild(rtb);
   const swb=swBanner(); if(swb)app.appendChild(swb);
+  const pb=planBanner(); if(pb)app.appendChild(pb);
   const main=div({'data-main':'1',style:{flex:1,paddingBottom:'calc(var(--nav-top, 80px) + 20px)'}});
   if(state.tab==='dashboard') main.appendChild(renderDashboard());
   else if(state.tab==='bookings') main.appendChild(renderBookings());
@@ -6049,6 +6248,9 @@ function render(){
   else if(state.modal==='join')     {currentModal=renderJoinModal();      document.body.appendChild(currentModal);}
   else if(state.modal==='start')    {currentModal=renderStartModal();     document.body.appendChild(currentModal);}
   else if(state.modal==='legal')    {currentModal=renderLegalModal();     document.body.appendChild(currentModal);}
+  else if(state.modal==='exportAll'){currentModal=renderExportModal();    document.body.appendChild(currentModal);}
+  else if(state.modal==='activeProps'){currentModal=renderActivePropsModal();document.body.appendChild(currentModal);}
+  else if(state.modal==='admin')    {currentModal=renderAdminModal();     document.body.appendChild(currentModal);}
   else if(state.modal==='legalAccept'){currentModal=renderLegalAcceptModal();document.body.appendChild(currentModal);}
   else if(state.modal==='account')  {currentModal=renderAccountModal();   document.body.appendChild(currentModal);}
   else if(state.modal==='owners')   {currentModal=renderOwnerInvitesModal();document.body.appendChild(currentModal);}
