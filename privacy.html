@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en-IN">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"/>
+  <meta name="robots" content="noindex"/>
+  <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png"/>
+  <title>Privacy Policy — StayLog</title>
+  <style>
+    :root { --cream:#F5F1E8; --white:#FFFDF8; --text:#1F2420; --muted:#5E655F; --accent:#2F6B4F; --line:#E2DACA; --warn:#8A5A12; --warn-bg:#FBF1DC; }
+    @media (prefers-color-scheme: dark) { :root { --cream:#16180F; --white:#1F2219; --text:#F0ECDF; --muted:#B3B5A8; --accent:#7CC49A; --line:#33362B; --warn:#E8C27A; --warn-bg:#2E2814; } }
+    * { box-sizing: border-box; }
+    body { margin:0; background:var(--cream); color:var(--text); font:16px/1.6 -apple-system, "Segoe UI", Roboto, sans-serif; }
+    main { max-width: 760px; margin: 0 auto; padding: calc(env(safe-area-inset-top, 0px) + 20px) 18px 60px; }
+    h1 { font-size: 28px; line-height: 1.2; margin: 8px 0 4px; }
+    h2 { font-size: 19px; margin: 28px 0 6px; }
+    h3 { font-size: 16px; margin: 18px 0 4px; }
+    p, li { color: var(--text); }
+    .meta { color: var(--muted); font-size: 14px; margin: 0 0 16px; }
+    .draft { background: var(--warn-bg); color: var(--warn); border: 1px solid var(--warn); border-radius: 10px; padding: 10px 12px; font-size: 14px; font-weight: 600; }
+    .note { color: var(--warn); font-size: 14px; }
+    table { width: 100%; border-collapse: collapse; font-size: 14.5px; margin: 8px 0; }
+    th, td { text-align: left; vertical-align: top; padding: 8px 6px; border-bottom: 1px solid var(--line); }
+    a { color: var(--accent); }
+    nav { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 14px; margin: 26px 0 0; padding-top: 14px; border-top: 1px solid var(--line); }
+  </style>
+</head>
+<body><main>
+<p class="draft" data-draft>DRAFT for legal review — not yet in force. Version 2026-11-21.</p>
+<h1>Privacy Policy</h1>
+<p class="meta">StayLog · Version <span data-version>2026-11-21</span> · Last updated 21 November 2026</p>
+
+<h2>1. Who we are</h2>
+<p>StayLog is a management app for homestays, provided by <strong>Rakshit Poojari</strong>, 1331, 3rd floor, Sector 37, Faridabad 121003, Haryana, India ("StayLog", "we"). Contact: <a href="mailto:rakshitpoojari52975@gmail.com">rakshitpoojari52975@gmail.com</a>.</p>
+
+<h2>2. Our two roles under the DPDP Act</h2>
+<p>India's Digital Personal Data Protection Act, 2023 and the DPDP Rules, 2025 decide who answers for what.</p>
+<ul>
+  <li><strong>For the people who use StayLog</strong> — homestay owners and the managers they invite — StayLog is the <strong>Data Fiduciary</strong>: we decide why and how their account data is used, and this policy covers it.</li>
+  <li><strong>For guests and staff</strong> — the people an owner records in StayLog — the <strong>owner is the Data Fiduciary</strong> and StayLog is their <strong>Data Processor</strong>. We handle that data only to run StayLog for the owner, on the owner's instructions (see our <a href="terms.html#processing">Terms, Data processing</a>). Guests and staff should contact the homestay owner first; we will help the owner answer them.</li>
+</ul>
+
+<h2>3. What we collect about owners and managers</h2>
+<ul>
+  <li>Your name, sign-in email and password (stored by our authentication provider in hashed form; we never see it).</li>
+  <li>Your business details: business name, account code, time zone, currency, and, if you add it, your GSTIN.</li>
+  <li>The devices you use: a random device id, the app version, sync times, and, if you turn notifications on, the push address your phone's browser gives us.</li>
+  <li>Your choices: notification settings and the versions of these documents you accepted, with the time.</li>
+  <li>Billing (once paid plans start): your plan, its status and dates, and the subscription and invoice records from our payment provider. We never receive or store your card, bank or UPI credentials.</li>
+  <li>Security logs: sign-ins, exports, erasures, changes of role or access, billing changes and support access, kept for one year.</li>
+</ul>
+
+<h2>4. What owners record about guests and staff</h2>
+<p>On the owner's behalf we store what the owner enters, for example:</p>
+<ul>
+  <li><strong>Guests:</strong> name, phone number, stay dates, number of guests, amounts and payments, booking source, notes, and identity document type and number. <span class="note">[Draft note: from release v76, Aadhaar is kept as its last 4 digits only and passport numbers are encrypted; until then a full number typed by the owner is stored as typed.]</span> <strong>Photographs of identity documents never leave the owner's phone.</strong></li>
+  <li><strong>Staff:</strong> name, phone number, role, wage rates, days worked (attendance), wages paid, and loans and repayments. A staff member who has a login sees a notice about this the first time they sign in.</li>
+  <li>Calendar links from Airbnb or Booking.com that the owner adds, and the stays read from them.</li>
+</ul>
+
+<h2>5. Why we use it</h2>
+<ul>
+  <li>To provide StayLog: sign-in, syncing between devices, bookings, receipts, messages the owner sends, staff pages, calendar import and reminders.</li>
+  <li>To bill for paid plans and keep tax records.</li>
+  <li>To keep the service secure, prevent misuse (including more than one free trial per business) and investigate problems.</li>
+  <li>To meet legal duties.</li>
+</ul>
+<p>We do not sell personal data, show advertising, or use guest or staff data for our own purposes.</p>
+
+<h2>6. Where it is stored, and who helps us (sub-processors)</h2>
+<p>StayLog's data is stored with Supabase. <span class="note">[Draft note: confirm the project's region — Project Settings → General → Region. If it is not Mumbai (ap-south-1), see docs/region.md.]</span></p>
+<table data-subprocessors>
+  <tr><th>Provider</th><th>What for</th><th>What it handles</th></tr>
+  <tr><td>Supabase Inc. (database, sign-in, server functions)</td><td>Storing and serving all account data; sign-in; scheduled jobs</td><td>All the data described above</td></tr>
+  <tr><td>GitHub Inc. (GitHub Pages)</td><td>Hosting the app's files and these pages</td><td>Your device's IP address and browser details when the app loads; no account data</td></tr>
+  <tr><td>Apple (Web Push), Google (Firebase Cloud Messaging), Mozilla (Web Push)</td><td>Delivering notifications to the device that asked for them</td><td>An encrypted notification (no guest names) and the device's push address</td></tr>
+  <tr><td>Razorpay Software Pvt. Ltd.</td><td>Payments for paid plans (from launch of paid plans)</td><td>Your name, email, phone and payment details you enter on Razorpay's page; subscription and invoice records</td></tr>
+  <tr><td>Google Fonts, jsDelivr</td><td>Fonts and icons used by the app</td><td>Your device's IP address when they load</td></tr>
+  <tr><td>Airbnb, Booking.com</td><td>Calendar links the owner adds (we read them; they are not our processors)</td><td>We fetch the calendar; the platforms see the request</td></tr>
+</table>
+<p>An email provider will be added before StayLog sends emails (sign-up verification, account notices); this list will be updated first.</p>
+
+<h2>7. How long we keep it</h2>
+<ul>
+  <li><strong>Guest data:</strong> anonymised a set period after check-out — 3 years by default, which the owner can set between 1 and 8 years. Dates, amounts, source and receipt numbers are kept for the owner's accounts; the guest's name becomes "Guest (removed)". <span class="note">[Draft note: from release v77.]</span></li>
+  <li><strong>Staff data:</strong> kept while the person works for the owner; anonymised the same period after the owner removes them. Wage and loan amounts are kept.</li>
+  <li><strong>An account that stops paying or is cancelled:</strong> kept read-only for 180 days, with reminders at 150 and 173 days, then deleted.</li>
+  <li><strong>An account the owner asks us to delete:</strong> deleted 30 days after the request (so a mistake can be undone).</li>
+  <li><strong>Billing and invoice records:</strong> kept as tax law requires (8 years). <span class="note">[Draft note: CA to confirm.]</span></li>
+  <li><strong>Security logs:</strong> one year.</li>
+  <li><strong>Free-trial check:</strong> a one-way, keyed fingerprint of the owner's email (and of calendar listing ids) is kept after deletion so a business cannot take repeated free trials. It cannot be turned back into the email.</li>
+  <li><strong>Encrypted backups</strong> made by the owner's phone: the latest plus one a day for 30 days; we cannot read them.</li>
+</ul>
+
+<h2>8. How we protect it</h2>
+<ul>
+  <li>Encryption in transit (HTTPS) and at rest; sensitive fields (passport numbers, bank details, Wi-Fi passwords, arrival instructions, calendar links) additionally encrypted in the database. <span class="note">[Draft note: from release v76.]</span></li>
+  <li>Access only by membership of an account, with owner-set permissions for managers, enforced by the database itself.</li>
+  <li>We do not read an owner's guest or staff data. If an owner asks for help, they can grant <strong>Support access</strong> for 7 days from Account settings and revoke it at any time; every read under it is logged. <span class="note">[Draft note: the person who runs StayLog has technical administrator access to the hosting project, as with any hosted service; this promise is a policy commitment backed by logging. Lawyer to review wording.]</span></li>
+  <li>Logs of security-relevant actions, rate limits on sign-in and export, and daily backups with a restore tested every quarter.</li>
+</ul>
+
+<h2>9. Your rights</h2>
+<p>You can ask to access, correct, complete, update or erase your personal data; to nominate someone to act for you; and to have a grievance redressed. Owners can export all of their account's data from the app at any time, including when a plan has lapsed, and can delete their account from Account settings.</p>
+<p>Guests and staff: please ask the homestay owner. Owners have tools in StayLog to export, correct and erase a guest's data. If you cannot reach the owner, write to us and we will pass it on.</p>
+<p>We answer requests and grievances within 30 days. <span class="note">[Draft note: confirm against the period the DPDP Rules prescribe.]</span> If you are not satisfied, you may complain to the Data Protection Board of India.</p>
+
+<h2>10. If something goes wrong</h2>
+<p>If a personal data breach affects you, we will tell you without delay, and tell the Data Protection Board as the DPDP Rules require. For guest and staff data, we tell the owner at once so they can inform the people affected.</p>
+
+<h2>11. Children</h2>
+<p>StayLog is for businesses and is not meant for anyone under 18. Owners record only the number of guests in a booking, not children's details.</p>
+
+<h2>12. Changes</h2>
+<p>When this policy changes we publish the new version here with its date, and the app asks you to accept it.</p>
+
+<h2>13. Contact and grievances</h2>
+<p>Grievance contact: <strong>Rakshit Poojari</strong>, <a href="mailto:rakshitpoojari52975@gmail.com">rakshitpoojari52975@gmail.com</a>, 1331, 3rd floor, Sector 37, Faridabad 121003, Haryana, India. See <a href="contact.html">Contact and grievances</a>.</p>
+<nav data-legal-nav>
+  <a href="terms.html">Terms of Service</a>
+  <a href="privacy.html">Privacy Policy</a>
+  <a href="refund.html">Refund and Cancellation</a>
+  <a href="contact.html">Contact and grievances</a>
+  <a href="./">Open StayLog</a>
+</nav>
+</main></body>
+</html>

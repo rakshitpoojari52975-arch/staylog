@@ -42,7 +42,7 @@ let r = psql(DB, [], `
   insert into public.app_status (id) values (1);
   insert into auth.users (id, email) values ('${ADMIN}','admin@example.com'),('${MGR}','m@example.com'),('${X}','x@example.com'),
     ('${NEW}','asha@example.com'),('${NEW2}','b@example.com');`);
-for (const f of ['01-schema.sql', '02-functions.sql', '03-access.sql', '04-phase2.sql', '05-migrate.sql', '07-staff.sql', '08-team.sql', '09-calendar.sql']) {
+for (const f of ['01-schema.sql', '02-functions.sql', '03-access.sql', '04-phase2.sql', '05-migrate.sql', '07-staff.sql', '08-team.sql', '09-calendar.sql', '11-legal.sql']) {
   r = load(f); if (r.err) { ok(f, false, r.err); break; } }
 r = sql(`set stay.importing='on';
   insert into stay.platform_admins (user_id) values ('${ADMIN}');

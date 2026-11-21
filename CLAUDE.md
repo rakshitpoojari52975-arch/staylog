@@ -398,6 +398,77 @@ Agreed decisions (his answers, 15 Nov 2026):
   shares Chrome's storage, so joining in Chrome is enough.
 - Phase 8 (v69) added notifications to managers and the inbox per property.
 
+## Trial, paid plans and data protection (from Nov 2026) — read first
+
+Rakshit's spec (21 Nov 2026, "Add a 7-day free trial and paid subscriptions
+… compliant with India's DPDP Act 2025 rules") and his answers the same day:
+- **Non-negotiable:** enforcement in Postgres (a modified app, an old build or
+  a direct API call cannot write past the trial); an expired account never
+  loses data (read-only: sign in, see, export); **Raaya Vasyam is plan
+  `owner`**: never expires, never billed, never blocked (a test proves it);
+  no secret in the repo (Razorpay key secret, webhook secret, service key —
+  Supabase secrets only); the platform admin does not read owners' guest data
+  except under a Support access grant, every read logged.
+- **Decisions:** new owners stay **invite-only** (self-serve sign-up waits for
+  a native app); **web app only** (no store apps until a native app, with
+  in-app purchase then); **Raaya Vasyam is excluded from retention**;
+  expired-account deletion is **listed for his hold** (7 days ahead) for the
+  first year, not automatic; trial properties and the downgrade rule: open.
+- **Stages, one PR each:** 1 legal pages (v73) · 2 plans, trial, read-only
+  enforcement, admin screen, export (v74) · 3 billing with Razorpay (v75) ·
+  4 minimisation, encryption, audit, support access (v76) · 5 retention,
+  guests' rights, deletion (v77). Phase 10 (clean-up) is separate and still
+  not to be touched.
+- Facts checked when designing: Apple's guidelines (3.1.1 needs in-app
+  purchase to unlock features; no 3.1.3 exception fits; outside the US no
+  links or calls to action to other payment) — read 21 Nov 2026. Razorpay's
+  webhook signature (HMAC-SHA256 of the raw body with the webhook secret, hex,
+  header `X-Razorpay-Signature`) — from its SDK code. **Not checked from
+  here** (sites blocked): the DPDP Rules text, Google Play's policy, Razorpay's
+  docs (event names, event-id header, UPI Autopay limits, GST on invoices).
+  Anything resting on them is marked for the lawyer or CA to confirm.
+
+### Stage 1 — v73 (legal pages, acceptance, staff notice)
+- **Pages** `terms.html`, `privacy.html`, `refund.html`, `contact.html` beside
+  the app: drafts for legal review (a `data-draft` banner), version
+  `2026-11-21` in each, linking each other. Rakshit Poojari is the provider
+  and the grievance contact (address and email on Contact and Privacy).
+  Privacy: StayLog is the Fiduciary for owners'/managers' account data and the
+  owners' Processor for guest and staff data; sub-processors (Supabase,
+  GitHub Pages, Apple/Google/Mozilla push, Razorpay, Google Fonts/jsDelivr;
+  Airbnb/Booking.com as sources); retention, rights, breach, the region to
+  confirm. Terms: trial, read-only not deleted, 180 days, a **data processing
+  section** (StayLog's duties as Processor; the owner's duties as Fiduciary —
+  notice, Form C, last 4 of Aadhaar, retention with their CA). `[Draft note]`s
+  mark what later stages bring or the lawyer must confirm.
+- **`supabase/stay/11-legal.sql`** (after 10): `stay.legal_versions` (terms,
+  privacy, refund, staff_notice; a re-run sets the script's versions),
+  `stay.legal_acceptances` (user, document, version, time, via signup/app;
+  written only by functions), `stay.legal_pending()`, `stay.accept_legal(docs)`,
+  `staff_logins.notice_version / notice_acknowledged_at`, `stay.staff_notice()`,
+  `stay.staff_ack_notice(version)` (+ public wrappers for her page). Signed-in
+  only; `check.sql` checks it. **To publish a new version:** change it in the
+  page and in this script in the same release.
+- **Joining needs the tick** ("I have read and accept the Terms of Service and
+  the Privacy Policy", `acceptRow`): the Join and Welcome sheets send
+  `accepted: true`; `team-invite` refuses without it (before any login is
+  made) and records the versions as `via: 'signup'` (best effort: before 11
+  has run there is nothing to record). Members whose acceptance is missing or
+  older are asked once per open (`renderLegalAcceptModal`, from
+  `StayLogSync.legalPending()`, read each sync; Later = next open). The
+  platform admin is never asked. A missing tick is said in place (a redraw
+  would empty the form — found by the tests).
+- **⋯ → Terms, privacy and contact** (everyone; `renderLegalModal`).
+- **Staff page (`staff.js` v13):** a one-time notice before her page ("Before
+  you start": what is kept — name, login, phone, her marks with times, wages,
+  loan; who sees it — the owner and managers who manage staff; how long; whom
+  to ask, and the contact page) until she taps **I understand**
+  (`staff_ack_notice` with the version). No notice function (before 11): no
+  notice.
+- `docs/breach-runbook.md` (detect, contain — rotating every secret, assess,
+  notify owners and the Board within 72 hours with an email template, recover)
+  and `docs/region.md` (how to read the region; a move plan to Mumbai, not run).
+
 ### Phase 9 — v71 (onboarding new accounts)
 - **`supabase/stay/10-onboarding.sql`** (after 09): `stay.platform_invites`
   (code, label, created_by, expires_at — 14 days, used_by/at, account_id;
@@ -1195,7 +1266,9 @@ also fetch from Supabase with `cache: 'no-store'` as a second layer.
     node tests/test_checkboxes.js        # v66: every checkbox keeps its tick — appearance, a tap ticks it, and it looks different ticked (pixels), light and dark
     node tests/test_move_app.js          # phase 3 in the app: Move to the new system — copy, compare (match / mismatch), switch, another phone joins, rollback
     node tests/test_notify_stay.js       # notify in the new model: by account, every owner, own devices/prefs/inbox, amounts + pays_directly_sources, marks, test push
-    node tests/test_onboarding_app.js    # phase 9 app: Account settings (saved, code not sent, money and who-pays follow), Invite a new owner (platform admin), #start= sheet + code suggestion + sign-in, pasted start link, first-run guide (new accounts only, ticks, hide), managers see none
+    node tests/test_legal_pages.js       # v73: the four pages (draft, version = SQL, contact, roles, sub-processors, processing terms, refunds), runbook, region note, links from the app
+    STAYLOG_PG="…" node tests/test_legal_sql.js      # 11-legal.sql: pending / accept for one's own login, a new version asked again, the staff notice and its acknowledgement
+    node tests/test_onboarding_app.js    # phase 9 app (+ v73: the tick on the Welcome sheet, the accept sheet for members, ⋯ → Terms, privacy and contact): Account settings (saved, code not sent, money and who-pays follow), Invite a new owner (platform admin), #start= sheet + code suggestion + sign-in, pasted start link, first-run guide (new accounts only, ticks, hide), managers see none
     STAYLOG_PG="…" node tests/test_onboarding_sql.js   # 10-onboarding.sql: platform invites by admins only, open_account (service key only, atomic, refusals), account settings checks, code never changes
     node tests/test_notify_team.js       # phase 8: routing by property and permission, own inbox row + badge, her marks by manage_staff, a device's own alerts, hourly per time zone and currency, one account failing, Send test to this device only
     node tests/test_ical_server.js       # phase 7: the import on the server — same plan as the phone (400 cases), bookings written, echoes, cancelled stays, moved/gone, version guard, announced once (cut short, notify down), parallel/deadline/cap, Import now throttle, one account failing, time zone, old model

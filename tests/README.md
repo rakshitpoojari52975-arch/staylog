@@ -54,6 +54,8 @@ kept outside it and was lost when the machine running them was reset.
     node tests/test_checkboxes.js     # v66: checkboxes show their tick
     node tests/test_move_app.js       # phase 3: Move to the new system — copy, compare, switch, another phone joins, rollback
     node tests/test_notify_stay.js    # phase 3: notify over `stay`
+    node tests/test_legal_pages.js    # v73: legal pages and documents
+    STAYLOG_PG="…" node tests/test_legal_sql.js      # v73: 11-legal.sql
     node tests/test_onboarding_app.js # phase 9: onboarding in the app
     STAYLOG_PG="…" node tests/test_onboarding_sql.js   # phase 9: 10-onboarding.sql
     node tests/test_notify_team.js    # phase 8: notifications for the team

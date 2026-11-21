@@ -406,6 +406,9 @@
       const { data } = await db.from('accounts').select('name,code,time_zone,currency,pays_directly_sources,owner_name,migrated_from').eq('id', account);
       if (data && data[0]) S.settings = data[0]; } catch {}
     try { const pa = await rpc('am_platform_admin', {}); S.platformAdmin = pa === true; } catch {}
+    // v73: the Terms and Privacy Policy versions this login has not accepted
+    // (11-legal.sql; before it has run, nothing is asked).
+    try { const lp = await rpc('legal_pending', {}); S.legalPending = Array.isArray(lp) ? lp : []; } catch {}
   }
 
   async function pull(account, touched) {
@@ -637,7 +640,8 @@
       lastPull: S && S.lastPull, lastPush: S && S.lastPush, outbox: pending, held: (S && S.held) || 0,
       conflicts: (S && S.conflicts) || [], errors: (S && S.errors) || [], lastError: (S && S.lastError) || '',
       heldMarks: (S && S.heldMarks) || [], me: (S && S.me) || null,
-      settings: (S && S.settings) || null, platformAdmin: !!(S && S.platformAdmin) };
+      settings: (S && S.settings) || null, platformAdmin: !!(S && S.platformAdmin),
+      legalPending: (S && S.legalPending) || [] };
   }
 
   window.StayLogSync = {
@@ -802,6 +806,12 @@
       const { error } = await db.from('platform_invites').update({ expires_at: new Date().toISOString() }).eq('code', code);
       if (error) throw new Error(error.message || String(error));
     },
+    // The Terms and Privacy Policy accepted in the app (v73).
+    async acceptLegal(documents) {
+      const left = await rpc('accept_legal', { p_documents: documents });
+      await loadState(); S.legalPending = Array.isArray(left) ? left : []; await persist(); changed();
+      return S.legalPending;
+    },
     async setOwnerName(name) {
       const m = model(); if (!m) return;
       const db = await stay();
@@ -811,6 +821,8 @@
     switchAccount(account) { const m = model(); if (!m) return; this.activate(m.user, account); },
     // the account's settings (v71), light: read on every render
     settings: () => (S && S.settings) || null,
+    // v73: light, read on every render
+    legalPending: () => (S && !S.platformAdmin && S.legalPending) || [],
     events: () => (S && S.events) || [],
     // the Calendar sync panel's figures in the new model (null until a sync has read them)
     icalLog: () => (S && S.ical) || null,

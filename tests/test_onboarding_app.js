@@ -29,6 +29,7 @@ const STUB = (o) => `(function(){
     session:${o.role === 'none' ? 'null' : "{user:{id:'u1',email:'me@example.com'},access_token:'t'}"},model:'stay',signedInAs:null,
     settings:{name:'${o.name || 'Raaya Vasyam'}',code:'${o.code || 'raaya'}',time_zone:'Asia/Kolkata',currency:'INR',pays_directly_sources:['Direct','Booking.com'],owner_name:'Rakshit',
       migrated_from:${o.migrated === false ? 'null' : "'old-owner'"}},
+    legalPending:${o.legal ? "[{document:'privacy',version:'2026-11-21'},{document:'terms',version:'2026-11-21'}]" : '[]'},
     pinv:[{code:'waiting-invite-0000000001',label:'Asha, Goa',created_at:'2026-11-15T10:00:00Z',expires_at:'2026-11-29T00:00:00Z',used_by:null}]};
   const access=()=>S.role==='owner'?{role:'owner',permissions:{edit_bookings:true,send_messages:true,mark_paid:true,see_money:true,add_expenses:true,manage_staff:true,edit_properties:true},properties:null}
     :{role:'manager',permissions:{edit_bookings:true,send_messages:true,mark_paid:true,see_money:false,add_expenses:true,manage_staff:false,edit_properties:false},properties:['p1']};
@@ -58,6 +59,8 @@ const STUB = (o) => `(function(){
     schema:()=>({from:t=>q(t),async rpc(n,a){
       if(n==='my_access')return{data:access(),error:null};
       if(n==='am_platform_admin')return{data:S.admin,error:null};
+      if(n==='legal_pending')return{data:S.legalPending,error:null};
+      if(n==='accept_legal'){S.accepted=(S.accepted||[]).concat(a.p_documents);S.legalPending=[];return{data:[],error:null};}
       if(n==='apply_change')return{data:{status:'ok',row:{...a.p_row,version:1,updated_at:new Date().toISOString(),deleted_at:null,legacy:null}},error:null};
       return{data:null,error:null};}}),
   })};})();`;
@@ -166,6 +169,34 @@ const EMPTY = { properties: [], staff: [], loans: [], expenses: [], attendance: 
     ok('no page errors', errs.length === 0, errs);
     await ctx.close(); }
 
+  console.log('\n— the Terms and Privacy Policy for members already here (v73) —');
+  { const { ctx, page, errs } = await open({ role: 'manager', legal: true });
+    await page.waitForTimeout(200);
+    ok('a member who has not accepted them is asked, with links to both', await page.locator('[data-legal-accept]').count() === 1
+      && await page.locator('[data-legal-accept] a[href="terms.html"]').count() >= 1 && await page.locator('[data-legal-accept] a[href="privacy.html"]').count() >= 1);
+    await page.click('[data-legal-accept-go]'); await page.waitForTimeout(200);
+    ok('Accept without the tick: nothing recorded', !(await page.evaluate(() => window.__server.accepted)));
+    await page.check('[data-legal-accept-tick]'); await page.click('[data-legal-accept-go]'); await page.waitForTimeout(400);
+    ok('ticked and accepted: both recorded on the server, the sheet closes', JSON.stringify(await page.evaluate(() => window.__server.accepted)) === '["terms","privacy"]'
+      && await page.locator('[data-legal-accept]').count() === 0);
+    await page.evaluate(() => { render(); }); await page.waitForTimeout(150);
+    ok('not asked again', await page.locator('[data-legal-accept]').count() === 0);
+    ok('⋯ has Terms, privacy and contact, for everyone', /Terms, privacy and contact/.test(await menuText(page)));
+    await page.evaluate(() => setState({ modal: 'legal' })); await page.waitForTimeout(150);
+    ok('…listing the four pages', (await page.evaluate(() => [...document.querySelectorAll('[data-legal-link]')].map(a => a.getAttribute('href')).join())) === 'terms.html,privacy.html,refund.html,contact.html');
+    ok('no page errors', errs.length === 0, errs);
+    await ctx.close(); }
+  { const { ctx, page } = await open({ role: 'manager', legal: true });
+    await page.waitForTimeout(200);
+    await page.click('[data-legal-accept] >> text=Later'); await page.waitForTimeout(150);
+    await page.evaluate(() => render()); await page.waitForTimeout(150);
+    ok('Later: not asked again in this session (asked on the next open)', await page.locator('[data-legal-accept]').count() === 0);
+    await ctx.close(); }
+  { const { ctx, page } = await open({ role: 'owner', admin: true, legal: true });
+    await page.waitForTimeout(200);
+    ok('the platform admin (you, who publish them) is not asked', await page.locator('[data-legal-accept]').count() === 0);
+    await ctx.close(); }
+
   console.log('\n— opening an account from #start= —');
   { const { ctx, page, errs } = await open({ role: 'none', hash: '#start=' + START });
     await page.waitForTimeout(400);
@@ -179,9 +210,13 @@ const EMPTY = { properties: [], staff: [], loans: [], expenses: [], attendance: 
     await page.fill('[data-start-code]', 'Sea-Breeze');
     ok('…and kept to small letters and digits when typed', await page.inputValue('[data-start-code]') === 'seabreeze');
     await page.selectOption('[data-start-currency]', 'INR');
+    await page.click('[data-start-go]'); await page.waitForTimeout(400);
+    ok('v73: without ticking the Terms and Privacy Policy: refused, nothing sent', /accept the Terms of Service/.test(await page.locator('[data-start]').innerText())
+      && !(await page.evaluate(() => window.__server.invoked.some(x => x[1].action === 'owner-accept'))));
+    await page.check('[data-start-accept]');
     await page.click('[data-start-go]'); await page.waitForTimeout(900);
     const inv = await page.evaluate(() => window.__server.invoked.find(x => x[1].action === 'owner-accept'));
-    ok('Open my account: the function gets the invite, her login and the business', inv && inv[0] === 'team-invite' && inv[1].code === START
+    ok('Open my account: the function gets the invite, her login, the business, and that she accepted', inv && inv[0] === 'team-invite' && inv[1].accepted === true && inv[1].code === START
       && inv[1].email === 'asha@example.com' && inv[1].business === 'Sea Breeze Stays!' && inv[1].account_code === 'seabreeze' && inv[1].currency === 'INR'
       && inv[1].time_zone && inv[1].name === 'Asha', inv);
     ok('…then signs her in', await page.evaluate(() => window.__server.signedInAs) === 'asha@example.com');

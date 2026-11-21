@@ -22,6 +22,8 @@
 //                                    through stay.open_account (10-onboarding.sql),
 //                                    which claims the invite in the same
 //                                    transaction
+// Both accepts need accepted: true (the Terms and Privacy Policy, v73) and
+// record the versions accepted.
 // An invite is used once (claimed atomically) and only before it expires. A
 // team invite can only make a manager. If joining fails half-way, the login made here is
 // deleted again and the invite is free again.
@@ -81,6 +83,23 @@ async function joiner(req: Request, body: Record<string, any>, d: ReturnType<typ
   return { email, password, name, userId: '', undo: async () => {} };
 }
 
+// Joining means accepting the Terms of Service and Privacy Policy (v73): the
+// app sends accepted: true only once they are ticked, and the versions in
+// force are recorded here for the new member (11-legal.sql). Before that
+// script has run there is nothing to record; the app also asks again anyone
+// whose acceptance is missing (stay.legal_pending), so a failure here is not
+// fatal.
+const mustAccept = (body: Record<string, any>) => {
+  if (body.accepted !== true) throw new Refusal('Please read and accept the Terms of Service and Privacy Policy to join.');
+};
+async function recordAcceptance(d: ReturnType<typeof api>, userId: string) {
+  try {
+    const v = await d.get('legal_versions?document=in.(terms,privacy)&select=document,version');
+    if (v.length) await d.write('POST', 'legal_acceptances?on_conflict=user_id,document,version',
+      v.map(x => ({ user_id: userId, document: x.document, version: x.version, via: 'signup' })), 'resolution=ignore-duplicates,return=minimal');
+  } catch { /* asked again in the app */ }
+}
+
 // A platform invite: a new owner opens their own account.
 const ACCOUNT_CODE = /^[a-z0-9]{2,12}$/;
 const CURRENCY = /^[A-Z]{3}$/;
@@ -88,6 +107,7 @@ async function ownerInvite(req: Request, body: Record<string, any>, code: string
   const inv = (await d.get(`platform_invites?code=eq.${encodeURIComponent(code)}&used_by=is.null&expires_at=gt.${encodeURIComponent(now)}&select=code,label,expires_at`))[0];
   if (!inv) throw new Refusal('This invite has been used, withdrawn or has expired. Ask for a new link.', 404);
   if (body.action === 'owner-peek') return { ok: true, label: inv.label || '', expires_at: inv.expires_at };
+  mustAccept(body);
   const business = String(body.business || '').trim().slice(0, 80);
   const acode = String(body.account_code || '').trim().toLowerCase();
   const zone = String(body.time_zone || 'Asia/Kolkata').trim(), currency = String(body.currency || 'INR').trim().toUpperCase();
@@ -115,6 +135,7 @@ async function ownerInvite(req: Request, body: Record<string, any>, code: string
     if (/time zone/i.test(msg)) throw new Refusal('Choose a time zone from the list.');
     throw new Refusal('Your account could not be opened. Try again.', 500);
   }
+  await recordAcceptance(d, userId);
   return { ok: true, account: r.data, business, code: acode };
 }
 
@@ -143,6 +164,7 @@ export async function handle(req: Request, env: Env, fetchImpl: Fetch = fetch as
         expires_at: inv.expires_at });
     }
     if (body.action !== 'accept') throw new Refusal('unknown action');
+    mustAccept(body);
 
     // Who joins: the signed-in user (a token), or a new login made here.
     const name = String(body.name || '').trim().slice(0, 60);
@@ -180,6 +202,7 @@ export async function handle(req: Request, env: Env, fetchImpl: Fetch = fetch as
     const mp = held.length ? await d.write('POST', 'member_properties?on_conflict=account_id,user_id,property_id', held, 'resolution=ignore-duplicates,return=minimal')
       : { ok: true };
     if (!mem.ok || !mp.ok) { await free(); await undo(); throw new Refusal('You could not be added to the team. Try the link again.', 500); }
+    await recordAcceptance(d, userId);
     return json({ ok: true, account: inv.account_id, business: acct.name || '', properties: props.map((p: Record<string, string>) => p.name) });
   } catch (e) {
     if (e instanceof Refusal) return json({ error: e.message }, e.status);
