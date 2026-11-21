@@ -74,6 +74,11 @@ checks as (
                    and to_regprocedure('stay.open_account(text,uuid,text,text,text,text,text)') is not null
               then 'ok' else 'not yet — run 10-onboarding.sql' end
   union all
+  -- 12. stage 1 of billing and data protection: legal pages and acceptances
+  select 'legal pages and acceptances (11-legal.sql)',
+         case when to_regclass('stay.legal_acceptances') is not null and to_regprocedure('public.staff_notice()') is not null
+              then 'ok' else 'not yet — run 11-legal.sql' end
+  union all
   -- 7. the old app's tables are still there and untouched by this phase
   select 'old table public.' || t, case when to_regclass('public.' || t) is not null then 'ok (unchanged)' else 'not found' end
   from unnest(array['properties','bookings','expenses','staff','loans','loan_repayments','attendance']) t

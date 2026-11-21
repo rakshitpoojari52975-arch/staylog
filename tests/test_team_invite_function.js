@@ -23,6 +23,8 @@ function world(o = {}) {
         expires_at: '2026-11-20T00:00:00Z', used_by: null },
         { code: OLD, account_id: A, role: 'manager', property_ids: ['p1'], permissions: {}, label: '', expires_at: '2026-11-01T00:00:00Z', used_by: null },
         { code: OWN, account_id: A, role: 'owner', property_ids: [], permissions: {}, label: '', expires_at: '2026-11-20T00:00:00Z', used_by: null }],
+      legal_versions: [{ document: 'terms', version: '2026-11-21' }, { document: 'privacy', version: '2026-11-21' }],
+      legal_acceptances: [],
       platform_invites: [{ code: PINV, label: 'Asha, Goa', expires_at: '2026-11-25T00:00:00Z', used_by: null, account_id: null }],
     }, failMembers: !!o.failMembers, failOpen: !!o.failOpen, opened: [] };
   const match = (r, q) => q.every(([k, v]) => {
@@ -60,6 +62,7 @@ function world(o = {}) {
     if (m === 'POST') {
       if (t === 'members' && W.failMembers) return res(500, {});
       const rows = JSON.parse(init.body);
+      if (t === 'legal_acceptances') { for (const r of rows) if (!T.some(x => x.user_id === r.user_id && x.document === r.document && x.version === r.version)) T.push(r); return res(201, rows); }
       for (const r of rows) { const i = T.findIndex(x => x.account_id === r.account_id && x.user_id === r.user_id && (t !== 'member_properties' || x.property_id === r.property_id));
         i < 0 ? T.push(r) : Object.assign(T[i], r); }
       return res(201, rows);
@@ -87,9 +90,9 @@ const call = async (W, body, tok) => { const r = await F.handle(new Request('htt
 
   console.log('\n— accept, with a new login —');
   { const W = world();
-    let r = await call(W, { action: 'accept', code: CODE, name: 'Priya', email: 'priya@example.com', password: 'short' });
+    let r = await call(W, { action: 'accept', accepted: true, code: CODE, name: 'Priya', email: 'priya@example.com', password: 'short' });
     ok('a short password: refused, nothing made', r.status === 400 && W.auth.length === 2, r);
-    r = await call(W, { action: 'accept', code: CODE, name: 'Priya', email: 'Priya@Example.com', password: 'priya-pass-1' });
+    r = await call(W, { action: 'accept', accepted: true, code: CODE, name: 'Priya', email: 'Priya@Example.com', password: 'priya-pass-1' });
     ok('joined', r.status === 200 && r.body.account === A && r.body.properties.join() === 'Sea View', r);
     const u = W.auth.find(a => a.email === 'priya@example.com');
     ok('her login made (email lower-cased)', !!u, W.auth);
@@ -97,24 +100,40 @@ const call = async (W, body, tok) => { const r = await F.handle(new Request('htt
     ok('a manager, with the invite\'s permissions and her name', mem && mem.role === 'manager' && mem.permissions.see_money === true && mem.permissions.send_messages === false && mem.display_name === 'Priya', mem);
     ok('holding the invite\'s properties', W.stay.member_properties.map(x => x.property_id).join() === 'p2');
     ok('the invite is used', W.stay.invites[0].used_by === u.id);
-    r = await call(W, { action: 'accept', code: CODE, name: 'X', email: 'x@example.com', password: 'xxxxxxxx1' });
+    r = await call(W, { action: 'accept', accepted: true, code: CODE, name: 'X', email: 'x@example.com', password: 'xxxxxxxx1' });
     ok('used once only', r.status === 404 && !W.auth.some(a => a.email === 'x@example.com'), r); }
   { const W = world();
-    const r = await call(W, { action: 'accept', code: CODE, name: 'Ravi', email: 'ravi@example.com', password: 'ravi-pass-1' });
+    const r = await call(W, { action: 'accept', accepted: true, code: CODE, name: 'Ravi', email: 'ravi@example.com', password: 'ravi-pass-1' });
     ok('an email that already has a login: sign in first, then open the link', r.status === 409 && /Sign in with it/.test(r.body.error) && !W.stay.invites[0].used_by, r); }
+
+  console.log('\n— the Terms and Privacy Policy (v73) —');
+  { const W = world();
+    let r = await call(W, { action: 'accept', code: CODE, name: 'Priya', email: 'priya@example.com', password: 'priya-pass-1' });
+    ok('joining without accepting: refused before any login is made, the invite stays free', r.status === 400 && /Terms of Service/.test(r.body.error)
+      && W.auth.length === 2 && !W.stay.invites[0].used_by, r);
+    r = await call(W, { action: 'accept', accepted: true, code: CODE, name: 'Priya', email: 'priya@example.com', password: 'priya-pass-1' });
+    const u = W.auth.find(a => a.email === 'priya@example.com');
+    ok('accepted: the versions in force are recorded for her, as a sign-up', r.status === 200 && u
+      && W.stay.legal_acceptances.filter(a => a.user_id === u.id && a.via === 'signup' && a.version === '2026-11-21').map(a => a.document).sort().join() === 'privacy,terms', W.stay.legal_acceptances); }
+  { const W = world();
+    const r = await call(W, { action: 'owner-accept', code: PINV, name: 'Asha', email: 'asha@example.com', password: 'asha-pass-1', business: 'Sea Breeze', account_code: 'seabreeze' });
+    ok('a new owner without accepting: refused, nothing made', r.status === 400 && W.auth.length === 2 && !W.opened.length, r); }
+  { const W = world(); delete W.stay.legal_versions;
+    const r = await call(W, { action: 'accept', accepted: true, code: CODE, name: 'Priya', email: 'priya@example.com', password: 'priya-pass-1' });
+    ok('before 11-legal.sql has run: joining still works (the app asks again later)', r.status === 200, r); }
 
   console.log('\n— accept, signed in —');
   { const W = world();
-    let r = await call(W, { action: 'accept', code: CODE, name: 'Ravi' }, 'tok-ravi');
+    let r = await call(W, { action: 'accept', accepted: true, code: CODE, name: 'Ravi' }, 'tok-ravi');
     ok('the signed-in login joins; no new login made', r.status === 200 && W.auth.length === 2 && W.stay.members.some(m => m.user_id === 'u-ravi' && m.role === 'manager'), r);
     W.stay.invites.push({ code: 'zzzzzzzzzzzzzzzzzzzzzzzz', account_id: A, role: 'manager', property_ids: ['p1'], permissions: {}, expires_at: '2026-11-20T00:00:00Z', used_by: null });
-    r = await call(W, { action: 'accept', code: 'zzzzzzzzzzzzzzzzzzzzzzzz' }, 'tok-owner');
+    r = await call(W, { action: 'accept', accepted: true, code: 'zzzzzzzzzzzzzzzzzzzzzzzz' }, 'tok-owner');
     ok('someone already on the team: says so, and the invite stays free', r.status === 409 && !W.stay.invites[3].used_by, r);
-    ok('a bad token: refused', (await call(W, { action: 'accept', code: 'zzzzzzzzzzzzzzzzzzzzzzzz' }, 'tok-forged')).status === 401); }
+    ok('a bad token: refused', (await call(W, { action: 'accept', accepted: true, code: 'zzzzzzzzzzzzzzzzzzzzzzzz' }, 'tok-forged')).status === 401); }
 
   console.log('\n— nothing half-made —');
   { const W = world({ failMembers: true });
-    const r = await call(W, { action: 'accept', code: CODE, name: 'Priya', email: 'priya@example.com', password: 'priya-pass-1' });
+    const r = await call(W, { action: 'accept', accepted: true, code: CODE, name: 'Priya', email: 'priya@example.com', password: 'priya-pass-1' });
     ok('joining failed: the login made is deleted again and the invite is free', r.status === 500 && !W.auth.some(a => a.email === 'priya@example.com') && !W.stay.invites[0].used_by, { r, auth: W.auth, inv: W.stay.invites[0] }); }
 
   console.log('\n— a new owner, from a platform invite (v71) —');
@@ -122,7 +141,7 @@ const call = async (W, body, tok) => { const r = await F.handle(new Request('htt
     let r = await call(W, { action: 'owner-peek', code: PINV });
     ok('peek: who it is for, nothing else', r.status === 200 && r.body.label === 'Asha, Goa' && Object.keys(r.body).sort().join() === 'expires_at,label,ok', r);
     ok('a team invite is not an owner invite', (await call(W, { action: 'owner-peek', code: CODE })).status === 404);
-    const asha = { action: 'owner-accept', code: PINV, name: 'Asha', email: 'Asha@Example.com', password: 'asha-pass-1', business: 'Sea Breeze Stays', account_code: 'SeaBreeze', time_zone: 'Asia/Kolkata', currency: 'inr' };
+    const asha = { action: 'owner-accept', accepted: true, code: PINV, name: 'Asha', email: 'Asha@Example.com', password: 'asha-pass-1', business: 'Sea Breeze Stays', account_code: 'SeaBreeze', time_zone: 'Asia/Kolkata', currency: 'inr' };
     r = await call(W, { ...asha, account_code: 'sea breeze' });
     ok('an account code with a space: refused before any login is made', r.status === 400 && /2 to 12/.test(r.body.error) && W.auth.length === 2, r);
     r = await call(W, { ...asha, business: '' });
@@ -138,10 +157,10 @@ const call = async (W, body, tok) => { const r = await F.handle(new Request('htt
     r = await call(W, { ...asha, email: 'b@example.com', account_code: 'other' });
     ok('used once only', r.status === 404 && !W.auth.some(a => a.email === 'b@example.com'), r); }
   { const W = world();
-    const r = await call(W, { action: 'owner-accept', code: PINV, business: 'Ravi Homes', account_code: 'ravi', currency: 'INR' }, 'tok-ravi');
+    const r = await call(W, { action: 'owner-accept', accepted: true, code: PINV, business: 'Ravi Homes', account_code: 'ravi', currency: 'INR' }, 'tok-ravi');
     ok('signed in already: that login opens the account, no new login', r.status === 200 && W.auth.length === 2 && W.opened[0].p_user === 'u-ravi', r); }
   { const W = world({ failOpen: true });
-    const r = await call(W, { action: 'owner-accept', code: PINV, name: 'Asha', email: 'asha@example.com', password: 'asha-pass-1', business: 'Sea Breeze', account_code: 'seabreeze' });
+    const r = await call(W, { action: 'owner-accept', accepted: true, code: PINV, name: 'Asha', email: 'asha@example.com', password: 'asha-pass-1', business: 'Sea Breeze', account_code: 'seabreeze' });
     ok('opening fails: the login made is deleted again and the invite stays free', r.status === 500 && !W.auth.some(a => a.email === 'asha@example.com') && !W.stay.platform_invites[0].used_by, r); }
 
   console.log(`\n${pass} passed, ${fail} failed`);

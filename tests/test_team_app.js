@@ -155,9 +155,15 @@ const SEED = { properties: [{ id: 'p1', name: 'Raaya Vasyam' }, { id: 'p2', name
     ok('after unlocking, the Join sheet says what it is for', /Priya, you are invited to help manage Sea View for Raaya Vasyam/.test(t), t);
     ok('the link is cleared from the address', !/join=/.test(await page.evaluate(() => location.hash)));
     await page.fill('[data-join-email]', 'priya@example.com'); await page.fill('[data-join-pass]', 'priya-pass-1');
+    ok('v73: the Join sheet links the Terms of Service and Privacy Policy', await page.locator('[data-join] a[href="terms.html"]').count() === 1
+      && await page.locator('[data-join] a[href="privacy.html"]').count() === 1);
+    await page.click('[data-join-go]'); await page.waitForTimeout(400);
+    ok('…and joining without ticking them: refused in the app, nothing sent', /accept the Terms of Service/.test(await page.locator('[data-join]').innerText())
+      && !(await page.evaluate(() => window.__server.invoked.some(x => x[1].action === 'accept'))));
+    await page.check('[data-join-accept]');
     await page.click('[data-join-go]'); await page.waitForTimeout(900);
     const inv = await page.evaluate(() => window.__server.invoked.find(x => x[1].action === 'accept'));
-    ok('accept sends the code, her name, email and password', inv && inv[1].code === CODE && inv[1].name === 'Priya' && inv[1].email === 'priya@example.com' && inv[1].password === 'priya-pass-1', inv);
+    ok('accept sends the code, her name, email and password, and that she accepted', inv && inv[1].accepted === true && inv[1].code === CODE && inv[1].name === 'Priya' && inv[1].email === 'priya@example.com' && inv[1].password === 'priya-pass-1', inv);
     ok('then she is signed in with that login', await page.evaluate(() => window.__server.signedInAs) === 'priya@example.com');
     ok('and the app moves onto the account', await page.evaluate(() => window.StayLogSync.isActive() && window.StayLogSync.model().account === 'acct-1'));
     ok('the invite is not offered again', await page.locator('[data-join]').count() === 0 && await page.evaluate(() => sessionStorage.getItem('staylog_join')) === null);
@@ -177,6 +183,7 @@ const SEED = { properties: [{ id: 'p1', name: 'Raaya Vasyam' }, { id: 'p2', name
     ok('the pasted link opens the Join sheet', /you are invited to help manage Sea View/.test(await page.locator('[data-join]').innerText()));
     ok('it says to sign in with the same email and password in the Home Screen app', /Home Screen/.test(await page.locator('[data-join-homescreen]').innerText()));
     await page.fill('[data-join-email]', 'priya@example.com'); await page.fill('[data-join-pass]', 'priya-pass-1');
+    await page.check('[data-join-accept]');
     await page.click('[data-join-go]'); await page.waitForTimeout(900);
     ok('joined from the Home Screen app, and moved onto the account', await page.evaluate(() => window.StayLogSync.isActive()));
     ok('no page errors', errs.length === 0, errs);

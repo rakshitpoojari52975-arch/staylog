@@ -6,7 +6,7 @@
 // ─── Build ────────────────────────────────────────────────────────────────────
 // Bump BOTH of these together. This date sat at 28 Sept through a dozen
 // releases and was read, reasonably, as proof the upload had not landed.
-const APP_VERSION='v72', APP_BUILT='16 Nov 2026';
+const APP_VERSION='v73', APP_BUILT='21 Nov 2026';
 // The CACHE_NAME of the sw.js released with this app.js. Every release bumps
 // APP_VERSION and CACHE_NAME together, so one is derived from the other rather
 // than being a fourth thing to forget; the tests fail if they ever disagree.
@@ -1478,6 +1478,7 @@ function renderMenuModal(){
     (!stayActive()&&cloudStatus().signedIn&&cloudStatus().model==='public')
       ?menuRow('cloud','Move to the new system','Copy, compare, then switch — nothing changes until you say so',()=>setState({modal:'move'})):null,
     menuRow('cloud','Cloud sync',cloudMenuSub(),()=>setState({modal:'cloud'})),
+    menuRow('file-text','Terms, privacy and contact','How data is handled, and the grievance contact',()=>setState({modal:'legal'})),
     menuRow('notes','House notes PDF','The instructions guests get after check-in',()=>{
       // The chosen property's; with All properties and more than one, ask which (v63).
       const one=data.properties.find(p=>p.id===state.filterProp)||(data.properties.length===1?data.properties[0]:null);
@@ -1630,13 +1631,17 @@ function renderJoinModal(){
       w.appendChild(div({'data-join-homescreen':'1',style:{fontSize:11.5,color:'var(--muted)',lineHeight:1.45}},
         'Keep this email and password. If you add StayLog to your Home Screen, open it from there and sign in with them (⋯ → Cloud sync): the Home Screen app does not carry this link across.'));}
     else w.appendChild(div({style:{fontSize:12.5,color:'var(--muted)'}},`You will join as ${cloudStatus().email}.`));
+    const [acceptR,acceptCb]=acceptRow('data-join-accept');
+    w.appendChild(acceptR);
     const msg=div({style:{fontSize:12.5,color:'var(--danger)',minHeight:18}},jn.err||'');
     w.appendChild(msg);
     w.appendChild(btn({className:'btn-primary','data-join-go':'1',style:{width:'100%',minHeight:46},disabled:jn.busy,onClick:async()=>{
+      // said in place: a redraw would empty what they typed
+      if(!acceptCb.checked){msg.textContent='Please read and accept the Terms of Service and Privacy Policy.';return;}
       jn.busy=true;jn.err='';render();
       try{
-        const r=await Y.joinCall(signedIn?{action:'accept',code:joinCode,name:name.value.trim()}
-          :{action:'accept',code:joinCode,name:name.value.trim(),email:email.value.trim(),password:pass.value});
+        const r=await Y.joinCall(signedIn?{action:'accept',accepted:true,code:joinCode,name:name.value.trim()}
+          :{action:'accept',accepted:true,code:joinCode,name:name.value.trim(),email:email.value.trim(),password:pass.value});
         if(!signedIn)await C.signIn(email.value.trim(),pass.value);
         done();closeModal();
         if(stayActive()){Y.switchAccount(r.account);state.data=await loadDataFromIDB();Y.start();}
@@ -1648,6 +1653,51 @@ function renderJoinModal(){
     return w;
   };
   return modal('Join the team',content);
+}
+
+// ─── Terms, Privacy Policy and contact (v73) ──────────────────────────────────
+// Drafts for legal review, hosted beside the app. Joining needs the Terms and
+// Privacy Policy ticked (the function records the versions); a member whose
+// acceptance is missing or older is asked once per open (legalAcceptModal).
+const LEGAL_PAGES=[['terms.html','Terms of Service'],['privacy.html','Privacy Policy'],['refund.html','Refund and Cancellation'],['contact.html','Contact and grievances']];
+const legalLink=(href,label)=>h('a',{href,target:'_blank',rel:'noopener',style:{color:'var(--accent)',fontWeight:600}},label);
+// The "I agree" tick for a sign-up sheet; returns [row, checkbox].
+function acceptRow(attr){
+  const cb=h('input',{type:'checkbox',[attr]:'1'});
+  const row=h('label',{style:{display:'flex',alignItems:'flex-start',gap:10,fontSize:13,lineHeight:1.5,color:'var(--text-mid)'}},cb,
+    span({},'I have read and accept the ',legalLink('terms.html','Terms of Service'),' and the ',legalLink('privacy.html','Privacy Policy'),'.'));
+  return [row,cb];
+}
+function renderLegalModal(){
+  return modal('Terms, privacy and contact',()=>div({'data-legal':'1',style:{display:'flex',flexDirection:'column',gap:4}},
+    ...LEGAL_PAGES.map(([href,label])=>h('a',{href,target:'_blank',rel:'noopener','data-legal-link':href,
+      style:{display:'flex',alignItems:'center',justifyContent:'space-between',minHeight:48,padding:'10px 4px',color:'var(--text)',
+        textDecoration:'none',fontSize:15,fontWeight:600,borderBottom:'1px solid var(--border-soft)'}},label,ico('external-link',{style:{color:'var(--light)'}}))),
+    div({style:{fontSize:12,color:'var(--muted)',lineHeight:1.5,marginTop:8}},
+      'Questions or a complaint about personal data: the grievance contact is on the Contact page.')));
+}
+// Asked once per open while the current Terms or Privacy Policy is not accepted.
+let legalAsked=false;
+function renderLegalAcceptModal(){
+  const Y=window.StayLogSync;
+  return modal('Our Terms and Privacy Policy',()=>{
+    const w=div({'data-legal-accept':'1',style:{display:'flex',flexDirection:'column',gap:12}});
+    w.appendChild(div({style:{fontSize:13.5,lineHeight:1.55}},
+      'StayLog has published its Terms of Service and Privacy Policy. They explain how your account, and the guest and staff details you keep in it, are handled. Please read and accept them.'));
+    w.appendChild(div({style:{display:'flex',gap:16,fontSize:13.5}},legalLink('terms.html','Terms of Service'),legalLink('privacy.html','Privacy Policy')));
+    const [row,cb]=acceptRow('data-legal-accept-tick');
+    w.appendChild(row);
+    const msg=div({style:{fontSize:12.5,color:'var(--danger)',minHeight:16}});
+    w.appendChild(msg);
+    w.appendChild(btn({className:'btn-primary','data-legal-accept-go':'1',style:{width:'100%',minHeight:46},onClick:async e=>{
+      if(!cb.checked){msg.textContent='Tick the box once you have read them.';return;}
+      e.currentTarget.disabled=true;
+      try{await Y.acceptLegal(['terms','privacy']);closeModal();showToast('Thank you');}
+      catch(err){e.currentTarget.disabled=false;msg.textContent='Not saved — '+(err.message||err)+'. Try again when online.';}
+    }},'Accept'));
+    w.appendChild(btn({className:'btn-ghost',style:{width:'100%'},onClick:closeModal},'Later'));
+    return w;
+  });
 }
 
 // ─── New accounts (v71) ───────────────────────────────────────────────────────
@@ -1705,11 +1755,16 @@ function renderStartModal(){
     w.appendChild(label('Currency'));w.appendChild(cur);
     if(!signedIn)w.appendChild(div({style:{fontSize:11.5,color:'var(--muted)',lineHeight:1.45}},
       'Keep this email and password. If you add StayLog to your Home Screen, open it from there and sign in with them (⋯ → Cloud sync).'));
-    w.appendChild(div({style:{fontSize:12.5,color:'var(--danger)',minHeight:18}},sn.err||''));
+    const [acceptR,acceptCb]=acceptRow('data-start-accept');
+    w.appendChild(acceptR);
+    const startMsg=div({style:{fontSize:12.5,color:'var(--danger)',minHeight:18}},sn.err||'');
+    w.appendChild(startMsg);
     w.appendChild(btn({className:'btn-primary','data-start-go':'1',style:{width:'100%',minHeight:46},disabled:sn.busy,onClick:async()=>{
+      // said in place: a redraw would empty what they typed
+      if(!acceptCb.checked){startMsg.textContent='Please read and accept the Terms of Service and Privacy Policy.';return;}
       sn.busy=true;sn.err='';render();
       try{
-        const body={action:'owner-accept',code:startCode,name:name.value.trim(),business:biz.value.trim(),account_code:code.value.trim(),
+        const body={action:'owner-accept',accepted:true,code:startCode,name:name.value.trim(),business:biz.value.trim(),account_code:code.value.trim(),
           time_zone:tz.value,currency:cur.value,...(signedIn?{}:{email:email.value.trim(),password:pass.value})};
         const r=await Y.joinCall(body);
         if(!signedIn)await C.signIn(email.value.trim(),pass.value);
@@ -5937,6 +5992,11 @@ function render(){
   if(!state._loading&&state.tab&&!tabAllowed(state.tab==='calendar'?'bookings':state.tab))state.tab='dashboard';
   if(state.loggedIn&&joinCode&&!state.modal)state.modal='join';
   if(state.loggedIn&&startCode&&!state.modal)state.modal='start';
+  // v73: Terms / Privacy not yet accepted in their current version: ask once per open.
+  if(state.loggedIn&&!state.modal&&!legalAsked&&stayActive()){
+    const Y=window.StayLogSync;
+    if(Y.legalPending&&Y.legalPending().length){legalAsked=true;state.modal='legalAccept';}
+  }
   const app=document.getElementById('app');
   if(state._loading){
     app.innerHTML='';
@@ -5988,6 +6048,8 @@ function render(){
   else if(state.modal==='team')     {currentModal=renderTeamModal();      document.body.appendChild(currentModal);}
   else if(state.modal==='join')     {currentModal=renderJoinModal();      document.body.appendChild(currentModal);}
   else if(state.modal==='start')    {currentModal=renderStartModal();     document.body.appendChild(currentModal);}
+  else if(state.modal==='legal')    {currentModal=renderLegalModal();     document.body.appendChild(currentModal);}
+  else if(state.modal==='legalAccept'){currentModal=renderLegalAcceptModal();document.body.appendChild(currentModal);}
   else if(state.modal==='account')  {currentModal=renderAccountModal();   document.body.appendChild(currentModal);}
   else if(state.modal==='owners')   {currentModal=renderOwnerInvitesModal();document.body.appendChild(currentModal);}
   else if(state.modal==='inbox')    {currentModal=renderInboxModal();     document.body.appendChild(currentModal);}

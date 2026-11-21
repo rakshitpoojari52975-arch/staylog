@@ -39,6 +39,8 @@ const STUB = (o) => `(function(){window.__calls=[];window.__tries=[];
     rpc:async(n,args)=>{window.__calls.push([n,args||null]);
       if(n==='staff_calendar')return{data:[],error:null};
       if(n==='staff_standing')return{data:window.__o.standing,error:null};
+      if(n==='staff_notice')return window.__o.notice?{data:window.__o.notice,error:null}:{data:null,error:{message:'function public.staff_notice() does not exist'}};
+      if(n==='staff_ack_notice'){window.__o.notice={...window.__o.notice,acknowledged:true};return{data:{ok:args.p_version===window.__o.notice.version,version:window.__o.notice.version},error:null};}
       if(n==='staff_profile')return window.__o.noProfile?{data:null,error:{message:'function public.staff_profile() does not exist'}}:{data:window.__o.profile,error:null};
       return{data:{ok:true},error:null};}})};})();`;
 
@@ -63,7 +65,7 @@ const STUB = (o) => `(function(){window.__calls=[];window.__tries=[];
   console.log('\n— nothing written in the page —');
   { const src = fs.readFileSync(path.join(ROOT, 'staff.js'), 'utf8') + fs.readFileSync(path.join(ROOT, 'staff.html'), 'utf8');
     ok('no business, owner or staff name in staff.js / staff.html', !/Raaya|Rakshit|Laxmi|Lakshmi/.test(src), (src.match(/Raaya|Rakshit|Laxmi|Lakshmi/g) || []));
-    ok('the page version moved', /PAGE_VERSION = 'v12/.test(src)); }
+    ok('the page version moved', /PAGE_VERSION = 'v13/.test(src)); }
 
   console.log('\n— signing in —');
   { const { ctx, page, errs } = await open();
@@ -137,6 +139,29 @@ const STUB = (o) => `(function(){window.__calls=[];window.__tries=[];
     await page.waitForTimeout(300);
     const t = await page.locator('body').innerText();
     ok('no staff_profile yet: the page still works, in plain words', /I came in today/.test(t) && /Your workplace/.test(t) && errs.length === 0, errs);
+    await ctx.close(); }
+
+  console.log('\n— the one-time notice (v13) —');
+  { const { ctx, page, errs } = await open({ session: 'u-new', notice: { version: '2026-11-21', acknowledged: false } });
+    await page.waitForTimeout(300);
+    const t = await page.locator('[data-staff-notice]').innerText().catch(() => '');
+    ok('first sign-in: the notice comes before her page, naming the business and the owner', /Before you start/.test(t) && /Raaya Vasyam/.test(t)
+      && /Rakshit and the managers Rakshit allows to manage staff/.test(t) && await page.locator('[data-attendance], [data-wage]').count() === 0, t.slice(0, 300));
+    ok('…it says what is kept: attendance, wages, loan', /I came in today/.test(t) && /wages/.test(t) && /loan/i.test(t));
+    await page.click('[data-staff-notice-ok]'); await page.waitForTimeout(300);
+    const calls = await page.evaluate(() => window.__calls.filter(c => c[0] === 'staff_ack_notice'));
+    ok('I understand: her acknowledgement of this version is recorded', calls.length === 1 && calls[0][1].p_version === '2026-11-21', calls);
+    ok('…and her page shows', await page.locator('[data-staff-notice]').count() === 0 && /I came in today/.test(await page.locator('body').innerText()));
+    ok('no page errors', errs.length === 0, errs);
+    await ctx.close(); }
+  { const { ctx, page } = await open({ session: 'u-new', notice: { version: '2026-11-21', acknowledged: true } });
+    await page.waitForTimeout(300);
+    ok('already acknowledged (as the server says): not shown again', await page.locator('[data-staff-notice]').count() === 0);
+    await ctx.close(); }
+  { const { ctx, page } = await open({ session: 'u-new' });
+    await page.waitForTimeout(300);
+    ok('before 11-legal.sql (no notice function): no notice, the page works', await page.locator('[data-staff-notice]').count() === 0
+      && /I came in today/.test(await page.locator('body').innerText()));
     await ctx.close(); }
 
   await br.close(); srv.close();

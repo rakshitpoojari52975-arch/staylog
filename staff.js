@@ -17,7 +17,7 @@ const CFG = window.STAYLOG_CLOUD || {};
 const STAFF_DOMAIN = 'staff.staylog.invalid';
 const CODE_KEY = 'staylog_staff_code', PROP_KEY = 'staylog_staff_prop';
 const OLD_CACHE_KEY = 'rv_staff_cache';
-const PAGE_VERSION = 'v12 · 15 Nov 2026';
+const PAGE_VERSION = 'v13 · 21 Nov 2026';
 
 const MONTH_SHORT = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 const DAYS = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
@@ -83,15 +83,16 @@ const myProps = () => Array.isArray(prof().properties) ? prof().properties : [];
 // ── Data ─────────────────────────────────────────────────────────────────────
 async function fetchView() {
   const c = client();
-  const [cal, standing, profile] = await Promise.all([
+  const [cal, standing, profile, notice] = await Promise.all([
     c.rpc('staff_calendar'),
     c.rpc('staff_standing'),
     c.rpc('staff_profile'),          // v64; before 07-staff.sql it is not there, and the page says less
+    c.rpc('staff_notice'),           // v13; before 11-legal.sql it is not there, and no notice is shown
   ]);
   if (cal.error) throw cal.error;
   if (standing.error) throw standing.error;
   const v = { calendar: cal.data || [], standing: standing.data || null, profile: profile.error ? null : (profile.data || null),
-    at: new Date().toISOString() };
+    notice: notice && !notice.error ? (notice.data || null) : null, at: new Date().toISOString() };
   if (v.profile && v.profile.business) document.title = v.profile.business + ' — Staff';
   cacheSet(v);
   return v;
@@ -542,10 +543,45 @@ function staysList() {
 }
 
 // ── Screen ───────────────────────────────────────────────────────────────────
+// ── The one-time notice (v13) ────────────────────────────────────────────────
+// What is kept about her, who sees it, and whom to ask: shown the first time
+// she signs in (and again when the notice changes), until she acknowledges it.
+// Her employer is the one who decides how this is used (the data fiduciary).
+function renderNotice(app) {
+  const n = view.notice, who = ownerName(), biz = business();
+  const li = t => h('li', {style:{marginBottom:6}}, t);
+  const card = div({className:'card','data-staff-notice':'1',style:{padding:'18px 16px',lineHeight:1.6}},
+    div({className:'display',style:{fontSize:20,marginBottom:6}}, 'Before you start'),
+    div({style:{fontSize:14}}, `This page is from ${biz}. It shows your schedule, your wages and any loan. Here is what is kept about you, and who sees it.`),
+    div({style:{fontSize:13.5,fontWeight:700,marginTop:12}}, 'What is kept'),
+    h('ul',{style:{fontSize:13.5,paddingLeft:20,margin:'6px 0'}},
+      li('Your name, your login and, if given, your phone number.'),
+      li('The days you mark "I came in today" and "I cleaned the utensils today", with the time.'),
+      li('Your wage rates, the wages worked out from your days, and which have been paid.'),
+      li('Any loan and its repayments.')),
+    div({style:{fontSize:13.5,fontWeight:700,marginTop:10}}, 'Who sees it'),
+    div({style:{fontSize:13.5}}, `${who.charAt(0).toUpperCase() + who.slice(1)} and the managers ${who === 'the owner' ? 'they allow' : who + ' allows'} to manage staff. It is stored securely by StayLog, the app ${biz} uses, and is not shared with anyone else. Guests never see it.`),
+    div({style:{fontSize:13.5,fontWeight:700,marginTop:10}}, 'How long'),
+    div({style:{fontSize:13.5}}, `While you work here. After you leave, your details are removed after the period ${biz} keeps records for; the wage and loan amounts stay in their accounts.`),
+    div({style:{fontSize:13.5,fontWeight:700,marginTop:10}}, 'Questions or corrections'),
+    div({style:{fontSize:13.5}}, `Ask ${who}. You can also write to StayLog's grievance contact: `,
+      h('a',{href:'contact.html',target:'_blank',rel:'noopener'}, 'contact page'), '.'),
+    h('button',{className:'btn-primary','data-staff-notice-ok':'1',style:{width:'100%',minHeight:48,marginTop:16},onClick:async e=>{
+      e.currentTarget.disabled = true;
+      const { data, error } = await client().rpc('staff_ack_notice', { p_version: n.version });
+      if (error || !data || !data.ok) { e.currentTarget.disabled = false;
+        alert(error && isNetwork(error) ? 'No internet just now. Try again in a while.' : 'Could not save that. Tap Refresh and try again.'); return; }
+      view.notice = { ...n, acknowledged: true }; cacheSet(view); render();
+    }}, 'I understand'));
+  const wrap = div({style:{padding:'calc(var(--safe-top, 0px) + 14px) 12px 60px'}}, card);
+  app.appendChild(wrap);
+}
+
 function render() {
   const app = document.getElementById('app');
   if (!session) { renderLogin(); return; }
   app.innerHTML = '';
+  if (view && view.notice && view.notice.version && !view.notice.acknowledged) { renderNotice(app); return; }
 
   const st = view && view.standing;
   const wrap = div({style:{padding:'calc(var(--safe-top, 0px) + 14px) 12px 60px',display:'flex',flexDirection:'column',gap:11}});
