@@ -1,5 +1,8 @@
 # Where StayLog's data is stored
 
+**Checked 21 Nov 2026: the project is in Mumbai (South Asia, `ap-south-1`).**
+The move plan below is not needed; it stays here for reference.
+
 ## Check (2 minutes)
 
 Supabase Dashboard → your project → **Project Settings → General**: the

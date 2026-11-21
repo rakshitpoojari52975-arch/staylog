@@ -39,6 +39,8 @@ const STUB = (o) => `(function(){window.__calls=[];window.__tries=[];
     rpc:async(n,args)=>{window.__calls.push([n,args||null]);
       if(n==='staff_calendar')return{data:[],error:null};
       if(n==='staff_standing')return{data:window.__o.standing,error:null};
+      if(n==='staff_paused')return window.__o.paused===undefined?{data:null,error:{message:'function public.staff_paused() does not exist'}}:{data:window.__o.paused,error:null};
+      if((n==='staff_mark_today'||n==='staff_mark_today_at')&&window.__o.paused)return{data:{ok:false,reason:'paused',message:"Paused by your employer's account."},error:null};
       if(n==='staff_notice')return window.__o.notice?{data:window.__o.notice,error:null}:{data:null,error:{message:'function public.staff_notice() does not exist'}};
       if(n==='staff_ack_notice'){window.__o.notice={...window.__o.notice,acknowledged:true};return{data:{ok:args.p_version===window.__o.notice.version,version:window.__o.notice.version},error:null};}
       if(n==='staff_profile')return window.__o.noProfile?{data:null,error:{message:'function public.staff_profile() does not exist'}}:{data:window.__o.profile,error:null};
@@ -65,7 +67,7 @@ const STUB = (o) => `(function(){window.__calls=[];window.__tries=[];
   console.log('\n— nothing written in the page —');
   { const src = fs.readFileSync(path.join(ROOT, 'staff.js'), 'utf8') + fs.readFileSync(path.join(ROOT, 'staff.html'), 'utf8');
     ok('no business, owner or staff name in staff.js / staff.html', !/Raaya|Rakshit|Laxmi|Lakshmi/.test(src), (src.match(/Raaya|Rakshit|Laxmi|Lakshmi/g) || []));
-    ok('the page version moved', /PAGE_VERSION = 'v13/.test(src)); }
+    ok('the page version moved', /PAGE_VERSION = 'v14/.test(src)); }
 
   console.log('\n— signing in —');
   { const { ctx, page, errs } = await open();
@@ -162,6 +164,21 @@ const STUB = (o) => `(function(){window.__calls=[];window.__tries=[];
     await page.waitForTimeout(300);
     ok('before 11-legal.sql (no notice function): no notice, the page works', await page.locator('[data-staff-notice]').count() === 0
       && /I came in today/.test(await page.locator('body').innerText()));
+    await ctx.close(); }
+
+  console.log('\n— her employer\'s account is read-only (v14) —');
+  { const { ctx, page, errs, dialogs } = await open({ session: 'u-new', paused: true });
+    await page.waitForTimeout(300);
+    const t = await page.locator('[data-paused]').innerText().catch(() => '');
+    ok('"Paused by your employer\'s account", and she still sees her days, wages and loan', /Paused by your employer/.test(t) && /still see your days, wages and loan/.test(t), t);
+    ok('"I came in today" is off', await page.locator('button:has-text("I came in today")').isDisabled());
+    await page.evaluate(() => { lsSet(PROP_KEY, myProps()[0].id); return markToday(true); }); await page.waitForTimeout(300);
+    ok('…and if it is tried anyway, the server\'s refusal is said in the same words', dialogs.some(d => /Paused by your employer/.test(d)), dialogs);
+    ok('no page errors', errs.length === 0, errs);
+    await ctx.close(); }
+  { const { ctx, page } = await open({ session: 'u-new', paused: false });
+    await page.waitForTimeout(300);
+    ok('not paused: no notice, marking on', await page.locator('[data-paused]').count() === 0 && !(await page.locator('button:has-text("I came in today")').isDisabled()));
     await ctx.close(); }
 
   await br.close(); srv.close();

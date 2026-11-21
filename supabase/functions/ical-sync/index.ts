@@ -284,6 +284,7 @@ function db(env: Env, fetchImpl: Fetch) {
     insertNew: (table: string, rows: unknown[], onConflict: string) =>
       call('POST', `${table}?on_conflict=${onConflict}`, rows, { Prefer: 'resolution=ignore-duplicates,return=minimal' }),
     patchRows: (path: string, body: unknown) => call('PATCH', path, body, { Prefer: 'return=representation' }),
+    rpc: (name: string, body: unknown) => call('POST', `rpc/${name}`, body),
   };
   return d;
 }
@@ -533,6 +534,20 @@ async function runStay(who: { all: true } | { owner: string }, d: ReturnType<typ
     accounts = [...new Set((await d.get('ical_feeds?select=account_id') || []).map((f: { account_id: string }) => f.account_id))] as string[];
   }
   if (!accounts.length) return { ok: true, at: now, feeds: [], accounts: [] };
+  // v74: an account that cannot be written (its trial or plan has ended) is
+  // skipped: Postgres would refuse its bookings anyway. Before 12-plans.sql
+  // there is no such function, and every account is read.
+  const skipped: { account: string; reason: string }[] = [];
+  try {
+    const rows: { account_id: string; can_write: boolean }[] = await d.rpc('accounts_can_write', { p_accounts: accounts }) || [];
+    const off = new Set(rows.filter(x => x.can_write === false).map(x => x.account_id));
+    for (const a of accounts.filter(x => off.has(x))) {
+      skipped.push({ account: a, reason: 'read_only' });
+      console.log(`ical-sync: account ${a} skipped — read-only (trial or plan ended)`);
+    }
+    accounts = accounts.filter(x => !off.has(x));
+  } catch { /* 12-plans.sql not run yet */ }
+  if (!accounts.length) return { ok: true, at: now, feeds: [], accounts: [], skipped };
   // The run record per account (made if missing; the function alone writes it).
   // Without it (09-calendar.sql not run yet) the import still runs, but
   // nothing is announced (every stored event would look new) or held back.
@@ -552,7 +567,7 @@ async function runStay(who: { all: true } | { owner: string }, d: ReturnType<typ
     }
     accounts = free;
   }
-  if (!accounts.length) return { ok: true, at: now, feeds: [], accounts: [], throttled };
+  if (!accounts.length) return { ok: true, at: now, feeds: [], accounts: [], throttled, ...(skipped.length ? { skipped } : {}) };
   const inList = `in.(${accounts.join(',')})`;
   const all: Feed[] = (await d.get(`ical_feeds?account_id=${inList}&select=id,account_id,property_id,platform,url,last_ok_at,last_fetched_at`) || [])
     .map((f: Record<string, string>) => ({ ...f, owner_id: f.account_id }) as unknown as Feed);
@@ -579,7 +594,7 @@ async function runStay(who: { all: true } | { owner: string }, d: ReturnType<typ
     if (runs) await d.patch(`ical_runs?account_id=eq.${a}`, { last_run_at: now, result, updated_at: now }).catch(() => {});
     results.push({ account: a, ...result });
   }
-  return { ok: true, at: now, feeds: reports, accounts: results, ...(throttled.length ? { throttled } : {}) };
+  return { ok: true, at: now, feeds: reports, accounts: results, ...(throttled.length ? { throttled } : {}), ...(skipped.length ? { skipped } : {}) };
 }
 
 // ── The handler ──────────────────────────────────────────────────────────────

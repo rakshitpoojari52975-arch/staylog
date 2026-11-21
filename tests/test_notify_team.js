@@ -193,6 +193,29 @@ const post = (body, headers = {}) => new Request('https://proj.supabase.co/funct
     const r = await daily(W, Date.parse('2026-10-20T13:00:00Z'));
     ok('one account failing stops no other', r.failed && r.failed.length === 1 && r.failed[0].account === ACC && (await got(W, otherPhone)).some(m => /arriving/.test(m.title)), r); }
 
+  console.log('\n— trials and read-only accounts (v74) —');
+  { const W = world(base({ bookings: [B({ id: 'in1', check_in: '2026-10-21', check_out: '2026-10-23' }),
+      B({ id: 'ny1', account_id: ACC2, property_id: 'q1', check_in: '2026-10-21', check_out: '2026-10-22' })] }));
+    // ACC: a trial ending tomorrow (India); ACC2: read-only (its plan has ended), as 12-plans.sql says
+    Object.assign(W.stay.accounts[0], { plan: 'trial', status: 'trialing', trial_ends_at: '2026-10-21T12:00:00Z' });
+    const real = W.fetch;
+    W.fetch = (url, init) => /\/rest\/v1\/rpc\/accounts_can_write/.test(url)
+      ? Promise.resolve(new Response(JSON.stringify(JSON.parse(init.body).p_accounts.map(a => ({ account_id: a, can_write: a !== ACC2 }))), { status: 200 }))
+      : real(url, init);
+    const logs = []; const cl = console.log; console.log = (...a) => logs.push(a.join(' '));
+    let r; try { r = await daily(W, Date.parse('2026-10-20T13:00:00Z')); } finally { console.log = cl; }
+    ok('a read-only account gets no reminders; the reason is logged and in the answer', (await got(W, otherPhone)).length === 0
+      && r.skipped && r.skipped[0].account === ACC2 && logs.some(l => /skipped — read-only/.test(l)), { skipped: r.skipped });
+    const own = await titles(W, iphone), mgr = await titles(W, mgrPhone);
+    ok('day 6 of the trial: "Your free trial ends tomorrow", to the owner', own.some(t => /^Your free trial ends tomorrow \| Subscribe in Account settings/.test(t)), own);
+    ok('…not to a manager', !mgr.some(t => /free trial/.test(t)), mgr);
+    const n = W.pushes.length; await daily(W, Date.parse('2026-10-20T14:00:00Z'));
+    ok('…once', W.pushes.length === n);
+    ok('it opens Account settings', (await got(W, iphone)).some(m => m.title === 'Your free trial ends tomorrow' && /#open=account/.test(m.url))); }
+  { const W = world(base({ bookings: [B({ id: 'in1', check_in: '2026-10-21', check_out: '2026-10-23' })] }));
+    await daily(W);
+    ok('before 12-plans.sql (no plan columns, no function): every account gets its reminders as before', (await got(W, iphone)).some(m => /arriving/.test(m.title))); }
+
   console.log('\n— Send test —');
   { const W = world(base());
     let r = await (await F.handle(post({ job: 'test', endpoint: ipad.row.endpoint }, { authorization: 'Bearer tok-owner' }), ENV, W.fetch, NOW)).json();

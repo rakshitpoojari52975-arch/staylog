@@ -56,7 +56,7 @@ ok('set up', !r.err, r.err);
 console.log('\n— the script —');
 r = load('11-legal.sql'); ok('11-legal.sql runs', !r.err, r.err);
 r = load('11-legal.sql'); ok('runs twice', !r.err, r.err);
-const check = psql(DB, ['-F', '|', '-f', F('check.sql')]).out.trim().split('\n').filter(Boolean).filter(l => !/^old table|^platform admin/.test(l));
+const check = psql(DB, ['-F', '|', '-f', F('check.sql')]).out.trim().split('\n').filter(Boolean).filter(l => !/^old table|^platform admin|12-plans|plan of the account/.test(l));
 ok('check.sql: every row about the new schema ok, the legal row among them', check.every(l => /\|ok/.test(l)) && check.some(l => /11-legal/.test(l)), check.filter(l => !/\|ok/.test(l)));
 ok('the versions in force', v(`select string_agg(document || '=' || version, ',' order by document) from stay.legal_versions`)
   === 'privacy=2026-11-21,refund=2026-11-21,staff_notice=2026-11-21,terms=2026-11-21');

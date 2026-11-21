@@ -99,8 +99,10 @@ $$;
 create or replace function stay.is_member(p_account uuid) returns boolean
 language sql security definer set search_path = stay, pg_temp stable as $$ select stay.role_in(p_account) is not null $$;
 
+-- false, never null, for someone who is not a member (a null here once let
+-- non-members past "if not stay.is_owner(...)": found in v74)
 create or replace function stay.is_owner(p_account uuid) returns boolean
-language sql security definer set search_path = stay, pg_temp stable as $$ select stay.role_in(p_account) = 'owner' $$;
+language sql security definer set search_path = stay, pg_temp stable as $$ select coalesce(stay.role_in(p_account) = 'owner', false) $$;
 
 -- Does this login hold the property? An owner holds every one; a manager the
 -- ones assigned to them.

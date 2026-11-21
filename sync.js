@@ -409,6 +409,9 @@
     // v73: the Terms and Privacy Policy versions this login has not accepted
     // (11-legal.sql; before it has run, nothing is asked).
     try { const lp = await rpc('legal_pending', {}); S.legalPending = Array.isArray(lp) ? lp : []; } catch {}
+    // v74: the plan and whether this account can be written (12-plans.sql;
+    // Postgres decides, this is only for the app to show it). Kept offline.
+    try { const ps = await rpc('account_state', { p_account: account }); if (ps) S.plan = ps; } catch {}
   }
 
   async function pull(account, touched) {
@@ -580,7 +583,9 @@
         await heldMarks(m.account);
         await myAccess(m.account);
         await drainIcal(m.account);
-        await push(m.account, opts.manual, touched);
+        // v74: a read-only account sends nothing (Postgres would refuse it);
+        // anything changed here waits, shown as not saved, until it can.
+        if (!(S.plan && S.plan.can_write === false)) await push(m.account, opts.manual, touched);
         await stampEvents(m.account);
         S.lastError = '';
       } catch (e) {
@@ -812,6 +817,20 @@
       await loadState(); S.legalPending = Array.isArray(left) ? left : []; await persist(); changed();
       return S.legalPending;
     },
+    // v74: rule B — which properties stay active (owner)
+    async chooseActive(ids) {
+      const m = model(); if (!m) throw new Error('Not switched over yet');
+      const st = await rpc('choose_active_properties', { p_account: m.account, p_active: ids });
+      await loadState(); S.plan = st; await persist(); changed();
+      return st;
+    },
+    // v74: the platform admin's screen (no guest data)
+    admin: {
+      accounts: () => rpc('admin_accounts', {}),
+      extendTrial: (account, days) => rpc('admin_extend_trial', { p_account: account, p_days: days }),
+      setPlan: (account, plan) => rpc('admin_set_plan', { p_account: account, p_plan: plan }),
+      cancel: account => rpc('admin_cancel', { p_account: account }),
+    },
     async setOwnerName(name) {
       const m = model(); if (!m) return;
       const db = await stay();
@@ -821,6 +840,8 @@
     switchAccount(account) { const m = model(); if (!m) return; this.activate(m.user, account); },
     // the account's settings (v71), light: read on every render
     settings: () => (S && S.settings) || null,
+    // v74: the plan state (null before 12-plans.sql, or in the old model)
+    plan: () => (S && S.plan) || null,
     // v73: light, read on every render
     legalPending: () => (S && !S.platformAdmin && S.legalPending) || [],
     events: () => (S && S.events) || [],

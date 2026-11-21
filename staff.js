@@ -17,7 +17,7 @@ const CFG = window.STAYLOG_CLOUD || {};
 const STAFF_DOMAIN = 'staff.staylog.invalid';
 const CODE_KEY = 'staylog_staff_code', PROP_KEY = 'staylog_staff_prop';
 const OLD_CACHE_KEY = 'rv_staff_cache';
-const PAGE_VERSION = 'v13 · 21 Nov 2026';
+const PAGE_VERSION = 'v14 · 21 Nov 2026';
 
 const MONTH_SHORT = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 const DAYS = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
@@ -83,16 +83,18 @@ const myProps = () => Array.isArray(prof().properties) ? prof().properties : [];
 // ── Data ─────────────────────────────────────────────────────────────────────
 async function fetchView() {
   const c = client();
-  const [cal, standing, profile, notice] = await Promise.all([
+  const [cal, standing, profile, notice, paused] = await Promise.all([
     c.rpc('staff_calendar'),
     c.rpc('staff_standing'),
     c.rpc('staff_profile'),          // v64; before 07-staff.sql it is not there, and the page says less
     c.rpc('staff_notice'),           // v13; before 11-legal.sql it is not there, and no notice is shown
+    c.rpc('staff_paused'),           // v14; true when her employer's account is read-only (12-plans.sql)
   ]);
   if (cal.error) throw cal.error;
   if (standing.error) throw standing.error;
   const v = { calendar: cal.data || [], standing: standing.data || null, profile: profile.error ? null : (profile.data || null),
-    notice: notice && !notice.error ? (notice.data || null) : null, at: new Date().toISOString() };
+    notice: notice && !notice.error ? (notice.data || null) : null,
+    paused: !!(paused && !paused.error && paused.data === true), at: new Date().toISOString() };
   if (v.profile && v.profile.business) document.title = v.profile.business + ' — Staff';
   cacheSet(v);
   return v;
@@ -177,6 +179,7 @@ let detailOpen = false;
 let marking = false;
 
 const pickedProp = () => { const v = lsGet(PROP_KEY); return myProps().some(p => p.id === v) ? v : ''; };
+const PAUSED_TEXT = 'Paused by your employer\u2019s account. You can still see your days, wages and loan; marking is off until they renew.';
 async function markToday(on) {
   if (marking) return;
   marking = true; render();
@@ -190,7 +193,8 @@ async function markToday(on) {
     if (error) throw error;
     if (data && data.ok === false) {
       alert(
-        data.reason === 'too_late'
+        data.reason === 'paused' ? PAUSED_TEXT
+        : data.reason === 'too_late'
           ? 'Today\u2019s mark can only be removed within 15 minutes of making it. '
             + `Please tell ${ownerName()} if it needs changing.`
         : data.reason === 'already_counted'
@@ -218,7 +222,8 @@ async function markUtensils(on) {
     if (error) throw error;
     if (data && data.ok === false) {
       alert(
-        data.reason === 'not_present'
+        data.reason === 'paused' ? PAUSED_TEXT
+        : data.reason === 'not_present'
           ? 'Please mark yourself present first (I came in today).'
         : data.reason === 'too_late'
           ? 'This can only be removed within 15 minutes of marking it. '
@@ -246,7 +251,7 @@ function utensilsBlock(st) {
       wrap.appendChild(div({style:{fontSize:12,color:'var(--text-mid)',marginBottom:8,textAlign:'center'}},
         'Today\u2019s utensil cleaning was removed. Mark it again if that was a mistake.'));
     wrap.appendChild(h('button',{className:'btn-quiet','data-ute-btn':'1',
-      disabled: markingUtensils || !u.available,
+      disabled: markingUtensils || !u.available || !!(view && view.paused),
       style:{opacity:u.available?1:.55},
       onClick:()=>markUtensils(true)}, markingUtensils ? 'Saving…' : 'I cleaned the utensils today'));
     wrap.appendChild(hint);
@@ -262,7 +267,7 @@ function utensilsBlock(st) {
       div({style:{fontSize:12,color:'var(--muted)',marginTop:1}},
         at ? 'at ' + at.toLocaleTimeString('en-IN',{hour:'numeric',minute:'2-digit'}) : 'today')),
     u.can_undo === true
-      ? h('button',{className:'btn-quiet','data-ute-undo':'1',disabled:markingUtensils,
+      ? h('button',{className:'btn-quiet','data-ute-undo':'1',disabled:markingUtensils||!!(view&&view.paused),
           style:{width:'auto',minHeight:36,padding:'8px 14px',fontSize:12.5},
           onClick:()=>{ if(confirm('Remove today\u2019s utensil cleaning? You can only do this '
             + 'within 15 minutes of marking.')) markUtensils(false); }},
@@ -299,7 +304,7 @@ function attendanceCard(st) {
       sel.addEventListener('change', e => lsSet(PROP_KEY, e.target.value));
       card.appendChild(sel);
     }
-    card.appendChild(h('button',{className:'btn',disabled:marking,style:{marginTop:11},
+    card.appendChild(h('button',{className:'btn',disabled:marking||!!(view&&view.paused),style:{marginTop:11},
       onClick:()=>markToday(true)}, marking ? 'Saving…' : 'I came in today'));
     const ub = utensilsBlock(st); if (ub) card.appendChild(ub);
     if (a.this_month)
@@ -329,7 +334,7 @@ function attendanceCard(st) {
     // would quietly restore the behaviour this replaces, so it must be
     // explicitly true.
     a.can_undo === true
-      ? h('button',{className:'btn-quiet',disabled:marking,
+      ? h('button',{className:'btn-quiet',disabled:marking||!!(view&&view.paused),
           style:{width:'auto',minHeight:36,padding:'8px 14px',fontSize:12.5},
           onClick:()=>{ if(confirm('Remove today\u2019s mark? You can only do this '
             + 'within 15 minutes of marking.')) markToday(false); }},
@@ -567,9 +572,9 @@ function renderNotice(app) {
     div({style:{fontSize:13.5}}, `Ask ${who}. You can also write to StayLog's grievance contact: `,
       h('a',{href:'contact.html',target:'_blank',rel:'noopener'}, 'contact page'), '.'),
     h('button',{className:'btn-primary','data-staff-notice-ok':'1',style:{width:'100%',minHeight:48,marginTop:16},onClick:async e=>{
-      e.currentTarget.disabled = true;
+      const b = e.currentTarget; b.disabled = true;     // kept: after an await, currentTarget is gone
       const { data, error } = await client().rpc('staff_ack_notice', { p_version: n.version });
-      if (error || !data || !data.ok) { e.currentTarget.disabled = false;
+      if (error || !data || !data.ok) { b.disabled = false;
         alert(error && isNetwork(error) ? 'No internet just now. Try again in a while.' : 'Could not save that. Tap Refresh and try again.'); return; }
       view.notice = { ...n, acknowledged: true }; cacheSet(view); render();
     }}, 'I understand'));
@@ -605,6 +610,10 @@ function render() {
       color:'var(--muted)',fontSize:13.5,lineHeight:1.6}},
       `Nothing is shared with this account yet. Ask ${ownerName()} to check your access.`));
 
+  // v14: her employer's account is read-only — say so, and marking is off
+  if (view && view.paused)
+    wrap.appendChild(div({className:'card','data-paused':'1',style:{padding:'13px 15px',fontSize:13.5,lineHeight:1.55,
+      background:'var(--gold-light)',border:'1px solid var(--gold-line)'}}, PAUSED_TEXT));
   if (st) {
     wrap.appendChild(attendanceCard(st));
     wrap.appendChild(wageCard(st));

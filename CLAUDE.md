@@ -413,7 +413,10 @@ Rakshit's spec (21 Nov 2026, "Add a 7-day free trial and paid subscriptions
   a native app); **web app only** (no store apps until a native app, with
   in-app purchase then); **Raaya Vasyam is excluded from retention**;
   expired-account deletion is **listed for his hold** (7 days ahead) for the
-  first year, not automatic; trial properties and the downgrade rule: open.
+  first year, not automatic; **the trial allows 5 properties**; a smaller plan
+  follows **rule B** (the owner picks which properties stay active; the rest
+  are read-only — visible and exportable — until they upgrade). The Supabase
+  project is in **Mumbai** (`ap-south-1`, checked 21 Nov 2026).
 - **Stages, one PR each:** 1 legal pages (v73) · 2 plans, trial, read-only
   enforcement, admin screen, export (v74) · 3 billing with Razorpay (v75) ·
   4 minimisation, encryption, audit, support access (v76) · 5 retention,
@@ -468,6 +471,93 @@ Rakshit's spec (21 Nov 2026, "Add a 7-day free trial and paid subscriptions
 - `docs/breach-runbook.md` (detect, contain — rotating every secret, assess,
   notify owners and the Board within 72 hours with an email template, recover)
   and `docs/region.md` (how to read the region; a move plan to Mumbai, not run).
+
+### Stage 2 — v74 (plans, the trial, read-only accounts)
+- **`supabase/stay/12-plans.sql`** (after 11). `accounts` gains `plan`
+  (trial / starter / pro / owner), `status` (trialing / active / past_due /
+  expired / cancelled), `trial_started_at`, `trial_ends_at`,
+  `current_period_end`, `grace_ends_at`, `razorpay_customer_id`,
+  `razorpay_subscription_id`, `properties_allowed`, `inactive_since` — none
+  settable from the app (03's column grant on accounts is unchanged). First
+  run: the moved-in account (`migrated_from` set) → plan **owner**, unlimited;
+  any other → a 7-day trial with 5 properties. A trigger
+  (`account_defaults`) gives every new account its trial, and makes any
+  account plan owner the moment it is moved in. `properties.paused` (rule B).
+- **`stay.account_can_write(acct)`** — the one rule: plan owner; or trialing
+  and before `trial_ends_at`; or active and before `current_period_end`; or
+  past_due and before `grace_ends_at`. `property_can_write` adds "not
+  paused"; `write_refusal` gives the reason in words (trial ended / payment
+  did not go through / plan ended / property read-only).
+- **`stay.guard_write()`**, trigger `a_guard_write` (first by name, so before
+  touch) on properties, bookings, expenses, staff, loans, loan_repayments,
+  receipt_series, ical_feeds, members, member_properties, invites,
+  staff_properties, attendance, utensil_marks, staff_logins: refuses
+  insert/update/delete (SQLSTATE `SL403`, the reason as the message) when the
+  account or the row's property can't be written. **Triggers run for every
+  role, the service key included** (Supabase's service role skips
+  row-level security, not triggers), so ical-sync, team-invite and
+  staff-login are held too. Also a RESTRICTIVE policy set ("plan allows
+  writing / changing / removing") on the same tables. Allowed when
+  read-only: switching a member or a staff login off, removing a manager's
+  property, withdrawing an invite, her notice acknowledgement; the settings
+  on `accounts`; backups, devices, choices, the inbox (unguarded tables). A
+  property is never written while paused, and a new or revived one must fit
+  `properties_allowed`. Our own functions step past the guard with
+  `set_config('stay.guard','off', true)` (choose_active_properties,
+  fit_properties; later billing, retention, erasure); `stay.importing` too.
+  **Re-run 12 after any re-run of the switch-over**: it re-wraps her
+  public marking functions.
+- **Her page:** `stay.staff_paused()` / `public.staff_paused()`; her public
+  marking wrappers (after the switch-over) answer `{ok:false, reason:'paused',
+  message:"Paused by your employer's account."}`; the guard says the same if
+  the underlying function is called.
+- `stay.account_state(acct)` (members: plan, status as it truly stands —
+  "expired" once a date has passed —, can_write, reason, days_left, dates,
+  properties allowed / active / paused); `stay.accounts_can_write(ids)`
+  (service key only, for the functions); **rule B**:
+  `stay.choose_active_properties(acct, ids)` (owner; never more than
+  allowed) and `stay.fit_properties(acct)` (after a plan change: the active
+  ones and then the oldest stay active, the rest paused; a bigger plan
+  un-pauses).
+- **Platform admin** (`stay.is_platform_admin()`): `admin_accounts()` (plan,
+  status, can_write, trial end, properties, owner name, last activity — no
+  guest data), `admin_extend_trial(acct, days)`, `admin_set_plan(acct,
+  owner|starter|pro)`, `admin_cancel(acct)` (never an owner plan), each into
+  **`stay.admin_audit`** (append-only, even for the database owner).
+- **Found and fixed while building it:** `stay.is_owner()` returned null for
+  a non-member, so `if not stay.is_owner(...)` let them through —
+  `stay.team()` (phase 6) would show another account's members and emails to
+  any signed-in login. Now `coalesce(..., false)` in 02 and redefined in 12;
+  `test_team_sql.js` checks a stranger is refused.
+- `min_version` 74 (the app must know read-only). `check.sql`: the guard on
+  15 tables, and the moved-in account on plan owner.
+- **Edge Functions:** `ical-sync` and `notify` ask `accounts_can_write` and
+  skip read-only accounts, logging why (`skipped` in the answer; before 12:
+  every account). notify's new alert **`trial`** (owners): "Your free trial
+  ends tomorrow" on day 6, on the account's clock, once, opening
+  `#open=account`.
+- **App:** `planState()` (`StayLogSync.plan()`, read each sync with
+  `account_state`, kept offline), `readOnly()`, `pausedProp(id)`,
+  `writeRefusal(prop)`, `canWrite(perm, prop)` (`can()` still decides what is
+  *seen*, so a read-only owner keeps every tab). A header chip ("Trial · 5
+  days left" / "Read-only"); `planBanner()` (read-only: the reason, Export
+  everything, Account settings; the trial's last 2 days: a nudge). Read-only:
+  `mutateData` changes nothing and says why; edit forms (`EDIT_MODALS`) don't
+  open (nor for a row at a paused property); `sync.js` does not push.
+  Booking actions use `canWrite(…, b.propertyId)`; a new booking offers only
+  active properties. Account settings shows the plan (`planSection`) and
+  **Choose active properties** (`renderActivePropsModal`). **⋯ → Export
+  everything** (owner; also from the banner): behind the PIN, one JSON and a
+  CSV per table (bookings with guest details, expenses, staff, loans,
+  repayments), never ID photos, signatures or QR images; shared as files or
+  downloaded. **This reverses the old "no readable export" rule, on
+  Rakshit's instruction (21 Nov 2026)** — see Encrypted backup. **⋯ → All
+  accounts** (platform admin; `renderAdminModal`): extend trial 7 days, set
+  Starter / Pro / Comp (owner), Cancel (each confirmed). `staff.js` v14: the
+  paused banner, marking off, the server's reason in the same words.
+- Found by the tests: a button kept as `e.currentTarget` after an `await` is
+  null (the export, Choose active, the legal accept sheet and her notice did
+  this); each now keeps the button first.
 
 ### Phase 9 — v71 (onboarding new accounts)
 - **`supabase/stay/10-onboarding.sql`** (after 09): `stay.platform_invites`
@@ -695,10 +785,13 @@ also fetch from Supabase with `cache: 'no-store'` as a second layer.
 
 ## Encrypted backup (`backup.js`)
 
-- **It is the only backup. There is no plain export.** The old ⋯ menu rows
+- **It is the only backup.** The old ⋯ menu rows
   "Back up data" / "Restore from backup" (`downloadBackup`, `restoreBackup`)
   wrote and read the whole data as readable JSON — guest names, phone and ID
-  numbers, ID photos — and are gone. Do not bring a readable export back. The
+  numbers, ID photos — and are gone. **Since v74 there is one readable
+  export, on Rakshit's instruction: ⋯ → Export everything** (owner, behind
+  the PIN, never ID photos; see Stage 2) — an owner's right to their data,
+  even when read-only. It is not a backup and cannot be restored. The
   ⋯ menu has one row, **Encrypted backup** (subtitle: `bkSubtitle()`, the last
   backup time), which opens the same panel as Cloud sync → Encrypted backup
   (`openBackupPanel`); **Save backup file** there is the only file, and it is
@@ -1266,6 +1359,8 @@ also fetch from Supabase with `cache: 'no-store'` as a second layer.
     node tests/test_checkboxes.js        # v66: every checkbox keeps its tick — appearance, a tap ticks it, and it looks different ticked (pixels), light and dark
     node tests/test_move_app.js          # phase 3 in the app: Move to the new system — copy, compare (match / mismatch), switch, another phone joins, rollback
     node tests/test_notify_stay.js       # notify in the new model: by account, every owner, own devices/prefs/inbox, amounts + pays_directly_sources, marks, test push
+    node tests/test_plans_app.js         # v74 app: trial chip and banner, read-only (no forms, nothing changed or sent, all visible), rule B on bookings and the booking form, Export everything (PIN, JSON + CSVs, no ID photo), Choose active, the admin screen, Raaya Vasyam never shown any of it
+    STAYLOG_PG="…" node tests/test_plans_sql.js      # 12-plans.sql: owner plan / 7-day trial, writes refused by SQL after the trial (app role and service key), reads kept, active/past-due/grace, plan owner writes at any status and date, property limit and rule B, read-only exceptions, her page paused, admin functions + append-only audit
     node tests/test_legal_pages.js       # v73: the four pages (draft, version = SQL, contact, roles, sub-processors, processing terms, refunds), runbook, region note, links from the app
     STAYLOG_PG="…" node tests/test_legal_sql.js      # 11-legal.sql: pending / accept for one's own login, a new version asked again, the staff notice and its acknowledgement
     node tests/test_onboarding_app.js    # phase 9 app (+ v73: the tick on the Welcome sheet, the accept sheet for members, ⋯ → Terms, privacy and contact): Account settings (saved, code not sent, money and who-pays follow), Invite a new owner (platform admin), #start= sheet + code suggestion + sign-in, pasted start link, first-run guide (new accounts only, ticks, hide), managers see none

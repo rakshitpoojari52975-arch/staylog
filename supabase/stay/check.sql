@@ -79,6 +79,20 @@ checks as (
          case when to_regclass('stay.legal_acceptances') is not null and to_regprocedure('public.staff_notice()') is not null
               then 'ok' else 'not yet — run 11-legal.sql' end
   union all
+  -- 13. stage 2: plans, the trial and read-only accounts
+  select 'plans and read-only accounts (12-plans.sql)',
+         case when to_regprocedure('stay.account_can_write(uuid)') is not null
+                   and (select count(*) from pg_trigger where tgname = 'a_guard_write' and not tgisinternal) >= 15
+              then 'ok' else 'not yet — run 12-plans.sql' end
+  union all
+  select 'plan of the account moved in from the old app',
+         -- read through to_jsonb, so this row works before 12 has added the column
+         case when not exists (select 1 from stay.accounts a where to_jsonb(a) ->> 'migrated_from' is not null)
+                or not exists (select 1 from information_schema.columns where table_schema = 'stay' and table_name = 'accounts' and column_name = 'plan')
+              then 'ok (none, or 12 not run)'
+              when (select bool_and(to_jsonb(a) ->> 'plan' = 'owner') from stay.accounts a where to_jsonb(a) ->> 'migrated_from' is not null) then 'ok'
+              else 'PROBLEM: not on plan owner' end
+  union all
   -- 7. the old app's tables are still there and untouched by this phase
   select 'old table public.' || t, case when to_regclass('public.' || t) is not null then 'ok (unchanged)' else 'not found' end
   from unnest(array['properties','bookings','expenses','staff','loans','loan_repayments','attendance']) t
