@@ -106,6 +106,12 @@ checks as (
                            and (to_jsonb(a) ->> 'razorpay_subscription_id' is not null or to_jsonb(a) ->> 'plan' <> 'owner'))
               then 'PROBLEM: it has a subscription or another plan' else 'ok' end
   union all
+  -- 15. v76: her paydays on her page
+  select 'her paydays on her page (14-paid-on.sql)',
+         case when to_regprocedure('stay.staff_standing()') is not null
+                   and position('paydays' in pg_get_functiondef(to_regprocedure('stay.staff_standing()'))) > 0
+              then 'ok' else 'not yet — run 14-paid-on.sql' end
+  union all
   -- 7. the old app's tables are still there and untouched by this phase
   select 'old table public.' || t, case when to_regclass('public.' || t) is not null then 'ok (unchanged)' else 'not found' end
   from unnest(array['properties','bookings','expenses','staff','loans','loan_repayments','attendance']) t

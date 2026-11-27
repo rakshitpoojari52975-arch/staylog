@@ -6,7 +6,7 @@
 // ─── Build ────────────────────────────────────────────────────────────────────
 // Bump BOTH of these together. This date sat at 28 Sept through a dozen
 // releases and was read, reasonably, as proof the upload had not landed.
-const APP_VERSION='v75', APP_BUILT='21 Nov 2026';
+const APP_VERSION='v76', APP_BUILT='27 Nov 2026';
 // The CACHE_NAME of the sw.js released with this app.js. Every release bumps
 // APP_VERSION and CACHE_NAME together, so one is derived from the other rather
 // than being a fourth thing to forget; the tests fail if they ever disagree.
@@ -163,6 +163,14 @@ const MONTH_NAMES=['January','February','March','April','May','June','July','Aug
 const MONTH_SHORT=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 const DAY_SHORT  =['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
 const fmtDate    =s=>s?new Date(s+'T00:00:00').toLocaleDateString('en-IN',{day:'2-digit',month:'short',year:'numeric'}):'—';
+// "25 Nov", with the year only when it is not this year (paid-on dates, v76).
+const fmtDayMonth=s=>{if(!s)return '—';const d=new Date(s+'T00:00:00');
+  return d.toLocaleDateString('en-IN',d.getFullYear()===new Date().getFullYear()?{day:'numeric',month:'short'}:{day:'numeric',month:'short',year:'numeric'});};
+// A wage or utensil line: an expense paid to a staff member.
+const isWageLine=e=>!!(e&&e.staffId);
+// What the Expenses list says under the amount (v76): a paid wage names its
+// payday; one paid before v64 recorded no payday, and none is invented.
+const paidLabel=e=>!e.paid?'unpaid':!isWageLine(e)?'paid':e.paidOn?`Paid on ${fmtDayMonth(e.paidOn)}`:'Paid · date not recorded';
 const fmtDateLong=s=>s?new Date(s+'T00:00:00').toLocaleDateString('en-IN',{weekday:'long',day:'numeric',month:'long',year:'numeric'}):'—';
 // Whole rupees as they are; an amount with paise always shows two places (₹250.50).
 const moneyDigits=n=>Number(n)%1?{minimumFractionDigits:2,maximumFractionDigits:2}:{};
@@ -4746,7 +4754,7 @@ function renderExpenses(){
     ));
     row.appendChild(div({style:{textAlign:'right',flexShrink:0}},
       div({className:'num',style:{fontSize:13.5,fontWeight:700}},fmtCur(e.amount)),
-      div({style:{fontSize:10,fontWeight:700,marginTop:1,color:e.paid?'var(--muted)':'var(--warn)'}},e.paid?'paid':'unpaid')
+      div({'data-paid-label':e.id,style:{fontSize:10,fontWeight:700,marginTop:1,color:e.paid?'var(--muted)':'var(--warn)'}},paidLabel(e))
     ));
     card.appendChild(row);
 
@@ -4768,7 +4776,8 @@ function renderExpenses(){
       const acts=div({style:{display:'flex',gap:7,flexWrap:'wrap'}});
       acts.appendChild(btn({className:e.paid?'btn-ghost btn-sm':'btn-primary btn-sm',
         onClick:()=>mutateData(d=>{
-          const upd={...e,paid:!e.paid};
+          // marking paid here means paid today; unpaid clears the payday (v76)
+          const upd={...e,paid:!e.paid,paidOn:e.paid?'':today()};
           d.expenses=d.expenses.map(x=>x.id===e.id?upd:x);
           syncExpenseLoan(d,upd);
         })},ico(e.paid?'circle':'circle-check',{style:{marginRight:5,fontSize:14}}),e.paid?'Mark unpaid':'Mark as paid'));
@@ -4785,6 +4794,18 @@ function renderExpenses(){
     wrap.appendChild(card);
   });
   return wrap;
+}
+
+// Staff wages paid in a month (or a year), counted by the day they were paid
+// (paidOn), not the day worked (v76). Lines paid without a recorded payday are
+// not counted, and said so: no date is invented for them.
+function wagesPaidIn(expenses,year,month){
+  const inP=d=>{if(!d)return false;const x=new Date(d+'T00:00:00');return x.getFullYear()===year&&(month==null||x.getMonth()===month);};
+  const lines=expenses.filter(e=>isWageLine(e)&&e.paid&&inP(e.paidOn));
+  const cash=round2(lines.reduce((t,e)=>t+Number(e.amount||0),0));
+  const toLoans=round2(lines.reduce((t,e)=>t+(e.loanId?Number(e.loanDeduction||0):0),0));
+  return {lines:lines.length,cash,toLoans,settled:round2(cash+toLoans),paydays:new Set(lines.map(e=>e.paidOn)).size,
+    undated:expenses.filter(e=>isWageLine(e)&&e.paid&&!e.paidOn).length};
 }
 
 // ─── Reports Tab ──────────────────────────────────────────────────────────────
@@ -4814,6 +4835,24 @@ function renderReports(){
     summaryGrid.appendChild(div({className:'card',style:{padding:'14px'}},div({style:{fontSize:11,color:'var(--muted)',fontWeight:600,textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:6}},s.label),div({style:{fontSize:22,fontWeight:700,color:s.col}},String(s.val))));
   });
   wrap.appendChild(summaryGrid);
+  // Wages paid this month, by payday (v76). The expense totals above stay by
+  // expense date.
+  {
+    const allExp=filterProp==='all'?data.expenses:data.expenses.filter(e=>e.propertyId===filterProp);
+    const W=wagesPaidIn(allExp,yr,reportMonth?reportMonth.month:null);
+    if(W.lines||W.undated){
+      const label=reportMonth?'Wages paid this month':`Wages paid in ${yr}`;
+      const card=div({'data-wages-paid':'1',className:'card',style:{padding:'14px',marginTop:-6,marginBottom:14}},
+        div({style:{fontSize:11,color:'var(--muted)',fontWeight:600,textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:6}},label),
+        div({'data-wages-paid-amount':'1',style:{fontSize:22,fontWeight:700,color:'var(--text)'}},fmtCur(W.settled)),
+        div({style:{fontSize:12,color:'var(--muted)',marginTop:3,lineHeight:1.5}},
+          W.lines?`${W.paydays} payday${W.paydays===1?'':'s'} · ${fmtCur(W.cash)} handed over${W.toLoans?` · ${fmtCur(W.toLoans)} to loans`:''} · counted by the day paid, not the day worked`
+            :'Nothing paid on a day in this period.'));
+      if(W.undated)card.appendChild(div({'data-wages-undated':'1',style:{fontSize:11.5,color:'var(--muted)',marginTop:4}},
+        `${W.undated} older paid wage line${W.undated===1?' has':'s have'} no payday recorded and ${W.undated===1?'is':'are'} not counted here.`));
+      wrap.appendChild(card);
+    }
+  }
   // Shared costs: in the totals for All properties; shown apart for one property (v63).
   const sharedE=filterByMonth(data.expenses.filter(e=>!e.propertyId),'date',reportMonth);
   const sharedTot=r2(sharedE.reduce((s,e)=>s+Number(e.amount||0),0));
@@ -4890,10 +4929,10 @@ function downloadReport(bookings,expenses,periodLabel){
     const nights=diffDays(b.checkIn,b.checkOut),due=balanceDue(b);
     csv+=[esc(b.checkIn),esc(b.guestName),esc(propName(b.propertyId)),esc(fmtDate(b.checkIn)),esc(fmtDate(b.checkOut)),nights,b.guests||1,esc(b.source||'Direct'),Number(b.totalAmount||0),Number(b.paid||0),roundOffOf(b),due,esc(b.status)].join(',')+'\n';
   });
-  csv+='\nEXPENDITURE DETAILS\nDate,Description,Property,Category,Paid To,Gross Payout,Loan Deduction,Net Amount,Status,Notes\n';
+  csv+='\nEXPENDITURE DETAILS\nDate,Description,Property,Category,Paid To,Gross Payout,Loan Deduction,Net Amount,Status,Paid On,Notes\n';
   [...expenses].sort((a,b)=>new Date(a.date)-new Date(b.date)).forEach(e=>{
     const ded=round2(e.loanDeduction),gross=Number(e.grossAmount||0)||round2(Number(e.amount||0)+ded);
-    csv+=[esc(e.date),esc(e.description),esc(propName(e.propertyId)),esc(e.category),esc(e.staffId?staffName(e.staffId):''),gross,ded,Number(e.amount||0),esc(e.paid?'Paid':'Unpaid'),esc(e.notes||'')].join(',')+'\n';
+    csv+=[esc(e.date),esc(e.description),esc(propName(e.propertyId)),esc(e.category),esc(e.staffId?staffName(e.staffId):''),gross,ded,Number(e.amount||0),esc(e.paid?'Paid':'Unpaid'),esc(e.paid?(e.paidOn||''):''),esc(e.notes||'')].join(',')+'\n';
   });
   // Loan position — always the full picture, since a loan spans months
   if(data.loans.length>0){
@@ -5497,6 +5536,9 @@ function renderSettleModal(){
   const loans=activeLoansForStaff(staff.id);
   // Offered, never assumed: off until he switches it on.
   const ln={on:false,loanId:loans[0]?.id||'',amt:0};
+  // The payday (v76): today unless he says otherwise. Every line paid here and
+  // the loan deduction carry it.
+  const pay={on:today()};
   function defaultCut(loanId){
     const l=loanById(loanId); if(!l)return 0;
     // cuts already sitting on unpaid wages for this loan count towards this month
@@ -5640,9 +5682,17 @@ function renderSettleModal(){
     }
     if(loans.length){wrap.appendChild(loanBlock);buildLoanBlock();}
 
+    const payOnWrap=div({style:{marginTop:12}},div({className:'label'},'Paid on'));
+    const payOnInp=h('input',{type:'date','data-pay-on':'1',value:pay.on,max:today()});
+    payOnInp.addEventListener('change',e=>{pay.on=e.target.value;});
+    payOnWrap.appendChild(payOnInp);
+    wrap.appendChild(payOnWrap);
     payBtn.addEventListener('click',()=>{
       const F=figures();
       if(!F.sel.length)return;
+      const paidOn=pay.on;
+      if(!/^\d{4}-\d{2}-\d{2}$/.test(paidOn||'')){alert('Choose the day the wages were paid.');return;}
+      if(paidOn>today()){alert('The payday cannot be in the future.');return;}
       const ids=F.sel.map(e=>e.id);
       const cut=F.newCut;
       if(ln.on){
@@ -5651,7 +5701,7 @@ function renderSettleModal(){
         const bal=Math.max(0,loanBalance(loanById(ln.loanId)));
         if(cut>bal+0.5&&!confirm(`${fmtCur(cut)} is more than the ${fmtCur(bal)} still outstanding on this loan. Continue?`))return;
       }
-      const msg=`Mark ${ids.length} wage${ids.length>1?'s':''} totalling ${fmtCur(F.sum)} as paid to ${staff.name}?`
+      const msg=`Mark ${ids.length} wage${ids.length>1?'s':''} totalling ${fmtCur(F.sum)} as paid to ${staff.name}${paidOn===today()?' today':' on '+fmtDate(paidOn)}?`
         +(cut>0?`\n\n${fmtCur(cut)} goes to the loan; ${fmtCur(F.cash)} is handed over.`:'');
       if(!confirm(msg))return;
       mutateData(d=>{
@@ -5667,7 +5717,7 @@ function renderSettleModal(){
             e.amount=round2(gross-share);
           }
           e.paid=true;
-          e.paidOn=today();                     // payday (v64): the repayment is dated by it
+          e.paidOn=paidOn;                      // payday (v64; chosen on the sheet since v76): the repayment is dated by it
           syncExpenseLoan(d,e);                 // records the instalment against the loan
         });
       });
@@ -6259,7 +6309,7 @@ function renderExpenseModal(){
           const l=loans[0];
           f.loanId=l.id;
           f.loanDeduction=loanInstalmentDue(l);
-          f.paid=true;
+          if(!f.paid){f.paid=true;f.paidOn=f.paidOn||today();}
         }
         buildStaffBlock();syncPaidToggle();
       });
@@ -6298,7 +6348,11 @@ function renderExpenseModal(){
       const isPaid=lbl==='Paid';
       const b=btn({
         style:{padding:'5px 14px',borderRadius:20,border:`1.5px solid ${f.paid===isPaid?'var(--accent)':'var(--border)'}`,background:f.paid===isPaid?'var(--accent-light)':'var(--white)',color:f.paid===isPaid?'var(--accent)':'var(--muted)',fontSize:13,fontWeight:f.paid===isPaid?600:400,cursor:'pointer'},
-        onClick:()=>{f.paid=isPaid;syncPaidToggle();buildStaffBlock();}
+        onClick:()=>{
+          // Paid → the day it was paid, today unless changed; Unpaid clears it (v76)
+          if(isPaid&&!f.paid)f.paidOn=f.paidOn||today();
+          if(!isPaid)f.paidOn='';
+          f.paid=isPaid;paidOnInp.value=f.paidOn||'';syncPaidToggle();buildStaffBlock();}
       },lbl);
       toggle.appendChild(b);
     });
@@ -6310,8 +6364,20 @@ function renderExpenseModal(){
         b2.style.color=f.paid===ip2?'var(--accent)':'var(--muted)';
         b2.style.fontWeight=f.paid===ip2?600:400;
       });
+      paidOnWrap.style.display=f.paid?'block':'none';
+      paidOnNote.style.display=f.paid&&!f.paidOn?'block':'none';
     }
     paidRow.appendChild(toggle);wrap.appendChild(paidRow);
+    // Paid on (v76): the payday, for a wage paid on another day. Changing it
+    // re-dates any loan repayment taken from this payout (syncExpenseLoan).
+    // A line paid before v64 has none; it stays blank unless he sets it.
+    const paidOnWrap=div({'data-paid-on-wrap':'1'},div({className:'label'},'Paid on'));
+    const paidOnInp=h('input',{type:'date','data-paid-on':'1',value:f.paidOn||'',max:today()});
+    paidOnInp.addEventListener('change',e=>{f.paidOn=e.target.value;paidOnNote.style.display=f.paid&&!f.paidOn?'block':'none';});
+    const paidOnNote=div({'data-paid-on-note':'1',style:{fontSize:12,color:'var(--muted)',marginTop:4,lineHeight:1.45}},
+      'The day this was paid was not recorded. Leave it blank, or set the day if you know it.');
+    paidOnWrap.appendChild(paidOnInp);paidOnWrap.appendChild(paidOnNote);
+    wrap.appendChild(paidOnWrap);
     const pendingNote=div({style:{display:'none',fontSize:12.5,color:'var(--warn)',background:'var(--warn-light)',border:'1px solid var(--warn-line)',borderRadius:'var(--radius-sm)',padding:'9px 12px',lineHeight:1.5}});
     wrap.appendChild(pendingNote);
     const notesTA=h('textarea',{placeholder:'Notes (optional)',rows:2,style:{resize:'none'}});notesTA.textContent=f.notes||'';notesTA.addEventListener('input',e=>f.notes=e.target.value);wrap.appendChild(notesTA);
@@ -6331,7 +6397,11 @@ function renderExpenseModal(){
       f.loanDeduction=ded;
       f.grossAmount=gross;
       f.amount=round2(gross-ded);
-      f.paidOn=f.paid?(f.paidOn||today()):'';     // the day it was paid (v64)
+      // the day it was paid (v64): never invented for a line already paid
+      // without one (v76), and never in the future
+      if(!f.paid)f.paidOn='';
+      else if(!f.paidOn&&!(isEdit&&editItem.paid))f.paidOn=today();
+      if(f.paidOn&&f.paidOn>today()){alert('The day it was paid cannot be in the future.');return;}
       if(!f.id)f.id=uid();
       mutateData(d=>{
         if(isEdit)d.expenses=d.expenses.map(e=>e.id===f.id?{...f}:e);
