@@ -636,6 +636,7 @@ language sql security definer set search_path = stay, pg_temp stable as $$
                            from m), false))
 $$;
 
+-- (v76: 14-paid-on.sql redefines this with her paydays; run it after any re-run of this script)
 create or replace function stay.staff_standing()
 returns jsonb language sql security definer set search_path = stay, pg_temp stable as $$
   with me as (select * from stay.my_login()),

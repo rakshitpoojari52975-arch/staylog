@@ -472,6 +472,40 @@ Rakshit's spec (21 Nov 2026, "Add a 7-day free trial and paid subscriptions
   notify owners and the Board within 72 hours with an email template, recover)
   and `docs/region.md` (how to read the region; a move plan to Mumbai, not run).
 
+### v76 — the day a wage was paid (`paidOn`)
+- `expenses.paidOn` (`stay.expenses.paid_on`; set since v64) is now shown
+  wherever paid wages are. **No date is ever invented:** a line paid before
+  v64 has none and stays blank.
+- **Expenses list** (`paidLabel`, `isWageLine` = has a `staffId`): a paid wage
+  or utensil line says "Paid on 25 Nov" (`fmtDayMonth`: the year only when
+  not this year); unpaid "unpaid"; paid with no `paidOn` "Paid · date not
+  recorded"; other expenses keep "paid". **Mark as paid** sets today, **Mark
+  unpaid** clears it.
+- **Expense form:** a **Paid on** date (`data-paid-on`) while Paid is ticked —
+  the stored day, or today when ticked now; editable; no future day. Saving
+  runs `syncExpenseLoan`, which dates the repayment by `paidOn` and keeps its
+  id, so changing the day moves the repayment. Unpaid clears it. An old paid
+  line opens blank with a note and is saved blank unless he sets a day.
+- **Pay sheet:** **Paid on** (`data-pay-on`, today, editable, no future day)
+  for every line it marks paid and the loan deduction; the confirmation names
+  the day.
+- **Reports:** "Wages paid this month" (`wagesPaidIn`; "Wages paid in <year>"
+  with no month picked) — wage lines paid in the period **by `paidOn`**:
+  settled = handed over + to loans, paydays; undated lines counted apart and
+  left out. The Revenue / Expenses totals stay by expense date. **CSV:** a
+  **Paid On** column (blank for unpaid and undated).
+- **`supabase/stay/14-paid-on.sql`** (after 13; again after any re-run of
+  02): `stay.staff_standing()` gains `paydays` (last 6, newest first: date =
+  `paid_on`, `days` = distinct work dates, `received`, `deducted`),
+  `last_payout` by `paid_on` (`{date, amount, deducted}`; null when nothing
+  paid has a payday) and `paid_undated`. `check.sql` checks it.
+- **Staff page (`staff.js` v15):** a **Paid** card (`paidCard`,
+  `data-paydays`) — each payday, days, received, "₹X to loan" — and "Last
+  paid <day>" from `last_payout`; only undated pay → "Paid · date not
+  recorded". Without 14 (no `paydays`) nothing new shows.
+- Version note: Stage 4 of the plan below (minimisation, encryption, audit,
+  support access) moves to v77, Stage 5 to v78.
+
 ### Stage 3 — v75 (billing with Razorpay)
 - **`supabase/stay/13-billing.sql`** (after 12): `stay.plans` (starter /
   pro × monthly / yearly; price in paise, Razorpay plan id, properties; **not
@@ -1430,6 +1464,8 @@ also fetch from Supabase with `cache: 'no-store'` as a second layer.
     node tests/test_checkboxes.js        # v66: every checkbox keeps its tick — appearance, a tap ticks it, and it looks different ticked (pixels), light and dark
     node tests/test_move_app.js          # phase 3 in the app: Move to the new system — copy, compare (match / mismatch), switch, another phone joins, rollback
     node tests/test_notify_stay.js       # notify in the new model: by account, every owner, own devices/prefs/inbox, amounts + pays_directly_sources, marks, test push
+    node tests/test_paid_on.js           # v76: paid-on in the Expenses list, form (re-dates the loan repayment, Unpaid clears, old lines stay undated, no future day), Pay sheet day, Reports "Wages paid this month", CSV Paid On
+    STAYLOG_PG="…" node tests/test_paid_on_sql.js    # 14-paid-on.sql: her paydays (last 6, days once per date, received, loan), last payout by paid_on, undated counted not dated
     node tests/test_billing_app.js       # v75 app: sales closed/open, Subscribe opens Razorpay from the tap, pending, Cancel plan, GSTIN, invoice PDFs (tax invoice / receipt), store build shows no buying, plan owner none, admin prices + GST
     node tests/test_billing_function.js  # v75 billing Edge Function: webhook signature (wrong / other secret / changed body), once per event id, retry on DB failure, second subscription cancelled, sweep secret, subscribe/cancel via billing_prepare, no secret in logs
     STAYLOG_PG="…" node tests/test_billing_sql.js    # 13-billing.sql: plans not on sale until priced, who reads what, events once, active/charged/invoice numbering/GST split, grace kept, cancel to period end, older events, second subscription, Raaya Vasyam untouched, sweep, GSTIN, one trial per business, append-only

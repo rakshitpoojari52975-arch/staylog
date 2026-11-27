@@ -67,7 +67,7 @@ const STUB = (o) => `(function(){window.__calls=[];window.__tries=[];
   console.log('\n— nothing written in the page —');
   { const src = fs.readFileSync(path.join(ROOT, 'staff.js'), 'utf8') + fs.readFileSync(path.join(ROOT, 'staff.html'), 'utf8');
     ok('no business, owner or staff name in staff.js / staff.html', !/Raaya|Rakshit|Laxmi|Lakshmi/.test(src), (src.match(/Raaya|Rakshit|Laxmi|Lakshmi/g) || []));
-    ok('the page version moved', /PAGE_VERSION = 'v14/.test(src)); }
+    ok('the page version moved', /PAGE_VERSION = 'v15/.test(src)); }
 
   console.log('\n— signing in —');
   { const { ctx, page, errs } = await open();
@@ -179,6 +179,33 @@ const STUB = (o) => `(function(){window.__calls=[];window.__tries=[];
   { const { ctx, page } = await open({ session: 'u-new', paused: false });
     await page.waitForTimeout(300);
     ok('not paused: no notice, marking on', await page.locator('[data-paused]').count() === 0 && !(await page.locator('button:has-text("I came in today")').isDisabled()));
+    await ctx.close(); }
+
+  console.log('\n— her paydays (v76) —');
+  { const paid = { ...STANDING, pending: { amount: 0, count: 0, oldest: null, earlier: 0, days: [] },
+      last_payout: { date: '2026-11-20', amount: 1500, deducted: 100 }, paid_undated: 2,
+      paydays: [{ date: '2026-11-20', days: 3, received: 1500, deducted: 100 }, { date: '2026-11-10', days: 1, received: 500, deducted: 0 }] };
+    const { ctx, page, errs } = await open({ session: 'u-new', standing: paid });
+    await page.waitForTimeout(300);
+    const card = await page.locator('[data-paydays]').innerText().catch(() => '');
+    const rows = await page.locator('[data-payday]').evaluateAll(els => els.map(e => e.getAttribute('data-payday')));
+    ok('a "Paid" section: each payday, newest first', /^Paid/i.test(card) && rows.join() === '2026-11-20,2026-11-10', { card, rows });
+    ok('…with the day, how many days, what she received and the loan taken', /20 Nov 2026/.test(card) && /3 days/.test(card) && /₹1,500/.test(card)
+      && /₹100 to loan/.test(card) && /1 day\b/.test(card) && await page.locator('[data-payday="2026-11-10"] [data-payday-loan]').count() === 0, card);
+    ok('…and says earlier pay was recorded without the day', /recorded without the day it was paid/.test(card));
+    ok('"Last paid" is the day she was paid', /Last paid 20 Nov 2026/.test(await page.locator('body').innerText()));
+    ok('no page errors', errs.length === 0, errs);
+    await ctx.close(); }
+  { const old = { ...STANDING, pending: { amount: 0, count: 0, oldest: null, earlier: 0, days: [] }, last_payout: null, paid_undated: 3, paydays: [] };
+    const { ctx, page } = await open({ session: 'u-new', standing: old });
+    await page.waitForTimeout(300);
+    ok('paid only before paydays were recorded: "Paid · date not recorded", no Paid section', /Paid · date not recorded/.test(await page.locator('body').innerText())
+      && await page.locator('[data-paydays]').count() === 0);
+    await ctx.close(); }
+  { const { ctx, page } = await open({ session: 'u-new' });
+    await page.waitForTimeout(300);
+    ok('an older database (no paydays sent): no Paid section, the page works', await page.locator('[data-paydays]').count() === 0
+      && /I came in today/.test(await page.locator('body').innerText()));
     await ctx.close(); }
 
   await br.close(); srv.close();

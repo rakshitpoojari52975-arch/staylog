@@ -17,7 +17,7 @@ const CFG = window.STAYLOG_CLOUD || {};
 const STAFF_DOMAIN = 'staff.staylog.invalid';
 const CODE_KEY = 'staylog_staff_code', PROP_KEY = 'staylog_staff_prop';
 const OLD_CACHE_KEY = 'rv_staff_cache';
-const PAGE_VERSION = 'v14 · 21 Nov 2026';
+const PAGE_VERSION = 'v15 · 27 Nov 2026';
 
 const MONTH_SHORT = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 const DAYS = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
@@ -357,7 +357,8 @@ function wageCard(st) {
 
   card.appendChild(div({style:{fontSize:12.5,color:'var(--muted)',marginTop:2}},
     settled
-      ? (st.last_payout ? `Last paid ${fmtDate(st.last_payout.date)}` : 'Nothing recorded yet')
+      ? (st.last_payout && st.last_payout.date ? `Last paid ${fmtDate(st.last_payout.date)}`
+         : Number(st.paid_undated || 0) > 0 ? 'Paid · date not recorded' : 'Nothing recorded yet')
       : `${pend.count} payment${pend.count===1?'':'s'}${pend.oldest?` · oldest ${fmtDate(pend.oldest)}`:''}`));
 
   // The arithmetic behind the figure above. She counts her own days; seeing
@@ -434,6 +435,32 @@ function staleCard() {
     div({className:'kicker',style:{color:'var(--gold)'}},'Wages unavailable'),
     div({style:{fontSize:13.5,color:'var(--text-mid)',marginTop:6,lineHeight:1.55}},
       `This page could not read your wage figures. Nothing is wrong with your money — please ask ${ownerName()} to finish the update.`));
+}
+
+// v76: her paydays — the day she was paid, how many days it covered, what she
+// received and what went to her loan — newest first, the last 6. From
+// staff_standing().paydays (14-paid-on.sql); an older database sends none and
+// the card is not shown. Pay made before paydays were recorded is not dated.
+function paidCard(st) {
+  const days = Array.isArray(st.paydays) ? st.paydays : [];
+  if (!days.length) return null;
+  const card = div({className:'card','data-paydays':'1',style:{padding:'15px 16px'}});
+  card.appendChild(div({className:'kicker'}, 'Paid'));
+  days.forEach((p, i) => {
+    const got = Number(p.received || 0), cut = Number(p.deducted || 0), n = Number(p.days || 0);
+    card.appendChild(div({'data-payday': p.date, style:{display:'flex',alignItems:'baseline',justifyContent:'space-between',gap:10,
+      padding:'9px 0',borderBottom: i < days.length - 1 ? '1px solid var(--border-soft)' : 'none'}},
+      div({style:{minWidth:0}},
+        div({style:{fontSize:13.5,fontWeight:600}}, fmtDate(p.date)),
+        div({style:{fontSize:11.5,color:'var(--muted)',marginTop:1}}, `${n} ${n === 1 ? 'day' : 'days'}`)),
+      div({style:{textAlign:'right',flexShrink:0}},
+        div({className:'num',style:{fontSize:14,fontWeight:700}}, fmtCur(got)),
+        cut > 0 ? div({className:'num','data-payday-loan':'1',style:{fontSize:11.5,color:'var(--muted)',marginTop:1}}, `${fmtCur(cut)} to loan`) : null)));
+  });
+  const undated = Number(st.paid_undated || 0);
+  if (undated > 0) card.appendChild(div({style:{fontSize:11.5,color:'var(--muted)',marginTop:8,lineHeight:1.45}},
+    'Earlier pay was recorded without the day it was paid.'));
+  return card;
 }
 
 function loanCard(loan) {
@@ -617,6 +644,7 @@ function render() {
   if (st) {
     wrap.appendChild(attendanceCard(st));
     wrap.appendChild(wageCard(st));
+    { const pc = paidCard(st); if (pc) wrap.appendChild(pc); }
     (st.loans || []).forEach(l => wrap.appendChild(loanCard(l)));
   }
 
