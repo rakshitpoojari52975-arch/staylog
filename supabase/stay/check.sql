@@ -112,6 +112,12 @@ checks as (
                    and position('paydays' in pg_get_functiondef(to_regprocedure('stay.staff_standing()'))) > 0
               then 'ok' else 'not yet — run 14-paid-on.sql' end
   union all
+  -- 16. stage 4: Aadhaar last 4, the audit log, support access
+  select 'Aadhaar last 4, audit log, support access (15-privacy.sql)',
+         case when to_regclass('stay.audit_log') is not null and to_regclass('stay.support_grants') is not null
+                   and exists (select 1 from pg_trigger where tgname = 'b_mask_ids' and tgrelid = to_regclass('stay.bookings'))
+              then 'ok' else 'not yet — run 15-privacy.sql' end
+  union all
   -- 7. the old app's tables are still there and untouched by this phase
   select 'old table public.' || t, case when to_regclass('public.' || t) is not null then 'ok (unchanged)' else 'not found' end
   from unnest(array['properties','bookings','expenses','staff','loans','loan_repayments','attendance']) t

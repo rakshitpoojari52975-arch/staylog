@@ -53,7 +53,7 @@
 <h2>4. What owners record about guests and staff</h2>
 <p>On the owner's behalf we store what the owner enters, for example:</p>
 <ul>
-  <li><strong>Guests:</strong> name, phone number, stay dates, number of guests, amounts and payments, booking source, notes, and identity document type and number. <span class="note">[Draft note: from release v76, Aadhaar is kept as its last 4 digits only and passport numbers are encrypted; until then a full number typed by the owner is stored as typed.]</span> <strong>Photographs of identity documents never leave the owner's phone.</strong></li>
+  <li><strong>Guests:</strong> name, phone number, stay dates, number of guests, amounts and payments, booking source, notes, and identity document type and number. <strong>An Aadhaar number is kept as its last 4 digits only</strong> (any 12-digit ID number is treated the same way); other ID numbers are kept as typed. <span class="note">[Draft note: numbers stored before release v77 are shortened once the owner of StayLog runs the one-off clean-up; passport numbers are additionally encrypted from release v78.]</span> <strong>Photographs of identity documents never leave the owner's phone.</strong></li>
   <li><strong>Staff:</strong> name, phone number, role, wage rates, days worked (attendance), wages paid, and loans and repayments. A staff member who has a login sees a notice about this the first time they sign in.</li>
   <li>Calendar links from Airbnb or Booking.com that the owner adds, and the stays read from them.</li>
 </ul>
@@ -82,7 +82,7 @@
 
 <h2>7. How long we keep it</h2>
 <ul>
-  <li><strong>Guest data:</strong> anonymised a set period after check-out — 3 years by default, which the owner can set between 1 and 8 years. Dates, amounts, source and receipt numbers are kept for the owner's accounts; the guest's name becomes "Guest (removed)". <span class="note">[Draft note: from release v77.]</span></li>
+  <li><strong>Guest data:</strong> anonymised a set period after check-out — 3 years by default, which the owner can set between 1 and 8 years. Dates, amounts, source and receipt numbers are kept for the owner's accounts; the guest's name becomes "Guest (removed)". <span class="note">[Draft note: from release v78.]</span></li>
   <li><strong>Staff data:</strong> kept while the person works for the owner; anonymised the same period after the owner removes them. Wage and loan amounts are kept.</li>
   <li><strong>An account that stops paying or is cancelled:</strong> kept read-only for 180 days, with reminders at 150 and 173 days, then deleted.</li>
   <li><strong>An account the owner asks us to delete:</strong> deleted 30 days after the request (so a mistake can be undone).</li>
@@ -94,7 +94,8 @@
 
 <h2>8. How we protect it</h2>
 <ul>
-  <li>Encryption in transit (HTTPS) and at rest; sensitive fields (passport numbers, bank details, Wi-Fi passwords, arrival instructions, calendar links) additionally encrypted in the database. <span class="note">[Draft note: from release v76.]</span></li>
+  <li>Encryption in transit (HTTPS) and at rest; sensitive fields (passport numbers, bank details, Wi-Fi passwords, arrival instructions, calendar links) additionally encrypted in the database. <span class="note">[Draft note: from release v78.]</span></li>
+  <li>An <strong>activity log</strong> records sign-ins, changes to the team and staff logins, account settings, exports, backup restores and every Support access read — never guest details. Owners see their account's log in Account settings. It is kept for one year.</li>
   <li>Access only by membership of an account, with owner-set permissions for managers, enforced by the database itself.</li>
   <li>We do not read an owner's guest or staff data. If an owner asks for help, they can grant <strong>Support access</strong> for 7 days from Account settings and revoke it at any time; every read under it is logged. <span class="note">[Draft note: the person who runs StayLog has technical administrator access to the hosting project, as with any hosted service; this promise is a policy commitment backed by logging. Lawyer to review wording.]</span></li>
   <li>Logs of security-relevant actions, rate limits on sign-in and export, and daily backups with a restore tested every quarter.</li>

@@ -574,6 +574,12 @@
     if (!st || !st.signedIn) { changed(); return; }
     if (st.userId && st.userId !== m.user) { S.lastError = 'Signed in as someone else — sign out and sign in again.'; changed(); return; }
     if (!navigator.onLine) { changed(); return; }
+    // v77: an app older than public.app_status.min_version neither pulls nor
+    // pushes (the old model's cloud.js always did this; the new model never
+    // had). A later release can then change what a column holds without an
+    // old copy pulling it in and overwriting the phone's data.
+    try { if (C().refreshModel) await C().refreshModel(); } catch {}
+    if (C().status && C().status().retired) { S.lastError = ''; changed(); return; }
     running = (async () => {
       const touched = new Set();
       let before = null, baseBefore = null;
@@ -866,6 +872,21 @@
       await this.refreshPlan();
     },
     billing: () => (S && S.billing) || null,
+    // v77: support access (owner), the account's activity log, and the events
+    // the app reports itself (an export, a restore). 15-privacy.sql.
+    supportState() { const m = model(); return m ? rpc('support_state', { p_account: m.account }) : Promise.resolve(null); },
+    grantSupport(days, note) { const m = model(); return rpc('grant_support', { p_account: m.account, p_days: days, p_note: note || null }); },
+    revokeSupport() { const m = model(); return rpc('revoke_support', { p_account: m.account }); },
+    async activity(limit) {
+      const m = model(); if (!m) return [];
+      const db = await stay();
+      const { data, error } = await db.from('audit_log').select('at,actor,actor_kind,action,target,detail')
+        .eq('account_id', m.account).order('at', { ascending: false }).limit(limit || 30);
+      if (error) throw new Error(error.message || String(error));
+      return data || [];
+    },
+    // best effort: a log line is never worth failing what it records
+    async logEvent(action, detail) { const m = model(); if (!m) return; try { await rpc('log_event', { p_account: m.account, p_action: action, p_detail: detail || {} }); } catch {} },
     // v74: the platform admin's screen (no guest data)
     admin: {
       // v75: prices, sales and GST, billing per account
@@ -877,6 +898,8 @@
         p_properties: p.properties_allowed, p_active: !!p.active }),
       saveSettings: s => rpc('admin_save_settings', { p: s }),
       billing: () => rpc('admin_billing', {}),
+      supportAccounts: () => rpc('support_accounts', {}),
+      supportRead: (account, table) => rpc('support_read', { p_account: account, p_table: table, p_limit: 50 }),
       accounts: () => rpc('admin_accounts', {}),
       extendTrial: (account, days) => rpc('admin_extend_trial', { p_account: account, p_days: days }),
       setPlan: (account, plan) => rpc('admin_set_plan', { p_account: account, p_plan: plan }),

@@ -419,8 +419,8 @@ Rakshit's spec (21 Nov 2026, "Add a 7-day free trial and paid subscriptions
   project is in **Mumbai** (`ap-south-1`, checked 21 Nov 2026).
 - **Stages, one PR each:** 1 legal pages (v73) · 2 plans, trial, read-only
   enforcement, admin screen, export (v74) · 3 billing with Razorpay (v75) ·
-  4 minimisation, encryption, audit, support access (v76) · 5 retention,
-  guests' rights, deletion (v77). Phase 10 (clean-up) is separate and still
+  (v76 was the paid-on change) · 4a minimisation, audit, support access (v77)
+  · 4b column encryption (v78) · 5 retention, guests' rights, deletion (v79). Phase 10 (clean-up) is separate and still
   not to be touched.
 - Facts checked when designing: Apple's guidelines (3.1.1 needs in-app
   purchase to unlock features; no 3.1.3 exception fits; outside the US no
@@ -472,6 +472,69 @@ Rakshit's spec (21 Nov 2026, "Add a 7-day free trial and paid subscriptions
   notify owners and the Board within 72 hours with an email template, recover)
   and `docs/region.md` (how to read the region; a move plan to Mumbai, not run).
 
+### Stage 4a — v77 (Aadhaar last 4, the audit log, support access)
+- **Split from the plan:** encryption is v78, on its own. Building it showed
+  that `sync.js` never read `min_version` (only `cloud.js` did), so an older
+  phone kept syncing after a release; encrypting a column empties its
+  readable copy, and such a phone would have pulled the empty values over its
+  own. **v77 fixes that first:** `syncNow` calls `StayLogCloud.refreshModel()`
+  and a retired app neither pulls nor pushes (the "close and reopen" strip
+  shows). v78 then encrypts only once every device's last sync is v77+.
+- **`supabase/stay/15-privacy.sql`** (after 14). **Changes no stored data by
+  itself.**
+  - **Aadhaar:** trigger `b_mask_ids` on bookings (after the guard, before
+    touch): a new or changed `id_proof_number` that `stay.is_full_aadhaar`
+    (type Aadhaar with ≥ 5 digits, or any 12 digits) becomes
+    `stay.aadhaar_short` = "XXXX XXXX 1234" — for every role, the service key
+    included. An untouched old number waits for the counted run:
+    `select stay.aadhaar_count()` (full numbers, notes with a 12-digit number,
+    by account; changes nothing) → a fresh encrypted backup →
+    `select stay.mask_aadhaar('I have a fresh backup')` (SQL editor only;
+    guard off, so read-only accounts too; versions bump, so phones pull the
+    short number; audited as a count). Notes are counted, never changed.
+  - **`stay.audit_log`** (append-only, even for the database owner; only
+    `audit_housekeeping` removes rows over a year old, with `stay.audit_purge`):
+    `z_audit` triggers on members, member_properties, invites (target a hash of
+    the code — **never the code, the secret in the link**), staff_logins, and
+    accounts' settings columns (`audit_change`: which fields changed, values only
+    for role / active / permissions / property / username / label);
+    `stay.log_event(acct, action, detail)` for what the app reports
+    (`export_everything`, `backup_restored`, `backup_passphrase_changed`,
+    `backup_file_saved`; numbers only kept); support grants and reads; the
+    Aadhaar run; sign-ins copied from `auth.audit_log_entries` (login, logout,
+    sign-up, recovery, deletion, changes; once each by `source_id`). Owners
+    read their account's rows and everyone their own sign-ins; platform
+    admins all. Never guest details.
+  - **Support access:** `stay.support_grants`; `grant_support(acct, days 1–7,
+    note)` / `revoke_support` (owner; one live grant), `support_state` (owner:
+    live grant + support's reads), `support_accounts()` (admin),
+    **`support_read(acct, table, limit ≤ 200)`** — the admin's only way in:
+    live grant, tables properties / bookings / expenses / staff / loans /
+    loan_repayments / attendance / utensil_marks (never calendar links),
+    without wifi_password, bank_details, upi_*, signature; each read logged.
+    RLS still gives the admin nothing on business tables.
+  - `min_version` 77. `check.sql` checks it.
+- **billing function:** the daily `sweep` job also runs
+  `stay.audit_housekeeping` (before 15: says not set up).
+- **App:** booking form — Aadhaar asks for the **last 4 digits** (`data-id-number`;
+  a pasted full number keeps its last 4; fewer than 4 → asked again), saved
+  "XXXX XXXX 1234" (`aadhaarShort`, `isFullAadhaar`: 12 digits under any
+  type too); an old full number opens as its last 4 and saves short; a hint
+  under the notes, and notes holding a 12-digit number (`hasAadhaarLike`)
+  are not saved. Account settings (owner) → `privacySection` (drawn in
+  place): Support access (Allow for 7 days — confirmed, saying what stays
+  hidden — / Stop now), support's past reads, the **Activity** log in words
+  (`ACT_LABELS`). Export everything, a restore and a passphrase change call
+  `StayLogSync.logEvent` (counts only, best effort). ⋯ → All accounts →
+  **Support access** (`adminSupportBlock`): only accounts that allowed it,
+  a table, **Read** (`support_read`).
+- Privacy Policy: Aadhaar last 4 and the activity log described; encryption
+  and retention notes moved to v78 / v79. Versions unchanged (still drafts
+  for the lawyer).
+- Still on phones and backups (not changed by the server): the phone's old
+  pre-switch local copy (`staylog_v2`, until phase 10) and encrypted backups
+  made before the run may hold full numbers until they age out (30 days).
+
 ### v76 — the day a wage was paid (`paidOn`)
 - `expenses.paidOn` (`stay.expenses.paid_on`; set since v64) is now shown
   wherever paid wages are. **No date is ever invented:** a line paid before
@@ -503,8 +566,8 @@ Rakshit's spec (21 Nov 2026, "Add a 7-day free trial and paid subscriptions
   `data-paydays`) — each payday, days, received, "₹X to loan" — and "Last
   paid <day>" from `last_payout`; only undated pay → "Paid · date not
   recorded". Without 14 (no `paydays`) nothing new shows.
-- Version note: Stage 4 of the plan below (minimisation, encryption, audit,
-  support access) moves to v77, Stage 5 to v78.
+- Version note: Stage 4 moved to v77 (and was split: encryption is v78),
+  Stage 5 to v79.
 
 ### Stage 3 — v75 (billing with Razorpay)
 - **`supabase/stay/13-billing.sql`** (after 12): `stay.plans` (starter /
@@ -1464,6 +1527,8 @@ also fetch from Supabase with `cache: 'no-store'` as a second layer.
     node tests/test_checkboxes.js        # v66: every checkbox keeps its tick — appearance, a tap ticks it, and it looks different ticked (pixels), light and dark
     node tests/test_move_app.js          # phase 3 in the app: Move to the new system — copy, compare (match / mismatch), switch, another phone joins, rollback
     node tests/test_notify_stay.js       # notify in the new model: by account, every owner, own devices/prefs/inbox, amounts + pays_directly_sources, marks, test push
+    node tests/test_privacy_app.js       # v77: Aadhaar last 4 in the form (old/pasted/partial/other type/passport), notes guard, Support access + activity in Account settings, export logged, admin support read, a retired app neither pulls nor sends
+    STAYLOG_PG="…" node tests/test_privacy_sql.js    # 15-privacy.sql: no data changed by itself, Aadhaar shortened for every role, count then confirmed mask, audit log (team, invites without codes, settings field names, app events numbers only, append-only, yearly purge, sign-ins once), support access (grant, allowed tables, secrets hidden, every read logged, revoke, expiry)
     node tests/test_paid_on.js           # v76: paid-on in the Expenses list, form (re-dates the loan repayment, Unpaid clears, old lines stay undated, no future day), Pay sheet day, Reports "Wages paid this month", CSV Paid On
     STAYLOG_PG="…" node tests/test_paid_on_sql.js    # 14-paid-on.sql: her paydays (last 6, days once per date, received, loan), last payout by paid_on, undated counted not dated
     node tests/test_billing_app.js       # v75 app: sales closed/open, Subscribe opens Razorpay from the tap, pending, Cancel plan, GSTIN, invoice PDFs (tax invoice / receipt), store build shows no buying, plan owner none, admin prices + GST

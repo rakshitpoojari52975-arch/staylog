@@ -13,7 +13,8 @@
 //      Answers 200 once recorded (even "unknown account": a retry would not
 //      help), 500 when the database did not take it (Razorpay retries).
 //   2. The daily cron (header x-cron-secret = PUSH_CRON_SECRET, the secret
-//      notify already uses): {"job":"sweep"} → stay.billing_sweep.
+//      notify already uses): {"job":"sweep"} → stay.billing_sweep, then
+//      stay.audit_housekeeping (v77: sign-ins into the audit log, old rows out).
 //   3. The app, with the owner's own token:
 //        {"action":"subscribe","account":…,"plan":"pro_monthly"} → a Razorpay
 //          subscription (the account id in its notes) and its hosted payment
@@ -140,7 +141,12 @@ export async function handle(req: Request, env: Env, fetchImpl: Fetch = fetch as
       if (body.job !== 'sweep') throw new Refusal('unknown job');
       const r = await d.rpc('billing_sweep', {});
       console.log('billing: sweep', JSON.stringify(r));
-      return json({ ok: true, ...r });
+      // v77: the audit log's daily housekeeping (sign-ins copied, rows over a
+      // year old removed). Before 15-privacy.sql there is none.
+      let audit: unknown = null;
+      try { audit = await d.rpc('audit_housekeeping', {}); } catch { audit = 'not set up (15-privacy.sql)'; }
+      console.log('billing: audit housekeeping', JSON.stringify(audit));
+      return json({ ok: true, ...r, audit });
     }
 
     const token = (req.headers.get('authorization') || '').replace(/^Bearer\s+/i, '');
