@@ -54,6 +54,8 @@ kept outside it and was lost when the machine running them was reset.
     node tests/test_checkboxes.js     # v66: checkboxes show their tick
     node tests/test_move_app.js       # phase 3: Move to the new system — copy, compare, switch, another phone joins, rollback
     node tests/test_notify_stay.js    # phase 3: notify over `stay`
+    node tests/test_privacy_app.js    # v77: Aadhaar, notes, support access, activity, retired sync
+    STAYLOG_PG="…" node tests/test_privacy_sql.js    # v77: 15-privacy.sql
     node tests/test_paid_on.js        # v76: the day a wage was paid, in the app
     STAYLOG_PG="…" node tests/test_paid_on_sql.js    # v76: 14-paid-on.sql
     node tests/test_billing_app.js    # v75: paying for a plan in the app

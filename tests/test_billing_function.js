@@ -97,7 +97,8 @@ const run = async (W, r, env = ENV) => { console.log = (...a) => logs.push(a.joi
     let r = await run(W, req({ 'x-cron-secret': 'wrong' }, { job: 'sweep' }));
     ok('a wrong cron secret: 401', r.status === 401 && !W.rpc.length);
     r = await run(W, req({ 'x-cron-secret': SECRETS.PUSH_CRON_SECRET }, { job: 'sweep' }));
-    ok('the cron secret: billing_sweep runs', r.status === 200 && W.rpc[0].name === 'billing_sweep' && r.body.trials_ended === 1); }
+    ok('the cron secret: billing_sweep runs', r.status === 200 && W.rpc[0].name === 'billing_sweep' && r.body.trials_ended === 1);
+    ok('…then the audit log\'s housekeeping (v77)', W.rpc[1] && W.rpc[1].name === 'audit_housekeeping'); }
 
   console.log('\n— subscribe and cancel —');
   { const W = world();

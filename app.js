@@ -6,7 +6,7 @@
 // ─── Build ────────────────────────────────────────────────────────────────────
 // Bump BOTH of these together. This date sat at 28 Sept through a dozen
 // releases and was read, reasonably, as proof the upload had not landed.
-const APP_VERSION='v76', APP_BUILT='27 Nov 2026';
+const APP_VERSION='v77', APP_BUILT='27 Nov 2026';
 // The CACHE_NAME of the sw.js released with this app.js. Every release bumps
 // APP_VERSION and CACHE_NAME together, so one is derived from the other rather
 // than being a fourth thing to forget; the tests fail if they ever disagree.
@@ -171,6 +171,14 @@ const isWageLine=e=>!!(e&&e.staffId);
 // What the Expenses list says under the amount (v76): a paid wage names its
 // payday; one paid before v64 recorded no payday, and none is invented.
 const paidLabel=e=>!e.paid?'unpaid':!isWageLine(e)?'paid':e.paidOn?`Paid on ${fmtDayMonth(e.paidOn)}`:'Paid · date not recorded';
+// v77: Aadhaar numbers are kept as their last 4 digits only, "XXXX XXXX 1234"
+// (the server does the same to anything written: 15-privacy.sql). Any 12
+// digits typed as an ID count as an Aadhaar number, whatever the type.
+const AADHAAR_SHORT=/^X{4} X{4} \d{4}$/;
+const isFullAadhaar=(type,n)=>!!n&&!AADHAAR_SHORT.test(n)&&((type==='Aadhaar'&&String(n).replace(/\D/g,'').length>=5)||/^\d{12}$/.test(String(n).replace(/[\s-]/g,'')));
+const aadhaarShort=n=>{const d=String(n||'').replace(/\D/g,'');return d.length>=4?'XXXX XXXX '+d.slice(-4):'';};
+// A 12-digit number in free text (a booking's notes): it looks like an Aadhaar number.
+const hasAadhaarLike=t=>/(^|\D)\d{4}[ -]?\d{4}[ -]?\d{4}(\D|$)/.test(String(t||''));
 const fmtDateLong=s=>s?new Date(s+'T00:00:00').toLocaleDateString('en-IN',{weekday:'long',day:'numeric',month:'long',year:'numeric'}):'—';
 // Whole rupees as they are; an amount with paise always shows two places (₹250.50).
 const moneyDigits=n=>Number(n)%1?{minimumFractionDigits:2,maximumFractionDigits:2}:{};
@@ -1863,9 +1871,72 @@ function renderAccountModal(){
         ac.busy=false;closeModal();showToast('Account settings saved');render();
       }catch(e){ac.busy=false;ac.err=e.message||String(e);render();}
     }},ac.busy?'Saving…':'Save'));
+    if(isOwner()&&Y&&Y.supportState)w.appendChild(privacySection());
     return w;
   };
   return modal('Account settings',content);
+}
+
+// ─── Support access and the activity log (v77, 15-privacy.sql) ───────────────
+// Support (the platform admin) cannot read an account's records unless its
+// owner allows it here, for up to 7 days; every read is listed below and in
+// the activity log. Drawn in place, like the billing section, so the sheet's
+// fields survive.
+const ACT_LABELS={'members.insert':'Team member added','members.update':'Team member changed','members.delete':'Team member removed',
+  'member_properties.insert':'A manager was given a property','member_properties.delete':'A manager’s property was removed',
+  'invites.insert':'Invite made','invites.update':'Invite used or withdrawn','invites.delete':'Invite removed',
+  'staff_logins.insert':'Staff login made','staff_logins.update':'Staff login changed','staff_logins.delete':'Staff login removed',
+  'accounts.update':'Account settings changed','export_everything':'Everything exported','backup_restored':'A backup was restored on a phone',
+  'backup_passphrase_changed':'Backup passphrase changed','backup_file_saved':'Backup file saved',
+  'support_granted':'Support access allowed','support_revoked':'Support access stopped','support_read':'Support read your records'};
+const sp={state:null,activity:null,err:'',busy:false,at:0};
+function privacySection(){
+  const box=div({'data-privacy':'1',style:{display:'flex',flexDirection:'column',gap:8,marginTop:8,paddingTop:10,borderTop:'1px solid var(--border-soft)'}});
+  const paint=()=>box.replaceChildren(...privacyBody(paint));
+  paint();
+  if(Date.now()-sp.at>30000)(async()=>{
+    sp.at=Date.now();
+    try{const [st,act]=await Promise.all([window.StayLogSync.supportState(),window.StayLogSync.activity(30)]);sp.state=st;sp.activity=act;sp.err='';}
+    catch(e){sp.err=/support_state|function|does not exist|404/i.test(e.message||'')?'':(e.message||String(e));sp.state=sp.state||null;}
+    paint();
+  })();
+  return box;
+}
+function privacyBody(paint){
+  const Y=window.StayLogSync, out=[], live=sp.state&&sp.state.live;
+  const note=(t,c)=>div({style:{fontSize:12.5,color:c||'var(--muted)',lineHeight:1.5}},t);
+  out.push(div({className:'label'},'Support access'));
+  if(sp.err)out.push(note(sp.err,'var(--danger)'));
+  if(live){
+    out.push(div({'data-support-live':'1',style:{fontSize:13,lineHeight:1.5,padding:'8px 10px',borderRadius:'var(--radius-sm)',background:'var(--gold-light, #fbf3e2)'}},
+      `StayLog support can read this account’s records until ${fmtDate(isoOf(new Date(live.expires_at)))}.`));
+    out.push(btn({className:'btn-ghost btn-sm','data-support-stop':'1',disabled:sp.busy,style:{alignSelf:'flex-start',color:'var(--danger)'},onClick:async e=>{
+      const t=e.currentTarget;t.disabled=true;sp.busy=true;
+      try{sp.state=await Y.revokeSupport();sp.at=0;showToast('Support access stopped');}catch(err){alert(err.message||err);}
+      sp.busy=false;paint();}},'Stop support access now'));
+  }else{
+    out.push(note('StayLog support cannot see your bookings, guests, staff or money. If you ask for help, you can let support read them for 7 days; every read is listed here.'));
+    out.push(btn({className:'btn-ghost btn-sm','data-support-allow':'1',disabled:sp.busy||!sp.state,style:{alignSelf:'flex-start'},onClick:async e=>{
+      const t=e.currentTarget;
+      if(!confirm('Let StayLog support read this account’s records (bookings with guest details, expenses, staff, loans) for 7 days? Wi-Fi passwords, bank and UPI details and calendar links stay hidden. You can stop it at any time, and every read is listed.'))return;
+      t.disabled=true;sp.busy=true;
+      try{sp.state=await Y.grantSupport(7,null);sp.at=0;showToast('Support access allowed for 7 days');}catch(err){alert(err.message||err);}
+      sp.busy=false;paint();}},'Allow support access for 7 days'));
+  }
+  const reads=(sp.state&&sp.state.reads)||[];
+  if(reads.length)out.push(div({'data-support-reads':'1',style:{fontSize:12,color:'var(--text-mid)',lineHeight:1.5}},
+    'Support read: '+reads.slice(0,5).map(r=>`${r.table} (${r.rows} rows, ${fmtDate(isoOf(new Date(r.at)))})`).join(' · ')+(reads.length>5?` and ${reads.length-5} more`:'')));
+  // the account's activity log
+  const act=sp.activity||[];
+  if(act.length){
+    out.push(div({className:'label',style:{marginTop:6}},'Activity'));
+    out.push(div({'data-activity':'1',style:{display:'flex',flexDirection:'column',gap:2}},
+      ...act.slice(0,20).map(a=>div({'data-activity-row':a.action,style:{display:'flex',justifyContent:'space-between',gap:10,fontSize:12.5,padding:'4px 0',borderBottom:'1px solid var(--border-soft)'}},
+        span({},ACT_LABELS[a.action]||a.action.replace(/[._]/g,' ')),
+        span({style:{color:'var(--muted)',flexShrink:0}},new Date(a.at).toLocaleString('en-IN',{day:'numeric',month:'short',hour:'numeric',minute:'2-digit'}))))));
+    out.push(note('Kept for a year. Sign-ins, team and staff-login changes, settings, exports and every support read are recorded here — never guest details.'));
+  }
+  return out;
 }
 
 // ⋯ → Invite a new owner (a platform admin only): a link for someone to open
@@ -2205,7 +2276,10 @@ function renderExportModal(){
       const b=e.currentTarget;            // kept: after an await, currentTarget is gone
       if(!(await checkPin(pin.value))){msg.textContent='That PIN is not right.';pin.value='';return;}
       b.disabled=true;
-      try{const how=await deliverExport();if(how!=='cancelled'){closeModal();showToast(how==='shared'?'Export ready':'Export downloaded');}else b.disabled=false;}
+      try{const how=await deliverExport();if(how!=='cancelled'){
+        // v77: the export goes in the account's activity log (counts only)
+        if(window.StayLogSync&&window.StayLogSync.logEvent&&stayActive()){const D=state.data;window.StayLogSync.logEvent('export_everything',{bookings:D.bookings.length,expenses:D.expenses.length,staff:D.staff.length,loans:D.loans.length});}
+        closeModal();showToast(how==='shared'?'Export ready':'Export downloaded');}else b.disabled=false;}
       catch(err){b.disabled=false;msg.textContent='Could not export — '+(err.message||err);}
     }},'Export'));
     return w;
@@ -2222,8 +2296,35 @@ async function loadAdmin(){
   // v75: billing (before 13-billing.sql there is none, and the screen is as before)
   try{const [pl,st,bi]=await Promise.all([A.plans(),A.settings(),A.billing()]);adm.plans=pl;adm.settings=st;adm.billing=bi||{};}
   catch{adm.plans=null;adm.settings=null;adm.billing={};}
+  // v77: accounts that have allowed support access (before 15: none)
+  try{adm.support=A.supportAccounts?await A.supportAccounts():[];}catch{adm.support=[];}
   if(state.modal==='admin')render();
 }
+// Support access (v77): only accounts whose owner has allowed it, only through
+// stay.support_read — the owner sees every read. Shown in place, not rendered
+// into the account list.
+function adminSupportBlock(){
+  const card=div({'data-admin-support':'1',style:{border:'1px solid var(--border)',borderRadius:'var(--radius-sm)',padding:'10px 12px',display:'flex',flexDirection:'column',gap:8}},
+    div({style:{fontWeight:700,fontSize:14}},'Support access'));
+  const list=adm.support||[];
+  if(!list.length){card.appendChild(div({style:{fontSize:12.5,color:'var(--muted)',lineHeight:1.5}},'No account has allowed support access. You cannot read an owner’s records until they allow it in their Account settings.'));return card;}
+  const out=div({'data-admin-support-rows':'1',style:{fontSize:11.5,fontFamily:'ui-monospace, Menlo, monospace',whiteSpace:'pre-wrap',wordBreak:'break-word',maxHeight:320,overflow:'auto'}});
+  list.forEach(a=>{
+    const sel=h('select',{'data-admin-support-table':a.account},...['bookings','properties','expenses','staff','loans','loan_repayments','attendance','utensil_marks'].map(t=>h('option',{value:t},t.replace('_',' '))));
+    card.appendChild(div({style:{display:'flex',flexDirection:'column',gap:5}},
+      div({style:{fontSize:13.5,fontWeight:600}},`${a.name} · until ${fmtDate(isoOf(new Date(a.expires_at)))}`),
+      div({style:{display:'flex',gap:6}},sel,btn({className:'btn-ghost btn-sm','data-admin-support-read':a.account,onClick:async e=>{
+        const t=e.currentTarget;t.disabled=true;out.textContent='Reading… (the owner will see this read)';
+        try{const rows=await window.StayLogSync.admin.supportRead(a.account,sel.value);
+          out.textContent=`${rows.length} row${rows.length===1?'':'s'} of ${sel.value}\n\n`+rows.map(r=>JSON.stringify(r,null,1)).join('\n\n');}
+        catch(err){out.textContent=err.message||String(err);}
+        t.disabled=false;}},'Read'))));
+  });
+  card.appendChild(out);
+  card.appendChild(div({style:{fontSize:11.5,color:'var(--muted)'}},'Each read is written to that account’s activity log.'));
+  return card;
+}
+
 // Prices, sales and GST (v75): each save is in the admin audit log.
 function adminBillingBlocks(act){
   const out=[];
@@ -2281,6 +2382,7 @@ function renderAdminModal(){
     if(!adm.list){w.appendChild(div({style:{color:'var(--muted)',fontSize:13}},'Loading…'));return w;}
     const act=async(fn,ok)=>{adm.busy=true;try{await fn();showToast(ok);}catch(e){alert(e.message||e);}adm.busy=false;adm.list=null;loadAdmin();};
     adminBillingBlocks(act).forEach(x=>w.appendChild(x));
+    w.appendChild(adminSupportBlock());
     adm.list.forEach(a=>{
       const card=div({'data-admin-account':a.id,style:{border:'1px solid var(--border)',borderRadius:'var(--radius-sm)',padding:'10px 12px'}});
       card.appendChild(div({style:{display:'flex',justifyContent:'space-between',gap:8}},div({style:{fontWeight:700,fontSize:14}},`${a.name} · ${a.code}`),
@@ -3903,6 +4005,7 @@ function renderBackupModal(){
         const c=BK()._counts(r.data);
         if(!confirm(`Replace everything on this phone with the backup of ${bkWhen(r.createdAt)}?\n\n${c.bookings} bookings, ${c.expenses} expenses, ${c.loans} loans.`)){bkSay('Nothing was changed.');return;}
         replaceWithBackup(r.data);
+        if(window.StayLogSync&&window.StayLogSync.logEvent&&stayActive())window.StayLogSync.logEvent('backup_restored',{bookings:c.bookings,expenses:c.expenses,loans:c.loans});   // v77: audit log
         bk.view='';bkSay(`Restored the backup of ${bkWhen(r.createdAt)}: ${c.bookings} bookings, ${c.expenses} expenses, ${c.loans} loans.`);
       },false));
       wrap.lastChild.className='btn-danger';
@@ -3919,6 +4022,7 @@ function renderBackupModal(){
         bkWork('Re-encrypting…');
         try{ const r=await BK().changePassphrase(cur.value,p1.value,p2.value,state.data);
           bk.view='';bk.list=null;
+          if(window.StayLogSync&&window.StayLogSync.logEvent&&stayActive())window.StayLogSync.logEvent('backup_passphrase_changed',{rewritten:r.rewritten});   // v77: audit log
           bkSay(`Passphrase changed. ${r.rewritten+1} backup${r.rewritten?'s':''} now open with the new one`+
             (r.kept?`; ${r.kept} older could not be rewritten and still open with the old one until they expire.`:'.'));
         }catch(e){bkSay(e.message||String(e),true);}
@@ -6159,16 +6263,34 @@ function renderBookingModal(){
     const stSel=h('select');
     [['confirmed','Confirmed'],['checkedin','Checked In'],['checkedout','Checked Out'],['cancelled','Cancelled']].forEach(([v,l])=>stSel.appendChild(h('option',{value:v,selected:f.status===v},l)));
     stSel.addEventListener('change',e=>f.status=e.target.value);wrap.appendChild(stSel);
-    const notesTA=h('textarea',{placeholder:'Notes (optional)',rows:2,style:{resize:'none'}});notesTA.textContent=f.notes||'';notesTA.addEventListener('input',e=>f.notes=e.target.value);wrap.appendChild(notesTA);
+    const notesTA=h('textarea',{placeholder:'Notes (optional)',rows:2,'data-booking-notes':'1',style:{resize:'none'}});notesTA.textContent=f.notes||'';notesTA.addEventListener('input',e=>f.notes=e.target.value);wrap.appendChild(notesTA);
+    wrap.appendChild(div({'data-notes-hint':'1',style:{fontSize:11.5,color:'var(--muted)',marginTop:-6,lineHeight:1.45}},
+      'Don’t type ID numbers in the notes. The ID goes below; for Aadhaar only the last 4 digits are kept.'));
 
     // ── Identity Proof Section ────────────────────────────────────────────────
     wrap.appendChild(div({style:{fontSize:12,fontWeight:600,color:'var(--muted)',textTransform:'uppercase',letterSpacing:'0.06em',marginTop:6}},'Identity Proof'));
     const idRow=div({style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}});
     const idTypeSel=h('select');
     [['','Select ID type'],['Aadhaar','Aadhaar Card'],['Passport','Passport'],['DrivingLicense','Driving Licence'],['VoterID','Voter ID'],['PAN','PAN Card'],['Other','Other']].forEach(([v,l])=>idTypeSel.appendChild(h('option',{value:v,selected:(f.idProofType||'')===v},l)));
-    idTypeSel.addEventListener('change',e=>f.idProofType=e.target.value);
-    const idNumInp=h('input',{type:'text',placeholder:'ID number',value:f.idProofNumber||''});idNumInp.addEventListener('input',e=>f.idProofNumber=e.target.value);
+    // Aadhaar (v77): only the last 4 digits are asked for and kept.
+    const idNumInp=h('input',{type:'text','data-id-number':'1',value:''});
+    const paintIdNum=()=>{
+      const aad=f.idProofType==='Aadhaar';
+      idNumInp.placeholder=aad?'Last 4 digits':'ID number';
+      idNumInp.inputMode=aad?'numeric':'text';
+      idNumInp.value=aad?(AADHAAR_SHORT.test(f.idProofNumber||'')?f.idProofNumber.slice(-4):String(f.idProofNumber||'').replace(/\D/g,'').slice(-4)):(f.idProofNumber||'');
+    };
+    idTypeSel.addEventListener('change',e=>{f.idProofType=e.target.value;if(f.idProofType==='Aadhaar'&&f.idProofNumber)f.idProofNumber=aadhaarShort(f.idProofNumber);paintIdNum();});
+    // A pasted full number keeps its last 4 digits; fewer than 4 stay as typed
+    // (and saving asks for all 4).
+    idNumInp.addEventListener('input',e=>{const v=e.target.value;
+      if(f.idProofType!=='Aadhaar'){f.idProofNumber=v;return;}
+      let d=v.replace(/\D/g,'');if(d.length>4){d=d.slice(-4);e.target.value=d;}
+      f.idProofNumber=d.length===4?'XXXX XXXX '+d:d;});
+    paintIdNum();
     idRow.appendChild(idTypeSel);idRow.appendChild(idNumInp);wrap.appendChild(idRow);
+    const idHint=div({'data-aadhaar-hint':'1',style:{fontSize:11.5,color:'var(--muted)',lineHeight:1.45}},'For Aadhaar, only the last 4 digits are kept — never the full number.');
+    wrap.appendChild(idHint);
 
     // Image upload + preview
     const imgPreviewWrap=div({style:{display:'flex',flexDirection:'column',gap:8}});
@@ -6203,6 +6325,10 @@ function renderBookingModal(){
 
     wrap.appendChild(btn({className:'btn-primary',style:{marginTop:8,width:'100%'},onClick:()=>{
       if(!f.guestName||!f.checkIn||!f.checkOut||!f.propertyId)return;
+      // v77: never a full Aadhaar number, in the ID field or in the notes
+      if(isFullAadhaar(f.idProofType,f.idProofNumber))f.idProofNumber=aadhaarShort(f.idProofNumber);
+      if(f.idProofType==='Aadhaar'&&f.idProofNumber&&!/^X{4} X{4} \d{4}$/.test(f.idProofNumber)){alert('Type the last 4 digits of the Aadhaar number.');return;}
+      if(hasAadhaarLike(f.notes)){alert('The notes look like they hold a 12-digit ID number. Take it out — for Aadhaar, only the last 4 digits are kept, in the ID field.');return;}
       if(hasConflict(f.propertyId,f.checkIn,f.checkOut,isEdit?f.id:null)){alert('These dates overlap with an existing booking. Please choose different dates.');return;}
       if(!isEdit)f.id=uid();
       f.roundOff=paysUsDirectly(f)?r2(f.roundOff||0):0;   // never for platforms that collect payment
